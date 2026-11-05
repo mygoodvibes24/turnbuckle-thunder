@@ -37,8 +37,18 @@ func _ready() -> void:
 	ring_root = Node3D.new()
 	ring_root.position.y = RING_TOP
 	add_child(ring_root)
-	p1 = _spawn("BRICK MASON", Color(0.85, 0.12, 0.12), Color(0.1, 0.1, 0.1), Color(0.86, 0.64, 0.48), false, Vector3(-1.8, 0, 0.3))
-	p2 = _spawn("THE VOLCANO", Color(0.15, 0.45, 0.95), Color(0.95, 0.85, 0.2), Color(0.55, 0.38, 0.26), true, Vector3(1.8, 0, -0.3))
+	# Each look: colors + style switches used by wrestler.gd's N64-style model.
+	var brick := {
+		"gear": Color(0.85, 0.12, 0.12), "trunks": Color(0.08, 0.08, 0.1), "boot_color": Color(0.1, 0.1, 0.12),
+		"skin": Color(0.87, 0.64, 0.47), "hair": "flattop", "hair_color": Color(0.18, 0.12, 0.08),
+	}
+	var volcano := {
+		"gear": Color(1.0, 0.5, 0.1), "trunks": Color(0.12, 0.3, 0.85), "boot_color": Color(0.12, 0.3, 0.85),
+		"skin": Color(0.6, 0.42, 0.3), "tights": true, "mask": true,
+		"mask_color": Color(0.12, 0.3, 0.85), "mask_trim": Color(1.0, 0.55, 0.1), "hair_color": Color.BLACK,
+	}
+	p1 = _spawn("BRICK MASON", brick, false, Vector3(-1.8, 0, 0.3))
+	p2 = _spawn("THE VOLCANO", volcano, true, Vector3(1.8, 0, -0.3))
 	p1.opponent = p2
 	p2.opponent = p1
 	p1._snap_face_opponent()
@@ -230,10 +240,10 @@ func _build_crowd() -> void:
 	add_child(mmi)
 
 
-func _spawn(n: String, gear: Color, trunks: Color, skin: Color, cpu: bool, pos: Vector3) -> Node3D:
+func _spawn(n: String, look: Dictionary, cpu: bool, pos: Vector3) -> Node3D:
 	var w: Node3D = Wrestler.new()
 	ring_root.add_child(w)
-	w.setup(n, gear, trunks, skin, cpu)
+	w.setup(n, look, cpu)
 	w.position = pos
 	w.announce.connect(func(text): _announce(text, 1.2))
 	w.impact.connect(func(s): cam_shake = max(cam_shake, s))

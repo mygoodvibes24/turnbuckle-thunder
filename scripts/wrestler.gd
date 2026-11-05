@@ -78,30 +78,47 @@ var arm_l: Node3D
 var arm_r: Node3D
 var leg_l: Node3D
 var leg_r: Node3D
+var elbow_l: Node3D
+var elbow_r: Node3D
+var knee_l: Node3D
+var knee_r: Node3D
+var look := {}
 
 
-func setup(p_name: String, p_gear: Color, p_trunks: Color, p_skin: Color, p_cpu: bool) -> void:
+func setup(p_name: String, p_look: Dictionary, p_cpu: bool) -> void:
 	display_name = p_name
-	gear_color = p_gear
-	trunk_color = p_trunks
-	skin_color = p_skin
+	look = p_look
+	gear_color = look.get("gear", Color.RED)
+	trunk_color = look.get("trunks", Color.BLACK)
+	skin_color = look.get("skin", Color(0.86, 0.64, 0.48))
 	is_cpu = p_cpu
 	_build_body()
 
 
 # ---------------------------------------------------------------- body building
+# N64-style look: chunky low-poly parts (6-8 sided), matte materials, and tiny
+# pixel textures for faces/masks with bilinear filtering (that soft N64 blur).
 
-func _mat(c: Color) -> StandardMaterial3D:
+func _mat(c: Color, tex: Texture2D = null) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = c
-	m.roughness = 0.6
+	m.roughness = 1.0
+	m.metallic_specular = 0.15
+	m.diffuse_mode = BaseMaterial3D.DIFFUSE_LAMBERT
+	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
+	if tex:
+		m.albedo_texture = tex
+		m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+		m.alpha_scissor_threshold = 0.5
 	return m
 
 
-func _add_mesh(parent: Node3D, mesh: Mesh, pos: Vector3, mat: Material) -> MeshInstance3D:
+func _add_mesh(parent: Node3D, mesh: Mesh, pos: Vector3, mat: Material, scl := Vector3.ONE) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	mi.mesh = mesh
 	mi.position = pos
+	mi.scale = scl
 	mi.material_override = mat
 	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	parent.add_child(mi)
@@ -114,73 +131,180 @@ func _box(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshIns
 	return _add_mesh(parent, b, pos, mat)
 
 
-func _sphere(parent: Node3D, r: float, pos: Vector3, mat: Material) -> MeshInstance3D:
+func _ball(parent: Node3D, r: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 7, hemi := false) -> MeshInstance3D:
 	var s := SphereMesh.new()
 	s.radius = r
 	s.height = r * 2.0
-	s.radial_segments = 16
-	s.rings = 8
-	return _add_mesh(parent, s, pos, mat)
+	s.is_hemisphere = hemi
+	s.radial_segments = segs
+	s.rings = 4
+	return _add_mesh(parent, s, pos, mat, scl)
 
 
-func _limb(parent: Node3D, pivot_pos: Vector3, radius: float, length: float, mat: Material, end_mat: Material, end_is_boot: bool) -> Node3D:
-	var pivot := Node3D.new()
-	pivot.position = pivot_pos
-	parent.add_child(pivot)
-	var c := CapsuleMesh.new()
-	c.radius = radius
-	c.height = length
-	c.radial_segments = 10
-	c.rings = 4
-	_add_mesh(pivot, c, Vector3(0, -length * 0.5, 0), mat)
-	if end_is_boot:
-		_box(pivot, Vector3(radius * 2.3, radius * 2.6, radius * 3.2), Vector3(0, -length + radius * 1.1, radius * 0.4), end_mat)
+func _prism(parent: Node3D, top_r: float, bottom_r: float, h: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 6) -> MeshInstance3D:
+	var c := CylinderMesh.new()
+	c.top_radius = top_r
+	c.bottom_radius = bottom_r
+	c.height = h
+	c.radial_segments = segs
+	c.rings = 1
+	return _add_mesh(parent, c, pos, mat, scl)
+
+
+func _pivot(parent: Node3D, pos: Vector3) -> Node3D:
+	var p := Node3D.new()
+	p.position = pos
+	parent.add_child(p)
+	return p
+
+
+# --- tiny pixel textures -----------------------------------------------------
+
+func _px(img: Image, x: int, y: int, w: int, h: int, c: Color) -> void:
+	img.fill_rect(Rect2i(x, y, w, h), c)
+
+
+func _face_texture() -> ImageTexture:
+	# 16x16 face drawn on a transparent card in front of the head.
+	var img := Image.create_empty(16, 16, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var dark := Color(0.12, 0.07, 0.05)
+	var shade := skin_color.darkened(0.25)
+	if look.get("mask", false):
+		var mask: Color = look["mask_color"]
+		var trim: Color = look["mask_trim"]
+		img.fill(mask)
+		# flame-shaped trim around the eyes
+		_px(img, 1, 4, 6, 4, trim)
+		_px(img, 9, 4, 6, 4, trim)
+		_px(img, 2, 3, 2, 1, trim)
+		_px(img, 12, 3, 2, 1, trim)
+		_px(img, 7, 1, 2, 4, trim)
+		# eye holes
+		_px(img, 2, 5, 4, 2, Color.WHITE)
+		_px(img, 10, 5, 4, 2, Color.WHITE)
+		_px(img, 4, 5, 2, 2, dark)
+		_px(img, 10, 5, 2, 2, dark)
+		# mouth hole
+		_px(img, 5, 11, 6, 3, skin_color)
+		_px(img, 6, 12, 4, 1, dark)
 	else:
-		_sphere(pivot, radius * 1.35, Vector3(0, -length + radius * 0.6, 0), end_mat)
-	return pivot
+		# brows, eyes, nose shading, stern mouth, stubble
+		_px(img, 2, 4, 5, 1, look["hair_color"])
+		_px(img, 9, 4, 5, 1, look["hair_color"])
+		_px(img, 3, 6, 3, 2, Color.WHITE)
+		_px(img, 10, 6, 3, 2, Color.WHITE)
+		_px(img, 4, 6, 2, 2, dark)
+		_px(img, 10, 6, 2, 2, dark)
+		_px(img, 7, 7, 2, 3, shade)
+		_px(img, 5, 12, 6, 1, dark)
+		_px(img, 4, 13, 8, 2, shade.lerp(look["hair_color"], 0.35))
+	return ImageTexture.create_from_image(img)
 
+
+# --- the model ------------------------------------------------------------------
 
 func _build_body() -> void:
 	var skin := _mat(skin_color)
+	var skin_dark := _mat(skin_color.darkened(0.15))
 	var gear := _mat(gear_color)
 	var trunks := _mat(trunk_color)
+	var boots := _mat(look.get("boot_color", gear_color))
+	var tape := _mat(Color(0.92, 0.92, 0.88))
+	var legs_mat := trunks if look.get("tights", false) else skin
+	var hair := _mat(look.get("hair_color", Color.BLACK))
 
-	# Blob shadow (does not follow the pose, stays on the mat)
+	# Blob shadow (stays flat on the mat)
 	var sh := CylinderMesh.new()
-	sh.top_radius = 0.55
-	sh.bottom_radius = 0.55
+	sh.top_radius = 0.6
+	sh.bottom_radius = 0.6
 	sh.height = 0.01
+	sh.radial_segments = 10
 	var sh_mat := StandardMaterial3D.new()
-	sh_mat.albedo_color = Color(0, 0, 0, 0.45)
+	sh_mat.albedo_color = Color(0, 0, 0, 0.5)
 	sh_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	sh_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_add_mesh(self, sh, Vector3(0, 0.03, 0), sh_mat)
 
-	pose_root = Node3D.new()
-	add_child(pose_root)
+	pose_root = _pivot(self, Vector3.ZERO)
+	hips = _pivot(pose_root, Vector3(0, 0.95, 0))
 
-	hips = Node3D.new()
-	hips.position = Vector3(0, 0.95, 0)
-	pose_root.add_child(hips)
+	# Pelvis / trunks
+	_prism(hips, 0.27, 0.24, 0.3, Vector3(0, 0.0, 0), trunks, Vector3(1, 1, 0.72))
+	_prism(hips, 0.285, 0.285, 0.06, Vector3(0, 0.16, 0), gear, Vector3(1, 1, 0.74))  # waistband
 
-	torso = Node3D.new()
-	hips.add_child(torso)
-	_box(torso, Vector3(0.66, 0.6, 0.38), Vector3(0, 0.44, 0), skin)       # chest
-	_box(torso, Vector3(0.54, 0.26, 0.34), Vector3(0, 0.07, 0), trunks)    # trunks
-	_box(torso, Vector3(0.56, 0.07, 0.36), Vector3(0, 0.2, 0), gear)       # belt
+	# Torso: V-shaped, wide lats and chest, big traps
+	torso = _pivot(hips, Vector3(0, 0.15, 0))
+	_prism(torso, 0.31, 0.26, 0.3, Vector3(0, 0.15, 0), skin, Vector3(1, 1, 0.7))         # abs
+	_prism(torso, 0.44, 0.31, 0.4, Vector3(0, 0.49, 0), skin, Vector3(1, 1, 0.6))         # chest/lats
+	_ball(torso, 0.14, Vector3(-0.13, 0.55, 0.19), skin_dark, Vector3(1.05, 0.7, 0.45), 6) # pecs
+	_ball(torso, 0.14, Vector3(0.13, 0.55, 0.19), skin_dark, Vector3(1.05, 0.7, 0.45), 6)
+	_box(torso, Vector3(0.05, 0.22, 0.04), Vector3(0, 0.2, 0.19), skin_dark)              # ab line
+	_ball(torso, 0.17, Vector3(-0.2, 0.7, -0.03), skin, Vector3(1.15, 0.6, 0.9), 6)       # traps
+	_ball(torso, 0.17, Vector3(0.2, 0.7, -0.03), skin, Vector3(1.15, 0.6, 0.9), 6)
 
-	head = Node3D.new()
-	head.position = Vector3(0, 0.82, 0)
-	torso.add_child(head)
-	_sphere(head, 0.2, Vector3(0, 0.12, 0), skin)
-	_box(head, Vector3(0.42, 0.07, 0.42), Vector3(0, 0.2, 0), gear)       # headband
-	_box(head, Vector3(0.05, 0.04, 0.02), Vector3(-0.08, 0.14, 0.19), _mat(Color.BLACK))
-	_box(head, Vector3(0.05, 0.04, 0.02), Vector3(0.08, 0.14, 0.19), _mat(Color.BLACK))
+	# Neck + head
+	_prism(torso, 0.1, 0.12, 0.16, Vector3(0, 0.76, 0), skin, Vector3.ONE, 6)
+	head = _pivot(torso, Vector3(0, 0.8, 0.0))
+	var head_mat := skin
+	if look.get("mask", false):
+		head_mat = _mat(look["mask_color"])
+	_ball(head, 0.17, Vector3(0, 0.15, 0), head_mat, Vector3(0.92, 1.12, 1.0), 8)
+	_ball(head, 0.05, Vector3(-0.155, 0.14, 0), head_mat, Vector3(0.6, 1.0, 0.8), 5)     # ears
+	_ball(head, 0.05, Vector3(0.155, 0.14, 0), head_mat, Vector3(0.6, 1.0, 0.8), 5)
+	var face := QuadMesh.new()
+	face.size = Vector2(0.27, 0.29)
+	_add_mesh(head, face, Vector3(0, 0.14, 0.182), _mat(Color.WHITE, _face_texture()))
+	_box(head, Vector3(0.06, 0.07, 0.06), Vector3(0, 0.12, 0.185), head_mat)              # nose
+	match look.get("hair", "none"):
+		"flattop":
+			_box(head, Vector3(0.31, 0.13, 0.33), Vector3(0, 0.31, -0.01), hair)
+			_box(head, Vector3(0.33, 0.12, 0.2), Vector3(0, 0.22, -0.08), hair)
+		"long":
+			_ball(head, 0.185, Vector3(0, 0.2, -0.01), hair, Vector3(1, 1, 1), 8, true)
+			_box(head, Vector3(0.34, 0.38, 0.12), Vector3(0, 0.02, -0.13), hair)
+		"mohawk":
+			_box(head, Vector3(0.07, 0.14, 0.34), Vector3(0, 0.33, -0.01), hair)
 
-	arm_l = _limb(torso, Vector3(-0.43, 0.66, 0), 0.1, 0.7, skin, gear, false)
-	arm_r = _limb(torso, Vector3(0.43, 0.66, 0), 0.1, 0.7, skin, gear, false)
-	leg_l = _limb(hips, Vector3(-0.16, 0.0, 0), 0.12, 0.9, trunks, gear, true)
-	leg_r = _limb(hips, Vector3(0.16, 0.0, 0), 0.12, 0.9, trunks, gear, true)
+	# Arms: shoulder -> elbow -> fist
+	arm_l = _build_arm(-1, skin, skin_dark, tape)
+	arm_r = _build_arm(1, skin, skin_dark, tape)
+
+	# Legs: hip -> knee -> boot
+	leg_l = _build_leg(-1, legs_mat, gear, boots)
+	leg_r = _build_leg(1, legs_mat, gear, boots)
+
+
+func _build_arm(side: int, skin: Material, skin_dark: Material, tape: Material) -> Node3D:
+	var sh := _pivot(torso, Vector3(0.47 * side, 0.63, 0))
+	_ball(sh, 0.15, Vector3(0, -0.02, 0), skin, Vector3(1.0, 0.95, 1.0), 6)               # deltoid
+	_prism(sh, 0.115, 0.09, 0.36, Vector3(0, -0.2, 0), skin)                             # upper arm
+	_ball(sh, 0.085, Vector3(0, -0.2, 0.06), skin_dark, Vector3(0.9, 1.4, 0.8), 5)        # bicep
+	var el := _pivot(sh, Vector3(0, -0.37, 0))
+	if side < 0:
+		elbow_l = el
+	else:
+		elbow_r = el
+	_prism(el, 0.09, 0.075, 0.32, Vector3(0, -0.15, 0), skin)                            # forearm
+	_prism(el, 0.082, 0.082, 0.08, Vector3(0, -0.29, 0), tape)                           # wrist tape
+	_box(el, Vector3(0.15, 0.15, 0.16), Vector3(0, -0.39, 0.01), skin)                   # fist
+	return sh
+
+
+func _build_leg(side: int, legs_mat: Material, gear: Material, boots: Material) -> Node3D:
+	var hp := _pivot(hips, Vector3(0.15 * side, -0.05, 0))
+	_prism(hp, 0.145, 0.11, 0.44, Vector3(0, -0.21, 0), legs_mat)                        # thigh
+	var kn := _pivot(hp, Vector3(0, -0.44, 0))
+	if side < 0:
+		knee_l = kn
+	else:
+		knee_r = kn
+	_box(kn, Vector3(0.21, 0.15, 0.2), Vector3(0, -0.01, 0.03), gear)                    # kneepad
+	_prism(kn, 0.105, 0.085, 0.3, Vector3(0, -0.17, 0), legs_mat)                        # shin
+	_prism(kn, 0.11, 0.115, 0.17, Vector3(0, -0.33, 0), boots)                           # boot top
+	_box(kn, Vector3(0.19, 0.12, 0.3), Vector3(0, -0.44, 0.05), boots)                   # boot foot
+	_box(kn, Vector3(0.2, 0.03, 0.31), Vector3(0, -0.36, 0.05), gear)  # boot trim
+	return hp
 
 
 # ---------------------------------------------------------------- helpers
@@ -637,6 +761,10 @@ func _update_pose(delta: float) -> void:
 	var ll := Vector3.ZERO
 	var lr := Vector3.ZERO
 	var hip := Vector3.ZERO
+	var el_l := Vector3(-0.6, 0, 0)  # elbows: -x bends the forearm forward/up
+	var el_r := Vector3(-0.6, 0, 0)
+	var kn_l := 0.12  # knees: +x bends the shin back
+	var kn_r := 0.12
 	var root_x := 0.0
 	var root_y := 0.0
 	var direct := false
@@ -644,40 +772,63 @@ func _update_pose(delta: float) -> void:
 	match state:
 		S.IDLE:
 			var b := sin(anim_clock * 3.0)
-			al.x = -0.55 + b * 0.06
-			ar.x = -0.55 - b * 0.06
-			hip.x = 0.08
-			ll.x = 0.15
-			lr.x = -0.15
+			al.x = -0.4 + b * 0.06
+			ar.x = -0.4 - b * 0.06
+			el_l.x = -1.25
+			el_r.x = -1.25
+			hip.x = 0.14
+			ll.x = -0.15
+			lr.x = -0.35
+			kn_l = 0.35
+			kn_r = 0.45
 		S.WALK:
 			var s := sin(anim_clock * 9.0)
 			ll.x = s * 0.6
 			lr.x = -s * 0.6
 			al.x = -0.4 - s * 0.45
 			ar.x = -0.4 + s * 0.45
+			el_l.x = -1.0
+			el_r.x = -1.0
+			kn_l = 0.1 + max(0.0, s) * 0.8
+			kn_r = 0.1 + max(0.0, -s) * 0.8
 		S.RUN:
 			var s := sin(anim_clock * 15.0)
 			ll.x = s * 1.0
 			lr.x = -s * 1.0
 			al.x = -0.4 - s * 0.9
 			ar.x = -0.4 + s * 0.9
+			el_l.x = -1.5
+			el_r.x = -1.5
+			kn_l = 0.2 + max(0.0, s) * 1.4
+			kn_r = 0.2 + max(0.0, -s) * 1.4
 			hip.x = 0.3
 		S.PUNCH:
 			var p: float = clamp(t / 0.14, 0.0, 1.0) if t < 0.14 else clamp(1.0 - (t - 0.14) / 0.24, 0.0, 1.0)
 			ar.x = lerp(-0.6, -1.65, p)
-			al.x = -0.9
+			al.x = -0.6
+			el_r.x = lerp(-1.4, -0.05, p)
+			el_l.x = -1.4
+			kn_l = 0.3
+			kn_r = 0.3
 			hip.y = 0.45 * p
 			hip.x = 0.15 * p
 		S.RUN_ATTACK:
 			al.z = -1.5
 			ar.z = 1.5
+			el_l.x = 0.0
+			el_r.x = 0.0
 			hip.x = 0.3
 			ll.x = 0.5
 			lr.x = -0.4
+			kn_r = 0.6
 		S.STUNNED:
 			hip.x = -0.35
 			al.x = 0.4
 			ar.x = 0.3
+			el_l.x = -0.3
+			el_r.x = -0.3
+			kn_l = 0.35
+			kn_r = 0.35
 		S.TIEUP_ATK, S.TIEUP_DEF:
 			al = Vector3(-1.35, 0, 0.3)
 			ar = Vector3(-1.35, 0, -0.3)
@@ -685,17 +836,29 @@ func _update_pose(delta: float) -> void:
 			hip.z = sin(anim_clock * 18.0) * 0.05
 			ll.x = 0.35
 			lr.x = -0.35
+			el_l.x = -0.75
+			el_r.x = -0.75
+			kn_l = 0.5
+			kn_r = 0.3
 		S.THROWING:
 			var p: float = sin(clamp(t / throw_time, 0.0, 1.0) * PI)
 			al.x = lerp(-1.4, -3.0, p)
 			ar.x = lerp(-1.4, -3.0, p)
 			hip.x = lerp(0.3, -0.45, p)
+			el_l.x = -0.4
+			el_r.x = -0.4
+			kn_l = 0.3
+			kn_r = 0.3
 		S.THROWN:
 			var p: float = clamp(t / throw_time, 0.0, 1.0)
 			root_x = lerp(0.0, throw_end_angle, p)
 			root_y = sin(p * PI) * throw_height + 0.25 * p
 			al.z = -1.3
 			ar.z = 1.3
+			el_l.x = -0.3
+			el_r.x = -0.3
+			kn_l = 0.7
+			kn_r = 0.3
 			direct = true
 		S.DOWN, S.PINNED, S.LOSE:
 			root_x = -PI / 2
@@ -704,6 +867,10 @@ func _update_pose(delta: float) -> void:
 			ar = Vector3(0, 0, 0.7)
 			ll.z = -0.2
 			lr.z = 0.2
+			ll.x = -0.6
+			kn_l = 1.1
+			el_l.x = -0.2
+			el_r.x = -0.2
 			if state == S.PINNED:
 				al.x = sin(anim_clock * 12.0) * 0.4
 				ar.x = -sin(anim_clock * 12.0) * 0.4
@@ -713,15 +880,28 @@ func _update_pose(delta: float) -> void:
 			root_y = lerp(0.25, 0.0, p)
 			al.x = -0.8
 			ar.x = -0.8
+			ll.x = lerp(-1.2, 0.0, p)
+			lr.x = lerp(-0.4, 0.0, p)
+			kn_l = lerp(1.6, 0.1, p)
+			kn_r = lerp(1.0, 0.1, p)
 			direct = true
 		S.PINNING:
 			root_x = PI / 2 * 0.95
 			root_y = 0.55
 			al.x = -0.6
 			ar.x = -0.6
+			el_l.x = -0.9
+			el_r.x = -0.9
+			kn_l = 0.9
+			kn_r = 0.9
 		S.TAUNT, S.WIN:
-			al.z = -2.6
-			ar.z = 2.6
+			# double-bicep flex
+			al = Vector3(0, 0, -1.45)
+			ar = Vector3(0, 0, 1.45)
+			el_l = Vector3(0, 0, -1.6)
+			el_r = Vector3(0, 0, 1.6)
+			kn_l = 0.25
+			kn_r = 0.25
 			root_y = abs(sin(t * 6.0)) * 0.15
 			hip.y = sin(t * 3.0) * 0.3
 
@@ -731,6 +911,10 @@ func _update_pose(delta: float) -> void:
 	leg_l.rotation = leg_l.rotation.lerp(ll, k)
 	leg_r.rotation = leg_r.rotation.lerp(lr, k)
 	hips.rotation = hips.rotation.lerp(hip, k)
+	elbow_l.rotation = elbow_l.rotation.lerp(el_l, k)
+	elbow_r.rotation = elbow_r.rotation.lerp(el_r, k)
+	knee_l.rotation.x = lerp(knee_l.rotation.x, kn_l, k)
+	knee_r.rotation.x = lerp(knee_r.rotation.x, kn_r, k)
 	if direct:
 		pose_root.rotation.x = root_x
 		pose_root.position.y = root_y
