@@ -1,9 +1,15 @@
-# City 2 City Wrestling (prototype)
+# City 2 City Wrestling — Backyard Brawl
 
-A 3D grappling-style pro wrestling prototype in the spirit of late-90s console
-wrestling games, built for **Xogot** (Godot 4 on iPad / iPhone). Everything
-(ring, crowd, wrestlers, animations, HUD, sound) is generated in GDScript, so there
-are no assets to import.
+A 3D hardcore **backyard** wrestling game in the spirit of late-90s / early-2000s console brawlers, built
+for **Xogot** (Godot 4 on iPad / iPhone). A homemade ring in a suburban backyard at night, string lights,
+the neighbors' kids watching from lawn chairs, and two friends in street clothes beating each other with
+steel chairs, trash cans and 2x4s, putting each other through folding tables and diving off the
+turnbuckles. Comedic-hardcore, PG-13: no blood, just bad decisions.
+
+**TANK MAGRUDER** (you) vs. **LIL PELIGRO** (CPU), first pin wins.
+
+Everything (yard, ring, crowd, wrestlers, weapons, animations, HUD, sound) is generated in GDScript, so
+there are no assets to import.
 
 ## Open it in Xogot
 **On iPhone / iPad (Files app):**
@@ -20,15 +26,17 @@ It also runs in desktop Godot 4.4+ (mouse clicks act as touches). Tap **?** in-g
 ## Controls
 | Action | Touch | Keyboard |
 |---|---|---|
-| Move / aim moves | Left-side joystick (touch anywhere on the left) | WASD / arrows |
-| Strike | PUNCH (red) | J or Z |
-| Grab: tap = weak lock-up, hold = strong lock-up | GRAB | K or X |
-| Run / stop · Irish whip in a lock-up | RUN | L or C |
-| Pin a downed opponent / Taunt | PIN / TAUNT | Space or V |
+| Move / aim moves and dives | Left-side joystick (touch anywhere on the left) | WASD / arrows |
+| Strike · swing a weapon | PUNCH (red) | J or Z |
+| Grab: tap = weak lock-up, hold = strong · pick up / drop items · tables | GRAB | K or X |
+| Run / stop · Irish whip in a lock-up · climb a corner | RUN | L or C |
+| Pin a downed opponent / Taunt · throw the held item | PIN / TAUNT | Space or V |
 | Rematch | REMATCH button | R / Enter |
 
-The buttons relabel themselves for the current situation (e.g. KNEE / SLAM in a lock-up, REVERSE! when a
-counter is possible), and a hint bar at the bottom shows what each button does right now.
+The buttons relabel themselves for the current situation (KNEE / SLAM in a lock-up, PICK UP next to a
+chair, SWING / DROP / THROW while holding one, ON TABLE and SMASH! for table spots, CLIMB next to a corner,
+DIVE! on the top turnbuckle, REVERSE! when a counter is possible), and a hint bar at the bottom shows what
+each button does right now.
 
 ## Moves
 **Strikes.** PUNCH stuns; three in a row is a knockdown. RUN, then STRIKE: running Clothesline.
@@ -71,14 +79,45 @@ more while he's down, but has a 6 s cooldown and is cut short if you get hit. A 
 **SPECIAL** for 15 seconds: in any lock-up, STICK+GRAB is the **THUNDER DRIVER!!**. Unused, the meter
 drains back to 80%.
 
+**Weapons.** A steel chair, a trash can and a 2x4 lie around the ring.
+- GRAB next to an item (when the opponent isn't standing in grab range): pick it up.
+- Holding it: STRIKE swings it (a ground shot if he's down or on a table); RUN, then STRIKE: running swing;
+  PIN throws it at him (hits if he's standing in front of you, within about 6 m; if he's down right next to
+  you, PIN drops it and covers instead); GRAB drops it.
+- Getting hit or grappled makes you drop it. Items wear out and break.
+
+**Tables.** A folding table leans against a corner post.
+- GRAB next to the folded table: set it up in front of you.
+- GRAB next to a downed opponent near the standing table: drag him onto it.
+- STRIKE next to an opponent lying on the table (or RUN, then STRIKE): leap onto him, **THROUGH THE TABLE!**
+- Any slam or throw that lands next to a standing table also goes through it, and so does a dive off the
+  top onto someone lying on one.
+
+**High flying.**
+- RUN toward a corner post when you're next to it: climb to the top turnbuckle.
+- On top: STRIKE dives, GRAB hops down to the mat, RUN climbs back down. A strike while you're climbing or
+  perched knocks you off the top (sometimes right onto the turnbuckle).
+- Dives at a downed opponent (the stick picks the dive): no stick or stick toward him: **Backyard Splash**;
+  stick away: **Moonsault**; stick sideways: **Flying Elbow off the top**; with SPECIAL lit:
+  **GUTTER STAR PRESS!!!**
+- Dives at a standing opponent: STRIKE: **Flying Crossbody**; STICK+STRIKE: **Missile Dropkick**.
+  Miss (or fly too far) and it's you who crashes.
+- Springboards: STRIKE right after you bounce off the ropes while running: **Springboard Forearm**, or a
+  **Springboard Moonsault** onto a standing opponent a few steps away.
+- Corner spots: Irish-whip him into a corner (aim the whip diagonally) and he slumps in the turnbuckle.
+  Then RUN, then STRIKE: **Corner Splash**; or GRAB him up close: **SUPER DROP!!** off the top.
+
 ## Code map
-- `scripts/main.gd`: arena, crowd, camera, HUD (bars, hints, HOW TO PLAY panel), match flow, input
-- `scripts/wrestler.gd`: wrestler body, state machine, move list (`MOVES`), reversals, pins, CPU AI,
-  procedural animation
+- `scripts/main.gd`: backyard and ring, crowd, camera, HUD (bars, hints, context button labels, HOW TO
+  PLAY panel), match flow, input
+- `scripts/wrestler.gd`: wrestler body, state machine, move list (`MOVES`), reversals, pins, weapons and
+  table logic, high flying (climbs, dives, springboards, corner spots), CPU AI, procedural animation
+- `scripts/weapons.gd`: the item manager: chairs, trash can, 2x4, folding table (pick up, drop, throw,
+  set up, break into splinters)
 - `scripts/touch_controls.gd`: on-screen joystick and context-labelled buttons
 - `scripts/audio.gd`: procedurally synthesized sound effects and crowd ambience (no audio assets)
-- `scripts/fx.gd`: pooled hit sparks, mat dust puffs and screen flash
+- `scripts/fx.gd`: pooled hit sparks, dust puffs, table splinters and debris, screen flash
 
 ## Not done yet (ideas for next steps)
-Out-of-ring action, turnbuckle / top-rope moves, front/back grapple variations, submissions, more
-wrestlers and character select, tag matches, music, real models and animations.
+Out-of-ring brawling in the yard; more weapons (ladders, cookie sheets, trampoline spots); character
+select; create-a-wrestler; tag and hardcore matches; front/back grapple variations, submissions, music.

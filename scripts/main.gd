@@ -1840,13 +1840,13 @@ func _build_help_panel() -> PanelContainer:
 	col.add_theme_constant_override("separation", 4)
 	panel.add_child(col)
 	var title := _big_label(32)
-	title.text = "HOW TO PLAY"
+	title.text = "CITY 2 CITY WRESTLING — HOW TO PLAY"
 	title.add_theme_font_override("font", hud_font_italic)
 	title.add_theme_color_override("font_color", HUD_GOLD)
 	title.add_theme_constant_override("outline_size", 8)
 	col.add_child(title)
 
-	# Two columns of sections: [header, rows, first_row_is_column_header].
+	# Three columns of sections: [header, rows, first_row_is_column_header].
 	# STRIKE is the red PUNCH button; STICK+ means "hold a direction while pressing".
 	var left: Array = [
 		["CONTROLS", [
@@ -1894,11 +1894,33 @@ func _build_help_panel() -> PanelContainer:
 			["SPECIAL", "Full meter = 15s to hit the finisher"],
 		], false],
 	]
+	var third: Array = [
+		["WEAPONS & TABLES", [
+			["GRAB", "Pick up a chair, can or 2x4"],
+			["HOLDING", "STRIKE: Swing  PIN: Throw  GRAB: Drop"],
+			["RUN+STRIKE", "Running swing"],
+			["TABLE", "GRAB by the folded table: set it up"],
+			["", "GRAB a downed foe by it: lay him on"],
+			["", "STRIKE: send him THROUGH it!"],
+		], false],
+		["HIGH FLYING", [
+			["RUN", "At a corner: climb the turnbuckle"],
+			["ON TOP", "STRIKE: Dive  GRAB: Hop  RUN: Down"],
+			["FOE DOWN", "Backyard Splash  (STICK toward)"],
+			["", "STICK away: Moonsault"],
+			["", "STICK sideways: Flying Elbow"],
+			["FOE UP", "Crossbody  /  STICK: Missile Dropkick"],
+			["SPECIAL", "Gutter Star Press (foe down)"],
+			["ROPES", "STRIKE off a bounce: Springboard"],
+			["CORNER", "Whip him in, RUN+STRIKE: Splash"],
+			["", "or GRAB: Super Drop"],
+		], false],
+	]
 	var columns := HBoxContainer.new()
 	columns.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	columns.add_theme_constant_override("separation", 36)
+	columns.add_theme_constant_override("separation", 28)
 	col.add_child(columns)
-	for side in [left, right]:
+	for side in [left, right, third]:
 		var sections: Array = side
 		var vbox := VBoxContainer.new()
 		vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -2173,6 +2195,14 @@ func _text_u(x0: float, dir: float, u: float, width: float, y: float, text: Stri
 	bar_canvas.draw_string(font, pos, text, align, width, size, col)
 
 
+## Largest font size <= size (down to 14) at which text fits in width.
+func _fit_font_size(font: Font, text: String, size: int, width: float) -> int:
+	var w: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
+	if w <= width or w <= 0.0:
+		return size
+	return maxi(14, int(floor(float(size) * width / w)))
+
+
 func _initials(n: String) -> String:
 	var out := ""
 	for part in n.split(" ", false):
@@ -2227,7 +2257,8 @@ func _draw_player_bar(w: Node3D, d: Dictionary, sr: Rect2, side_w: float) -> voi
 	# Name plate.
 	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1 - 30.0, top, 26.0, HUD_SLANT, 0.0), Color(0, 0, 0, 0.7))
 	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1 - 30.0, top + 23.0, 3.0, HUD_SLANT * 0.12, 0.0), gear.lightened(0.2))
-	_text_u(x0, dir, u0 + 12.0, plate_w - 110.0, top + 21.0, nm, 22, gear.lightened(0.5), hud_font_italic, 5)
+	var name_w := plate_w - 110.0
+	_text_u(x0, dir, u0 + 12.0, name_w, top + 21.0, nm, _fit_font_size(hud_font_italic, nm, 22, name_w), gear.lightened(0.5), hud_font_italic, 5)
 	var tag := "CPU" if cpu else "1P"
 	var tag_w := 50.0
 	var tag_u := u1 - 30.0 - tag_w - 6.0
@@ -2300,41 +2331,160 @@ func _show_reverse() -> bool:
 	return rev > 0.0 and rev + age >= REVERSE_MIN_WINDOW
 
 
+# ---- context helpers for hints and button labels (weapons / tables / high flying)
+# These mirror the checks in wrestler.gd ("# ---- weapons", "# ---- high flying").
+
+const HUD_CORNER_POST := 4.15     # corner posts at local (±4.15, ±4.15)
+const HUD_CLIMB_RANGE := 1.1      # wrestler.gd HF_CLIMB_RANGE
+const HUD_SPRING_WINDOW := 0.35   # wrestler.gd HF_SPRING_WINDOW
+
+
+func _p_dist() -> float:
+	var a: Vector3 = p1.position
+	var b: Vector3 = p2.position
+	return Vector2(a.x - b.x, a.z - b.z).length()
+
+
+func _hud_holding() -> bool:
+	var it = p1.held_item
+	return it != null and is_instance_valid(it)
+
+
+func _hud_item_name(kind: String) -> String:
+	match kind:
+		"chair":
+			return "the steel chair"
+		"trash_can":
+			return "the trash can"
+		"plank":
+			return "the 2x4"
+	return "it"
+
+
+## What GRAB would do with the props for p1 right now (IDLE / WALK, empty-handed):
+## "on_table" (put the downed opponent on a standing table), "pick_up:<kind>",
+## "table" (set up the folded table) or "".
+func _hud_item_context() -> String:
+	var mgr = p1.items
+	if mgr == null or not is_instance_valid(mgr) or _hud_holding():
+		return ""
+	var opp: int = p2.state
+	var dist := _p_dist()
+	var a: Vector3 = p1.position
+	var b: Vector3 = p2.position
+	if opp == Wrestler.S.DOWN and dist < 1.8:
+		var t: Node3D = mgr.table_under(b, 2.6)
+		if t != null:
+			return "on_table"
+	var opp_up: bool = p2.is_standing()
+	if opp_up and dist < 1.5:
+		return ""  # GRAB means a lock-up here
+	var it: Node3D = mgr.nearest_item(a, 1.3)
+	if it != null:
+		var ip: Vector3 = it.position
+		var idist := Vector2(ip.x - a.x, ip.z - a.z).length()
+		if not (opp == Wrestler.S.DOWN and dist < 1.6 and dist < idist):
+			var k: String = it.get("kind")
+			return "pick_up:" + k
+	if mgr.has_method("nearest_folded_table"):
+		var ft: Node3D = mgr.nearest_folded_table(a, 1.5)
+		if ft != null:
+			return "table"
+	return ""
+
+
+## True when RUN would climb the nearest turnbuckle (within range, opponent not in that corner).
+func _hud_can_climb() -> bool:
+	var a: Vector3 = p1.position
+	var sx := -1.0 if a.x < 0.0 else 1.0
+	var sz := -1.0 if a.z < 0.0 else 1.0
+	var post := Vector2(sx * HUD_CORNER_POST, sz * HUD_CORNER_POST)
+	if post.distance_to(Vector2(a.x, a.z)) > HUD_CLIMB_RANGE:
+		return false
+	var b: Vector3 = p2.position
+	return post.distance_to(Vector2(b.x, b.z)) >= 1.2
+
+
+## True inside the springboard window right after p1 bounces off the ropes.
+func _hud_spring_ready() -> bool:
+	var whipped: bool = p1.whipped
+	var clock: float = p1.anim_clock
+	var rope_at: float = p1.hf_rope_at
+	return not whipped and clock - rope_at <= HUD_SPRING_WINDOW and p2.state != Wrestler.S.DOWN
+
+
 func _hint_text() -> String:
 	var st: int = p1.state
 	var opp: int = p2.state
 	var special: bool = p1.is_special_ready()
 	var lockout: float = p1.reversal_lockout
-	var a: Vector3 = p1.position
-	var b: Vector3 = p2.position
-	var near := Vector2(a.x - b.x, a.z - b.z).length() < 1.7
+	var dist := _p_dist()
+	var near := dist < 1.7
 	if _show_reverse():
 		return "REVERSE!  Tap GRAB or STRIKE NOW!"
 	if st == Wrestler.S.TIEUP_ATK:
 		var strong: bool = p1.tie_strong
 		if strong:
 			var fin_s := "THUNDER DRIVER!" if special else "Neckbreaker"
-			return "STRONG LOCK-UP!   RUN: Irish Whip\nSTRIKE: Tombstone   STICK+STRIKE: Powerbomb\nGRAB: Spinebuster   STICK+GRAB: " + fin_s
+			return "STRONG LOCK-UP!   RUN: Irish Whip (aim at a corner!)\nSTRIKE: Tombstone   STICK+STRIKE: Powerbomb\nGRAB: Spinebuster   STICK+GRAB: " + fin_s
 		var fin := "THUNDER DRIVER!" if special else "DDT"
-		return "LOCK-UP!   RUN: Irish Whip\nSTRIKE: Knee   STICK+STRIKE: Suplex\nGRAB: Slam   STICK+GRAB: " + fin
+		return "LOCK-UP!   RUN: Irish Whip (aim at a corner!)\nSTRIKE: Knee   STICK+STRIKE: Suplex\nGRAB: Slam   STICK+GRAB: " + fin
 	if st == Wrestler.S.TIEUP_DEF:
 		if lockout > 0.0:
 			return "TOO EARLY!  Wait for the move..."
 		return "CAUGHT!  Tap GRAB or STRIKE when the \"!\" appears to reverse"
 	if st == Wrestler.S.PINNED:
 		return "MASH ANY BUTTON TO KICK OUT!"
+	if st == Wrestler.S.PERCHED:
+		if opp == Wrestler.S.DOWN or opp == Wrestler.S.ON_TABLE:
+			if special:
+				return "DIVE!  SPECIAL: GUTTER STAR PRESS!!!"
+			return "DIVE!  Stick picks the move\nToward: Splash   Away: Moonsault   Side: Elbow"
+		return "DIVE!  STRIKE: Crossbody   STICK+STRIKE: Missile Dropkick\nGRAB: Hop down   RUN: Climb down"
+	if st == Wrestler.S.CLIMB:
+		return "Climbing the turnbuckle..."
+	if st == Wrestler.S.ON_TABLE:
+		return "Uh oh... you're laid out on the table!"
+	if st == Wrestler.S.CORNER_STUN:
+		return "Stuck in the corner!"
 	if st == Wrestler.S.GRAB_WINDUP:
 		return "Keep holding GRAB for a STRONG lock-up..."
 	if st == Wrestler.S.WHIPPING:
 		return "Here he comes!  STRIKE: Clothesline\nGRAB: Back Body Drop   STICK+GRAB: Powerslam"
 	if st == Wrestler.S.RUN:
+		if _hud_holding():
+			return "STRIKE: Running swing!      RUN: Stop"
+		if opp == Wrestler.S.ON_TABLE:
+			return "STRIKE: Leap through the table!"
+		if opp == Wrestler.S.CORNER_STUN:
+			return "STRIKE: Corner Splash!"
 		if opp == Wrestler.S.DOWN:
 			return "STRIKE: Elbow Drop      GRAB: Knee Drop"
-		return "STRIKE: Clothesline      RUN: Stop"
+		return "STRIKE: Clothesline   (right off the ropes: Springboard!)"
+	var free := st == Wrestler.S.IDLE or st == Wrestler.S.WALK
+	if free and _hud_holding():
+		if opp == Wrestler.S.DOWN and dist < 2.0:
+			return "STRIKE: Swing at him   PIN: Cover   GRAB: Drop"
+		return "STRIKE: Swing   PIN: Throw it   GRAB: Drop\nRUN, then STRIKE: Running swing"
+	if free and opp == Wrestler.S.ON_TABLE and dist < 2.2:
+		return "SMASH them through it!  Press STRIKE"
+	if free and opp == Wrestler.S.CORNER_STUN:
+		return "He's stuck in the corner!\nRUN, then STRIKE: Corner Splash   GRAB (close): SUPER DROP"
+	var ctx := _hud_item_context() if free else ""
+	if ctx == "on_table":
+		return "Table's set!  GRAB: Put him on it   PIN: Cover"
 	if opp == Wrestler.S.DOWN:
+		if free and _hud_can_climb():
+			return "He's down!  RUN: Climb the turnbuckle and fly!"
 		if near:
 			return "STRIKE: Stomp   GRAB: Pick up   PIN: Cover"
-		return "He's down!  Get close and PIN, or TAUNT from afar"
+		return "He's down!  Get close and PIN, climb a corner, or TAUNT"
+	if ctx.begins_with("pick_up:"):
+		return "GRAB: Pick up %s" % _hud_item_name(ctx.substr(8))
+	if ctx == "table":
+		return "GRAB: Set up the table"
+	if free and _hud_can_climb():
+		return "RUN: Climb the turnbuckle"
 	if special:
 		var secs: float = p1.special_timer
 		return "SPECIAL READY! (%ds)  Lock up, then STICK + GRAB" % int(ceil(secs))
@@ -2352,9 +2502,8 @@ func _update_touch_labels() -> void:
 	var special: bool = p1.is_special_ready()
 	var mv: Vector2 = p1.in_move
 	var dir_held := mv.length() > 0.5
-	var a: Vector3 = p1.position
-	var b: Vector3 = p2.position
-	var near := Vector2(a.x - b.x, a.z - b.z).length() < 1.7
+	var dist := _p_dist()
+	var near := dist < 1.7
 	var glow := "grapple" if special else ""
 	if match_over:
 		touch.set_labels("", "", "", "")
@@ -2365,6 +2514,13 @@ func _update_touch_labels() -> void:
 	elif st == Wrestler.S.PINNED:
 		touch.set_labels("MASH!", "MASH!", "MASH!", "MASH!")
 		glow = "all"
+	elif st == Wrestler.S.PERCHED:
+		touch.set_labels("DIVE!", "HOP", "DOWN", "")
+		glow = "strike"
+	elif st == Wrestler.S.CLIMB or st == Wrestler.S.DIVING or st == Wrestler.S.PERCH_FALL \
+			or st == Wrestler.S.ON_TABLE or st == Wrestler.S.CORNER_STUN:
+		touch.set_labels("", "", "", "")
+		glow = ""
 	elif st == Wrestler.S.TIEUP_ATK:
 		var strong: bool = p1.tie_strong
 		var grab_move: String
@@ -2388,20 +2544,57 @@ func _update_touch_labels() -> void:
 		touch.set_labels("LARIAT", "P.SLAM" if dir_held else "BACKDROP", "", "")
 		glow = ""
 	elif st == Wrestler.S.RUN:
-		if opp == Wrestler.S.DOWN:
+		if _hud_holding():
+			touch.set_labels("SWING", "STOP", "STOP", "")
+		elif opp == Wrestler.S.ON_TABLE and dist < 2.6:
+			touch.set_labels("SMASH!", "KNEE", "STOP", "")
+			glow = "strike"
+		elif opp == Wrestler.S.CORNER_STUN and dist < 3.4:
+			touch.set_labels("SPLASH", "STOP", "STOP", "")
+			glow = "strike"
+		elif _hud_spring_ready():
+			touch.set_labels("SPRING", "STOP", "STOP", "")
+			glow = "strike"
+		elif opp == Wrestler.S.DOWN:
 			touch.set_labels("ELBOW", "KNEE", "STOP", "")
 		else:
 			touch.set_labels("LARIAT", "STOP", "STOP", "")
-	elif opp == Wrestler.S.DOWN and near:
-		touch.set_labels("STOMP", "LIFT", "RUN", "PIN")
-		if not special:
-			glow = "pin"
 	else:
+		var free := st == Wrestler.S.IDLE or st == Wrestler.S.WALK
 		var cd: float = p1.taunt_cooldown
-		var pin_lbl := "PIN" if opp == Wrestler.S.DOWN else ("TAUNT" if cd <= 0.0 else "")
-		touch.set_labels("PUNCH", "GRAB", "RUN", pin_lbl)
+		var s_lbl := "PUNCH"
+		var g_lbl := "GRAB"
+		var r_lbl := "RUN"
+		var p_lbl := "PIN" if opp == Wrestler.S.DOWN else ("TAUNT" if cd <= 0.0 else "")
 		if opp == Wrestler.S.DOWN and not special:
 			glow = "pin"
+		if opp == Wrestler.S.DOWN and near:
+			s_lbl = "STOMP"
+			g_lbl = "LIFT"
+		if free and _hud_can_climb():
+			r_lbl = "CLIMB"
+		if free and _hud_holding():
+			s_lbl = "SWING"
+			g_lbl = "DROP"
+			p_lbl = "PIN" if (opp == Wrestler.S.DOWN and dist < 2.0) else "THROW"
+		elif free and opp == Wrestler.S.ON_TABLE and dist < 2.2:
+			s_lbl = "SMASH!"
+			glow = "strike"
+		elif free and opp == Wrestler.S.CORNER_STUN:
+			r_lbl = "SPLASH"
+			if dist < 1.6:
+				g_lbl = "SUPER"
+				glow = "grapple"
+		elif free:
+			var ctx := _hud_item_context()
+			if ctx == "on_table":
+				g_lbl = "ON TABLE"
+				glow = "grapple"
+			elif ctx.begins_with("pick_up:"):
+				g_lbl = "PICK UP"
+			elif ctx == "table":
+				g_lbl = "TABLE"
+		touch.set_labels(s_lbl, g_lbl, r_lbl, p_lbl)
 	touch.set_highlight(glow)
 
 
