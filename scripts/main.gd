@@ -2156,6 +2156,9 @@ var hint_panel: PanelContainer
 var hint_style: StyleBoxFlat
 var hint_max_w := 760.0  # widest the hint text may get (set by _layout_hud)
 const HINT_FONT := 21
+const HINT_INTRO_SECS := 20.0  # the hint strip stays up this long at the start
+const HINT_SHOW_SECS := 4.0    # ...and this long after each change
+var hint_age := 0.0
 const REVERSE_MIN_WINDOW := 0.25  # shorter reversal windows get no "REVERSE!" prompt
 var help_button: Button
 var help_panel: PanelContainer
@@ -2485,7 +2488,15 @@ func _build_help_panel() -> PanelContainer:
 		panel.pivot_offset = need * 0.5
 		panel.scale = Vector2(s, s)
 	panel.visibility_changed.connect(fit)
+	panel.visibility_changed.connect(_on_help_visibility)
 	return panel
+
+
+## The style overlay (its own CanvasLayer above the HUD) is hidden while the help panel is open.
+func _on_help_visibility() -> void:
+	for c in get_children():
+		if c is CanvasLayer and (c as CanvasLayer).get_script() == StyleHud:
+			(c as CanvasLayer).visible = not help_panel.visible
 
 
 func _build_win_panel() -> void:
@@ -2598,8 +2609,26 @@ func _pop(c: Control, from_scale: float, from_rot: float, secs: float) -> Tween:
 	return tw
 
 
+## Wrestler calls (secs <= 1.3) that are NOT big moments are dropped: the style popup already
+## names every move. Big = finishers / supers / 3-move chains ("!!"), near falls and kick-outs,
+## BRAWL MODE, tables, big combos, the shed roof.
+const HUD_BIG_CALLS := ["!!", "TABLE", "BRAWL", "KICK OUT", "KICKED OUT", "NEAR FALL", "SO CLOSE",
+	"TWO AND A HALF", "COMBO", "SHED ROOF", "SUPERCHARGED", "CHAIN BROKEN", "-MOVE CHAIN"]
+
+
+func _announce_is_big(text: String) -> bool:
+	var up := text.to_upper()
+	for k in HUD_BIG_CALLS:
+		var key: String = k
+		if up.contains(key):
+			return true
+	return false
+
+
 func _announce(text: String, secs: float) -> void:
 	if match_over and text != "":
+		return
+	if text != "" and secs <= 1.3 and not _announce_is_big(text):
 		return
 	announce_label.text = text
 	# Move names flash by quickly; longer calls (e.g. "FIGHT!") keep their own time.
@@ -3100,6 +3129,17 @@ func _hint_text() -> String:
 	return ""
 
 
+## Sets the four touch captions; a word already shown on an earlier button is blanked so no
+## two buttons ever carry the same caption.
+func _touch_labels(s_lbl: String, g_lbl: String, r_lbl: String, p_lbl: String) -> void:
+	var out: Array[String] = [s_lbl, g_lbl, r_lbl, p_lbl]
+	for i in range(1, out.size()):
+		for j in range(i):
+			if out[i] != "" and out[i] == out[j]:
+				out[i] = ""
+	touch.set_labels(out[0], out[1], out[2], out[3])
+
+
 func _update_touch_labels() -> void:
 	# Context-sensitive captions on the touch buttons.
 	if touch == null:
@@ -3113,35 +3153,35 @@ func _update_touch_labels() -> void:
 	var near := dist < 1.7
 	var glow := "grapple" if special else ""
 	if match_over:
-		touch.set_labels("", "", "", "")
+		_touch_labels("", "", "", "")
 		glow = ""
 	elif _show_reverse():
-		touch.set_labels("REVERSE!", "REVERSE!", "", "")
+		_touch_labels("REVERSE!", "COUNTER", "", "")
 		glow = "all"
 	elif st == Wrestler.S.PINNED:
-		touch.set_labels("MASH!", "MASH!", "MASH!", "MASH!")
+		_touch_labels("MASH!", "KICK", "OUT!", "")
 		glow = "all"
 	elif st == Wrestler.S.PERCHED:
-		touch.set_labels("DIVE!", "HOP", "DOWN", "")
+		_touch_labels("DIVE!", "HOP", "DOWN", "")
 		glow = "strike"
 	elif st == Wrestler.S.DIVING and str(p1.hf_move) != "corner_splash":
-		touch.set_labels("SPIN", "FLIP", "", "POSE")
+		_touch_labels("SPIN", "FLIP", "", "POSE")
 		glow = "all"
 	elif st == Wrestler.S.THROWING:
 		var links := _hud_chain_links()
 		if links.is_empty():
-			touch.set_labels("", "", "", "")
+			_touch_labels("", "", "", "")
 			glow = ""
 		else:
 			var s_ch := ""
 			if links.has("strike"):
 				s_ch = "STOMP" if str(links["strike"]) == "chain_stomp" else "ELBOW"
-			touch.set_labels(s_ch, "CHAIN!" if links.has("grab") else "", "", "")
+			_touch_labels(s_ch, "CHAIN!" if links.has("grab") else "", "", "")
 			glow = "grapple" if links.has("grab") else "strike"
 	elif st == Wrestler.S.CLIMB or st == Wrestler.S.DIVING or st == Wrestler.S.PERCH_FALL \
 			or st == Wrestler.S.ON_TABLE or st == Wrestler.S.CORNER_STUN \
 			or st == Wrestler.S.ROLL or st == Wrestler.S.JUGGLED:
-		touch.set_labels("", "", "", "")
+		_touch_labels("", "", "", "")
 		glow = ""
 	elif st == Wrestler.S.TIEUP_ATK:
 		var strong: bool = p1.tie_strong
@@ -3153,44 +3193,44 @@ func _update_touch_labels() -> void:
 		else:
 			grab_move = ("FINISH!" if special else "DDT") if dir_held else "SLAM"
 			strike_move = "SUPLEX" if dir_held else "KNEE"
-		touch.set_labels(strike_move, grab_move, "WHIP", "")
+		_touch_labels(strike_move, grab_move, "WHIP", "")
 		if not (special and dir_held):
 			glow = ""
 	elif st == Wrestler.S.TIEUP_DEF:
-		touch.set_labels("WAIT...", "WAIT...", "", "")
+		_touch_labels("WAIT...", "", "", "")
 		glow = ""
 	elif st == Wrestler.S.GRAB_WINDUP:
-		touch.set_labels("", "HOLD!", "", "")
+		_touch_labels("", "HOLD!", "", "")
 		glow = "grapple"
 	elif st == Wrestler.S.WHIPPING:
-		touch.set_labels("LARIAT", "P.SLAM" if dir_held else "BACKDROP", "", "")
+		_touch_labels("LARIAT", "P.SLAM" if dir_held else "BACKDROP", "", "")
 		glow = ""
 	elif _hud_juggle_ready():
 		var jh: int = p2.juggle_hits
-		touch.set_labels("KNEE" if jh < HUD_JUGGLE_MAX else "PUNCH", "CATCH", "LARIAT", "")
+		_touch_labels("KNEE" if jh < HUD_JUGGLE_MAX else "PUNCH", "CATCH", "LARIAT", "")
 		glow = "strike"
 	elif _hud_in_string():
 		var nk := _hud_next_strike()
 		var hit: bool = p1.strike_hit
-		touch.set_labels(str(HUD_STRIKE_LABELS.get(nk, "COMBO")), "LOCK-UP", "", "")
+		_touch_labels(str(HUD_STRIKE_LABELS.get(nk, "COMBO")), "LOCK-UP", "", "")
 		glow = "strike" if hit else ""
 	elif st == Wrestler.S.RUN:
 		var whipped: bool = p1.whipped
 		if _hud_holding():
-			touch.set_labels("SWING", "STOP", "STOP", "")
+			_touch_labels("SWING", "", "STOP", "")
 		elif opp == Wrestler.S.ON_TABLE and dist < 2.6:
-			touch.set_labels("SMASH!", "KNEE", "STOP", "")
+			_touch_labels("SMASH!", "KNEE", "STOP", "")
 			glow = "strike"
 		elif opp == Wrestler.S.CORNER_STUN and dist < 3.4:
-			touch.set_labels("SPLASH", "STOP", "STOP", "")
+			_touch_labels("SPLASH", "", "STOP", "")
 			glow = "strike"
 		elif not whipped and _hud_spring_ready():
-			touch.set_labels("SPRING", "SLING", "STOP", "")
+			_touch_labels("SPRING", "SLING", "STOP", "")
 			glow = "all"
 		elif opp == Wrestler.S.DOWN:
-			touch.set_labels("ELBOW", "KNEE", "STOP", "")
+			_touch_labels("ELBOW", "KNEE", "STOP", "")
 		else:
-			touch.set_labels("LARIAT", "STOP", "STOP", "")
+			_touch_labels("LARIAT", "", "STOP", "")
 	else:
 		var free := st == Wrestler.S.IDLE or st == Wrestler.S.WALK
 		var cd: float = p1.taunt_cooldown
@@ -3226,7 +3266,7 @@ func _update_touch_labels() -> void:
 				g_lbl = "PICK UP"
 			elif ctx == "table":
 				g_lbl = "TABLE"
-		touch.set_labels(s_lbl, g_lbl, r_lbl, p_lbl)
+		_touch_labels(s_lbl, g_lbl, r_lbl, p_lbl)
 	touch.set_highlight(glow)
 
 
@@ -3343,12 +3383,21 @@ func _update_hud(delta: float) -> void:
 	var hint := "" if match_over else _hint_text()
 	if hint != hint_label.text:
 		hint_label.text = hint
+		hint_age = 0.0
 		_fit_hint()
 		hint_panel.visible = hint != ""
 		# The strip re-sizes around the text by itself (zero offsets + grow); a quick fade-in.
 		if hint != "":
 			hint_panel.modulate.a = 0.0
 			create_tween().tween_property(hint_panel, "modulate:a", 1.0, 0.12)
+	hint_age += delta
+	# Shown during the first HINT_INTRO_SECS and for HINT_SHOW_SECS after each change (a new
+	# state / situation); urgent prompts (reverse, mash, caught) stay up. Otherwise it fades out.
+	if hint_panel.visible and hint_age > 0.2:
+		var st_h: int = p1.state
+		var urgent := _show_reverse() or st_h == Wrestler.S.PINNED or st_h == Wrestler.S.TIEUP_DEF
+		var keep := urgent or hud_clock < HINT_INTRO_SECS or hint_age < HINT_SHOW_SECS
+		hint_panel.modulate.a = clampf(hint_panel.modulate.a + (delta if keep else -delta) * 4.0, 0.0, 1.0)
 	if hint_panel.visible:
 		# Flat strip; it flashes dark red while the player must mash / wait.
 		var st: int = p1.state
