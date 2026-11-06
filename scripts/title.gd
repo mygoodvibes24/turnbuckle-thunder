@@ -192,7 +192,7 @@ func _process(delta: float) -> void:
 	frames += 1
 	var dt := minf(delta, 1.0 / 20.0)  # loading hitches pause the animation instead of skipping it
 	t += dt
-	input_lock = maxf(0.0, input_lock - dt)
+	input_lock = maxf(0.0, input_lock - delta)  # real time: slow frames must not eat inputs
 
 	# Headless (CI smoke test): run through the title, then into the match, so the
 	# match code keeps getting exercised by "Check for script errors".
@@ -366,7 +366,7 @@ func _press_start() -> void:
 	if phase == Phase.INTRO:
 		_finish_logo_intro()
 	phase = Phase.MENU
-	input_lock = 0.3
+	input_lock = 0.2
 	shake = maxf(shake, 0.6)
 	_snd("big_thud", -4.0)
 	_snd("cheer_small", -10.0)
@@ -451,7 +451,7 @@ func _show_loading() -> void:
 func _open_panel(key: String) -> void:
 	phase = Phase.PANEL
 	open_panel = key
-	input_lock = 0.25
+	input_lock = 0.15
 	dim.visible = true
 	dim.modulate.a = 0.0
 	for k: String in panels:
@@ -467,7 +467,7 @@ func _open_panel(key: String) -> void:
 func _close_panel() -> void:
 	phase = Phase.MENU
 	open_panel = ""
-	input_lock = 0.2
+	input_lock = 0.12
 	dim.visible = false
 	_snd("whoosh", -8.0)
 
@@ -529,7 +529,7 @@ func _animate_camera(dt: float) -> void:
 		return
 	var c := Vector3(0.05, 1.0, -0.05)
 	var yaw := 0.2 + 0.32 * sin(t * 0.11)
-	var dist := 4.7 + 0.45 * sin(t * 0.07 + 1.0)
+	var dist := 5.1 + 0.45 * sin(t * 0.07 + 1.0)
 	var hgt := 1.15 + 0.25 * sin(t * 0.09 + 0.4)
 	# A slow dolly in while the logo lands.
 	dist += 2.5 * (1.0 - _smooth(t / 4.0))
@@ -538,7 +538,7 @@ func _animate_camera(dt: float) -> void:
 	# Push the wrestlers to the right half of the screen (the logo / menu is on the left).
 	var vp := get_viewport().get_visible_rect().size
 	var aspect := vp.x / maxf(vp.y, 1.0)
-	camera.h_offset = -1.05 * clampf(aspect / 1.7778, 0.8, 1.4) * (dist / 4.7)
+	camera.h_offset = -1.3 * clampf(aspect / 1.7778, 0.8, 1.4) * (dist / 5.1)
 	var s := shake * shake
 	camera.v_offset = randf_range(-1.0, 1.0) * 0.05 * s
 	camera.h_offset += randf_range(-1.0, 1.0) * 0.05 * s
@@ -779,7 +779,7 @@ func _build_set() -> void:
 	var siding := _tex_mat(_siding_tex(), Color(0.85, 0.85, 0.9), Vector3(6, 6, 1))
 	_quad(Vector2(6.0, 4.2), Vector3(-5.2, 2.1, -0.6), siding, PI / 2)
 	_box(Vector3(0.1, 2.1, 1.0), Vector3(-5.15, 1.05, -1.4), _mat(Color(0.22, 0.17, 0.13)))   # back door
-	var win := _quad(Vector2(1.1, 0.8), Vector3(-5.14, 1.65, 0.8), _mat(Color(1.0, 0.72, 0.38), true, 1.1), PI / 2)
+	var win := _quad(Vector2(0.9, 0.7), Vector3(-5.14, 1.7, 0.6), _mat(Color(0.8, 0.5, 0.25), true, 0.45), PI / 2)
 	win.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	_box(Vector3(0.16, 0.22, 0.16), Vector3(-5.06, 2.45, -2.1), _mat(Color(1.0, 0.85, 0.55), true, 3.0))
 	_glow(Vector3(-4.95, 2.45, -2.1), 1.3, Color(1.0, 0.7, 0.4, 0.55))
@@ -807,7 +807,7 @@ func _build_set() -> void:
 	world.add_child(can)
 	var lid := _box(Vector3(0.66, 0.06, 0.66), Vector3(2.6, 0.88, -2.9), can_m)
 	lid.rotation.z = 0.12
-	var table := _box(Vector3(1.8, 0.75, 0.05), Vector3(-1.9, 0.9, -3.35), _mat(Color(0.75, 0.73, 0.68)))
+	var table := _box(Vector3(1.8, 0.75, 0.05), Vector3(-1.9, 0.9, -3.35), _mat(Color(0.45, 0.44, 0.42)))
 	table.rotation.x = -0.25
 	var chair_m := _mat(Color(0.2, 0.42, 0.55))
 	_box(Vector3(0.55, 0.06, 0.5), Vector3(3.6, 0.42, -1.4), chair_m, 0.5)
