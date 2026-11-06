@@ -534,51 +534,76 @@ func _mat(key: String) -> Material:
 	m.diffuse_mode = BaseMaterial3D.DIFFUSE_LAMBERT
 	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	m.texture_repeat = true
 	match key:
-		"metal":
-			m.albedo_texture = _noise_tex(16, 16, Color(0.6, 0.62, 0.65), 0.06, Color(0.4, 0.41, 0.43))
+		"metal":  # brushed steel chair / ladder: cool mid grey
+			m.albedo_texture = _noise_tex(16, 16, Color(0.5, 0.51, 0.52), 0.05, Color(0.36, 0.36, 0.37))
 		"dark_metal":
-			m.albedo_texture = _noise_tex(8, 8, Color(0.36, 0.37, 0.4), 0.05, Color(0.25, 0.25, 0.27))
+			m.albedo_texture = _noise_tex(16, 16, Color(0.3, 0.3, 0.31), 0.04, Color(0.22, 0.21, 0.2))
 		"rubber":
-			m.albedo_color = Color(0.08, 0.08, 0.08)
-		"can":
-			m.albedo_texture = _stripe_tex(32, 16, Color(0.66, 0.68, 0.66), Color(0.48, 0.5, 0.49), true)
-		"wood":
-			m.albedo_texture = _stripe_tex(8, 32, Color(0.78, 0.6, 0.38), Color(0.62, 0.45, 0.26), false)
-		"table_top":
-			m.albedo_texture = _stripe_tex(32, 16, Color(0.5, 0.33, 0.18), Color(0.4, 0.25, 0.13), false)
+			m.albedo_color = Color(0.09, 0.09, 0.09)
+		"can":  # galvanised trash can: dull grey ribs
+			m.albedo_texture = _stripe_tex(32, 16, Color(0.52, 0.53, 0.52), Color(0.42, 0.43, 0.42), true)
+		"wood":  # kendo stick / 2x4: pale worn wood
+			m.albedo_texture = _stripe_tex(8, 32, Color(0.6, 0.5, 0.36), Color(0.5, 0.4, 0.28), false)
+		"table_top":  # old folding-table laminate: dull brown
+			m.albedo_texture = _stripe_tex(32, 16, Color(0.4, 0.3, 0.2), Color(0.34, 0.25, 0.17), false)
 	_mats[key] = m
 	return m
 
 
-## Speckled metal with a couple of scuffs.
+## Soft brushed metal: low-contrast grain, a gentle light-to-dark gradient and a couple of scuffs.
+## Painted at 2x, bilinear-downsampled and mipmapped (soft N64 look, never pixel-sharp).
 func _noise_tex(w: int, h: int, base: Color, amt: float, scuff: Color) -> ImageTexture:
-	var img := Image.create(w, h, false, Image.FORMAT_RGB8)
-	for y in h:
-		for x in w:
-			var v := randf_range(-amt, amt)
+	var pw := w * 2
+	var ph := h * 2
+	var fn := FastNoiseLite.new()
+	fn.seed = randi()
+	fn.frequency = 0.12
+	fn.fractal_octaves = 2
+	var nz := fn.get_seamless_image(pw, ph)
+	var img := Image.create(pw, ph, false, Image.FORMAT_RGB8)
+	for y in ph:
+		var grad := 0.04 * cos(float(y) / ph * TAU)
+		for x in pw:
+			var v := (nz.get_pixel(x, y).r - 0.5) * 2.0 * amt + grad
 			img.set_pixel(x, y, Color(base.r + v, base.g + v, base.b + v))
 	for i in 2:
-		var sx := randi() % w
-		var sy := randi() % h
-		for k in 4:
-			img.set_pixel((sx + k) % w, (sy + (k >> 1)) % h, scuff)
+		var sx := randi() % pw
+		var sy := randi() % ph
+		for k in 8:
+			var px := (sx + k) % pw
+			var py := (sy + (k >> 1)) % ph
+			img.set_pixel(px, py, img.get_pixel(px, py).lerp(scuff, 0.6))
+	img.resize(w, h, Image.INTERPOLATE_BILINEAR)
+	img.generate_mipmaps()
 	return ImageTexture.create_from_image(img)
 
 
-## Grain stripes (wood) or corrugation (vertical = true, trash can ribs).
+## Soft grain stripes (wood) or rounded corrugation (vertical = true, trash can ribs).
 func _stripe_tex(w: int, h: int, a: Color, b: Color, vertical: bool) -> ImageTexture:
-	var img := Image.create(w, h, false, Image.FORMAT_RGB8)
+	var pw := w * 2
+	var ph := h * 2
+	var img := Image.create(pw, ph, false, Image.FORMAT_RGB8)
 	var phase := randf() * TAU
-	for y in h:
-		for x in w:
+	var fn := FastNoiseLite.new()
+	fn.seed = randi()
+	fn.frequency = 0.15
+	fn.fractal_octaves = 2
+	var nz := fn.get_seamless_image(pw, ph)
+	for y in ph:
+		for x in pw:
 			var c: Color
+			var n := nz.get_pixel(x, y).r
 			if vertical:
-				c = a if ((x >> 1) & 1) == 0 else b
+				# smooth ribs: a full cosine every 8 px (4 px at 1x), plus faint grime
+				var g := 0.5 + 0.5 * cos(float(x) / 8.0 * TAU)
+				c = a.lerp(b, clampf(g * 0.85 + (n - 0.5) * 0.3, 0.0, 1.0))
 			else:
-				var g := 0.5 + 0.5 * sin(float(x) * 0.9 + sin(float(y) * 0.4 + phase) * 1.5)
-				c = a.lerp(b, g * 0.8 + randf() * 0.15)
+				var g := 0.5 + 0.5 * sin(float(x) * 0.45 + sin(float(y) * 0.2 + phase) * 1.5 + n * 2.0)
+				c = a.lerp(b, clampf(g * 0.75 + (n - 0.5) * 0.3, 0.0, 1.0))
 			img.set_pixel(x, y, c)
+	img.resize(w, h, Image.INTERPOLATE_BILINEAR)
+	img.generate_mipmaps()
 	return ImageTexture.create_from_image(img)
