@@ -20,7 +20,13 @@ enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THRO
 	STOMP,        # stomping a downed opponent
 	GROUND_DROP,  # running elbow / knee drop onto a downed opponent (then lies DOWN briefly)
 	PICKUP,       # hauling a downed opponent back to their feet
-	LIFTED }      # being hauled up (ends dazed and STUNNED in front of the attacker)
+	LIFTED,       # being hauled up (ends dazed and STUNNED in front of the attacker)
+	# --- weapons (see "# ---- weapons") ---
+	PICKUP_ITEM,  # bending down to grab a chair / trash can / 2x4
+	SWING,        # swinging the held item (standing, running or onto a downed opponent)
+	THROW_ITEM,   # hurling the held item at the opponent
+	ON_TABLE,     # lying on top of a set-up table, waiting to be put through it
+	SET_TABLE }   # unfolding a table / dragging the downed opponent onto one
 
 const RING_HALF := 3.5        # throws always land inside this
 const ROPE_BOUNCE := 3.75     # runners rebound here (the ropes are at 4.15)
@@ -1176,11 +1182,13 @@ func set_state(s: int) -> void:
 		ground_hits = 0
 	if s == S.TIEUP_ATK or s == S.TIEUP_DEF:
 		ai_tie_delay = randf_range(0.35, 0.85) * (1.5 - ai_skill)
+	_weapons_on_state(s)  # weapons hook: drops the held item when hit / grappled
 
 
 func is_standing() -> bool:
 	return state in [S.IDLE, S.WALK, S.RUN, S.PUNCH, S.RUN_ATTACK, S.STUNNED, S.TAUNT,
-		S.WHIFF, S.GRAB_WINDUP, S.WHIPPING, S.STOMP]
+		S.WHIFF, S.GRAB_WINDUP, S.WHIPPING, S.STOMP,
+		S.PICKUP_ITEM, S.SWING, S.THROW_ITEM, S.SET_TABLE]  # weapons states
 
 
 func is_special_ready() -> bool:
@@ -1300,6 +1308,7 @@ func tick(delta: float) -> void:
 		_ai(delta)
 
 	_handle_reversal_input(delta)
+	_weapons_tick(delta)  # weapons hook: thrown-item hits, broken items
 	# Punch windows are CPU-only and too short to read, so they get no tell.
 	rev_tell.visible = reversal_window > 0.0 and reversal_kind != "punch"
 
@@ -1355,6 +1364,8 @@ func tick(delta: float) -> void:
 			_pinned(delta)
 		S.TAUNT:
 			_taunt()
+		S.PICKUP_ITEM, S.SWING, S.THROW_ITEM, S.ON_TABLE, S.SET_TABLE:
+			_weapons_state(delta)  # weapons hook
 
 	_separate()
 	_clamp_ring()
@@ -1459,6 +1470,8 @@ func _free_move(delta: float) -> void:
 		set_state(S.IDLE)
 	_face_opponent(delta)
 
+	if _weapons_free_input():
+		return  # weapons hook: swing / drop / throw / pick up / tables
 	var opp_down := _opp_state() == S.DOWN
 	var opp_dist := _flat_to_opponent().length()
 	if in_run:
@@ -1517,7 +1530,10 @@ func _run(delta: float) -> void:
 			set_state(S.IDLE)
 		return
 
-	var opp_down := _opp_state() == S.DOWN
+	if held_item != null and in_strike:
+		_start_swing(true)  # weapons hook: running swing
+		return
+	var opp_down := _opp_state() == S.DOWN or _opp_state() == S.ON_TABLE  # weapons: table counts
 	var dist := _flat_to_opponent().length()
 	if in_strike:
 		if opp_down and dist < 2.6:
@@ -1640,7 +1656,7 @@ func _ground_drop() -> void:
 	var key := current_move_key
 	var m: Dictionary = MOVES.get(key, MOVES["elbow_drop"])
 	var dmg: float = m["dmg"]
-	var landed := _opp_state() == S.DOWN and _flat_to_opponent().length() < 1.3
+	var landed := (_opp_state() == S.DOWN or _opp_state() == S.ON_TABLE) and _flat_to_opponent().length() < 1.3  # weapons: table
 	if landed:
 		opponent.receive_ground_hit(self, dmg, key)
 		announce.emit(m["name"])
@@ -1657,6 +1673,8 @@ func _ground_drop() -> void:
 
 ## Called on a downed defender by stomps / drops. Returns true if it connected.
 func receive_ground_hit(attacker: Node3D, dmg: float, key: String) -> bool:
+	if state == S.ON_TABLE:
+		return _weapons_ground_hit_on_table(attacker, dmg, key)  # weapons hook
 	if state != S.DOWN:
 		return false
 	take_damage(dmg)
@@ -1851,6 +1869,7 @@ func _thrown() -> void:
 		pose_root.position = Vector3(0.0, LIE_Y, 0.0)
 		impact.emit(clamp(pending_damage / 20.0, 0.3, 1.2))
 		sfx.emit("big_thud" if pending_damage >= 20.0 else "thud", clamp(pending_damage / 20.0, 0.3, 1.3), global_position + Vector3(0, 0.3, 0))
+		_weapons_check_table_landing()  # weapons hook: thrown through a table?
 
 
 # ---------------------------------------------------------------- Irish whip
@@ -2018,6 +2037,619 @@ func _pinned(delta: float) -> void:
 		sfx.emit("kickout", 1.0 if near_fall else 0.6, global_position + Vector3(0, 0.6, 0))
 
 
+# ---- weapons
+# Hardcore weapons. The props live in scripts/weapons.gd (`items` = the ItemManager, set by
+# main.gd; may be null). Controls (documented for the help panel):
+#   GRAB   near a free item (opponent not standing in grab range)  -> pick it up
+#   GRAB   near the folded table                                   -> set it up in front of you
+#   GRAB   next to a downed opponent near a standing table         -> drag them onto the table
+#   GRAB   while holding                                           -> drop it
+#   STRIKE while holding                                           -> swing (downed / on a table: ground shot)
+#   RUN, then STRIKE while holding                                 -> running swing
+#   PIN    while holding                                           -> throw it at the opponent (hits if they
+#                                                                     stand in front within 6 m); if they are
+#                                                                     down right next to you: drop it and cover
+#   STRIKE next to an opponent lying on a table                    -> leap onto them: THROUGH THE TABLE!
+# Any throw that lands within 0.8 m of a standing table also goes through it. Getting hit
+# or grappled while holding something drops it.
+
+const SWING_HIT := 0.3
+const SWING_END := 0.68
+const SWING_REACH := 1.6
+const ITEM_PICK_DIST := 1.3
+const TABLE_PLACE_DIST := 2.6   # a downed opponent this close to a standing table can be put on it
+const TABLE_BREAK_DMG := 12.0
+const TABLE_DOWN_TIME := 4.0
+const TABLE_TOP_Y := 0.79       # weapons.gd TABLE_HEIGHT: lying ON_TABLE raises the body this much
+const HOLD_OK_STATES := [S.IDLE, S.WALK, S.RUN, S.PICKUP_ITEM, S.SWING, S.THROW_ITEM, S.TAUNT, S.WIN]
+
+var items = null                    # the ItemManager (weapons.gd), or null
+var held_item: Node3D = null        # the item in our right hand
+var on_table: Node3D = null         # the table we lie on (ON_TABLE)
+var weapon_target: Node3D = null    # item / table the current PICKUP_ITEM / SET_TABLE is about
+var swing_running := false
+var item_flight := -1.0             # > 0: our thrown item is in the air; it arrives at 0
+var item_flight_to := Vector3.ZERO
+var item_flight_obj: Node3D = null
+var ai_item_goal: Node3D = null     # CPU: the item / folded table it is walking to
+var ai_item_goal_until := 0.0
+var ai_down_roll := -1.0            # CPU: one roll per knockdown for table plans
+
+
+func _item_ok(it) -> bool:
+	return is_instance_valid(it)
+
+
+func _item_kind(it) -> String:
+	if not _item_ok(it):
+		return ""
+	var k: String = it.get("kind")
+	return k
+
+
+func _item_mode(it) -> String:
+	if not _item_ok(it):
+		return "broken"
+	var m: String = it.get("mode")
+	return m
+
+
+func _item_sfx(kind: String) -> String:
+	match kind:
+		"chair":
+			return "chair_hit"
+		"trash_can":
+			return "metal_hit"
+	return "wood_hit"
+
+
+func _item_call(kind: String, how: String) -> String:
+	var n := "STEEL CHAIR"
+	match kind:
+		"trash_can":
+			n = "TRASH CAN"
+		"plank":
+			n = "2x4"
+	match how:
+		"run":
+			return "Running %s shot!" % n
+		"ground":
+			return "%s to the downed man!" % n
+		"throw":
+			return "%s thrown at the head!" % n
+	return "%s SHOT!" % n
+
+
+## set_state hook: anything but the free / weapon states drops what we hold.
+func _weapons_on_state(s: int) -> void:
+	if s != S.ON_TABLE:
+		on_table = null
+	if held_item != null and not (s in HOLD_OK_STATES):
+		_drop_held()
+
+
+func _drop_held() -> void:
+	var it := held_item
+	held_item = null
+	if not _item_ok(it) or items == null:
+		return
+	items.drop(it, position + facing * 0.45)
+
+
+## tick hook: forget broken items, resolve thrown items reaching their target.
+func _weapons_tick(delta: float) -> void:
+	# Items are queue_free()d when they break: forget any freed reference before use.
+	if not is_instance_valid(held_item):
+		held_item = null
+	if not is_instance_valid(on_table):
+		on_table = null
+	if not is_instance_valid(weapon_target):
+		weapon_target = null
+	if not is_instance_valid(item_flight_obj):
+		item_flight_obj = null
+	if not is_instance_valid(ai_item_goal):
+		ai_item_goal = null
+	if item_flight > 0.0:
+		item_flight -= delta
+		if item_flight <= 0.0:
+			_thrown_item_arrives()
+
+
+## _free_move hook (IDLE / WALK). Returns true when a weapon action used the input.
+func _weapons_free_input() -> bool:
+	if not (in_strike or in_grapple or in_pin):
+		return false
+	var os := _opp_state()
+	var dist := _flat_to_opponent().length()
+	if held_item != null:
+		if in_strike:
+			_start_swing(false)
+		elif in_grapple:
+			_drop_held()
+			sfx.emit("pickup_item", 0.3, global_position + Vector3(0, 0.5, 0))
+		elif in_pin:
+			if os == S.DOWN and dist < 2.0:
+				_drop_held()
+				return false  # the normal cover happens this same frame
+			_start_throw_item()
+		return true
+	if items == null:
+		return false
+	if in_strike and os == S.ON_TABLE and dist < 2.2:
+		_start_ground_drop("elbow_drop")  # leap onto the table (breaks it on landing)
+		return true
+	if not in_grapple:
+		return false
+	if os == S.DOWN and dist < 1.8:
+		var t: Node3D = items.table_under(opponent.position, TABLE_PLACE_DIST)
+		if t != null:
+			_start_place_on_table(t)
+			return true
+	var opp_up: bool = opponent.is_standing()
+	if opp_up and _in_front(1.5):
+		return false  # opponent in grab range: normal lock-up
+	var it: Node3D = items.nearest_item(position, ITEM_PICK_DIST)
+	if it != null:
+		var ip: Vector3 = it.position
+		var idist := Vector2(ip.x - position.x, ip.z - position.z).length()
+		if not (os == S.DOWN and dist < 1.6 and dist < idist):
+			_start_pickup_item(it)
+			return true
+	var ft: Node3D = items.nearest_folded_table(position, 1.5)
+	if ft != null:
+		_start_set_table(ft)
+		return true
+	return false
+
+
+## tick hook for the weapon states.
+func _weapons_state(delta: float) -> void:
+	match state:
+		S.PICKUP_ITEM:
+			if not hit_landed and state_time >= 0.2:
+				hit_landed = true
+				var it := weapon_target
+				weapon_target = null
+				var holder: Node = it.get("held_by") if _item_ok(it) else null
+				if items != null and _item_mode(it) == "floor" and holder == null:
+					held_item = it
+					items.pick_up(it, self)
+					sfx.emit("pickup_item", 0.6, _chest())
+					var k := _item_kind(it)
+					var label := "a steel chair" if k == "chair" else ("the trash can" if k == "trash_can" else "a 2x4")
+					announce.emit("%s grabs %s!" % [display_name, label])
+			if state_time >= 0.42:
+				set_state(S.IDLE)
+		S.SWING:
+			_swing(delta)
+		S.THROW_ITEM:
+			_throw_item_state()
+		S.ON_TABLE:
+			_on_table_state()
+		S.SET_TABLE:
+			_set_table_state()
+
+
+func _start_pickup_item(it: Node3D) -> void:
+	set_state(S.PICKUP_ITEM)
+	current_move_key = "pickup_item"
+	weapon_target = it
+	var ip: Vector3 = it.position
+	var d := ip - position
+	if Vector2(d.x, d.z).length() > 0.05:
+		_set_facing_angle(atan2(d.x, d.z))
+
+
+func _start_swing(running: bool) -> void:
+	set_state(S.SWING)
+	swing_running = running
+	current_move_key = "swing_run" if running else "swing"
+	if not running:
+		var os := _opp_state()
+		var dist := _flat_to_opponent().length()
+		if (os == S.DOWN or os == S.ON_TABLE) and dist < 2.2:
+			current_move_key = "swing_ground"
+		if dist < 3.0:
+			_snap_face_opponent()
+	sfx.emit("whoosh", 0.55, _chest())
+
+
+func _swing(delta: float) -> void:
+	var hit_at := 0.18 if swing_running else SWING_HIT
+	var end_at := 0.55 if swing_running else SWING_END
+	if swing_running:
+		var speed: float = lerpf(RUN_SPEED, 0.0, clampf(state_time / 0.45, 0.0, 1.0))
+		position += run_dir * speed * delta
+	if not hit_landed and state_time >= hit_at:
+		hit_landed = true
+		_swing_connect()
+	if state_time >= end_at:
+		set_state(S.IDLE)
+
+
+func _swing_connect() -> void:
+	var it := held_item
+	if not _item_ok(it):
+		return
+	var kind := _item_kind(it)
+	var dmg: float = it.get("damage")
+	var os := _opp_state()
+	var dist := _flat_to_opponent().length()
+	var hit := false
+	if (os == S.DOWN or os == S.ON_TABLE) and dist < 1.9:
+		var on_tbl := os == S.ON_TABLE
+		hit = opponent.receive_ground_hit(self, dmg * 0.8, "weapon")
+		if hit and not on_tbl:
+			announce.emit(_item_call(kind, "ground"))
+	else:
+		var opp_up: bool = opponent.is_standing()
+		if opp_up and _in_front(1.9 if swing_running else SWING_REACH):
+			hit = opponent.receive_strike(self, dmg, true)
+			if hit:
+				announce.emit(_item_call(kind, "run" if swing_running else "hit"))
+	if not hit:
+		return
+	var op: Vector3 = opponent.global_position
+	sfx.emit(_item_sfx(kind), 1.0, op + Vector3(0, 1.2, 0))
+	if items != null:
+		var gone: bool = items.damage_item(it, 1)
+		if gone:
+			held_item = null
+			announce.emit("It's destroyed!")
+
+
+func _start_throw_item() -> void:
+	set_state(S.THROW_ITEM)
+	current_move_key = "throw_item"
+	if _flat_to_opponent().length() < 6.0:
+		_snap_face_opponent()
+
+
+func _throw_item_state() -> void:
+	if not hit_landed and state_time >= 0.22:
+		hit_landed = true
+		var it := held_item
+		held_item = null  # before anything can set_state and "drop" it
+		if _item_ok(it) and items != null:
+			var opp_up: bool = opponent.is_standing()
+			var target_ok := opp_up and _in_front(6.0)
+			var op: Vector3 = opponent.position
+			var to: Vector3 = op if target_ok else position + facing * 3.5
+			items.throw_item(it, position + facing * 0.4 + Vector3(0, 1.5, 0), to)
+			sfx.emit("whoosh", 0.7, _chest())
+			if target_ok:
+				var ft: float = items.last_flight_time
+				item_flight = maxf(ft, 0.01)
+				item_flight_to = to
+				item_flight_obj = it
+	if state_time >= 0.5:
+		set_state(S.IDLE)
+
+
+func _thrown_item_arrives() -> void:
+	var it := item_flight_obj
+	item_flight_obj = null
+	var opp_up: bool = opponent.is_standing()
+	if not opp_up:
+		return
+	var op: Vector3 = opponent.position
+	if Vector2(op.x - item_flight_to.x, op.z - item_flight_to.z).length() > 1.0:
+		return  # they moved: it clatters onto the mat
+	var kind := "chair"
+	var dmg := 10.0
+	if _item_ok(it):
+		kind = _item_kind(it)
+		var d: float = it.get("damage")
+		dmg = d
+	if opponent.receive_strike(self, dmg, true):
+		announce.emit(_item_call(kind, "throw"))
+		var og: Vector3 = opponent.global_position
+		sfx.emit(_item_sfx(kind), 0.9, og + Vector3(0, 1.5, 0))
+		if _item_ok(it) and items != null:
+			items.damage_item(it, 1)
+
+
+# --- tables ---------------------------------------------------------------------------
+
+func _start_set_table(t: Node3D) -> void:
+	set_state(S.SET_TABLE)
+	current_move_key = "set_table"
+	weapon_target = t
+
+
+func _start_place_on_table(t: Node3D) -> void:
+	set_state(S.SET_TABLE)
+	current_move_key = "place_table"
+	weapon_target = t
+	_snap_face_opponent()
+	sfx.emit("grab", 0.5, _chest())
+
+
+func _set_table_state() -> void:
+	var t := weapon_target
+	if not hit_landed and state_time >= 0.35:
+		hit_landed = true
+		if _item_ok(t) and items != null:
+			if current_move_key == "place_table":
+				if _opp_state() == S.DOWN and _item_mode(t) == "standing":
+					opponent.lie_on_table(t)
+					# Step up beside the table, facing the body on it.
+					var tp: Vector3 = t.position
+					var op: Vector3 = opponent.position
+					var ax: Vector3 = t.basis.x
+					var across := Vector3(ax.z, 0.0, -ax.x).normalized()
+					if across.dot(position - tp) < 0.0:
+						across = -across
+					position = Vector3(op.x, 0.0, op.z) + across * 0.85
+					_snap_face_opponent()
+					announce.emit("%s lays him out on the table!" % display_name)
+					sfx.emit("whoa", 0.6, _chest())
+			elif _item_mode(t) == "folded":
+				items.set_up_table(t, position + facing * 1.3, rotation.y)
+				announce.emit("%s sets up a TABLE!" % display_name)
+				sfx.emit("metal_hit", 0.35, global_position + facing * 1.3 + Vector3(0, 0.8, 0))
+				sfx.emit("whoa", 0.5, _chest())
+	if state_time >= 0.7:
+		weapon_target = null
+		set_state(S.IDLE)
+
+
+## Puts us flat on our back on top of a standing table (state ON_TABLE). Public: a diving
+## opponent checks `state == S.ON_TABLE` and lands on us (receive_ground_hit / crash_through_table).
+## The body is raised visually (pose_root, TABLE_TOP_Y); position.y stays 0.
+func lie_on_table(table: Node3D) -> void:
+	if not _item_ok(table):
+		return
+	set_state(S.ON_TABLE)
+	on_table = table
+	var ax: Vector3 = table.basis.x
+	ax.y = 0.0
+	ax = ax.normalized() if ax.length() > 0.01 else Vector3.RIGHT
+	if ax.dot(facing) < 0.0:
+		ax = -ax
+	_set_facing_angle(atan2(ax.x, ax.z))
+	var tp: Vector3 = table.position
+	position = Vector3(tp.x, 0.0, tp.z) + ax * 0.2  # pelvis just past the middle, head on the table
+	down_duration = maxf(3.2, _down_time() + 1.2)
+	last_hit_tier = "ground"
+
+
+## Smashes the table we lie on (if it still stands) and drops us through it. Public.
+func crash_through_table(attacker: Node3D, dmg: float, emit_sfx := true) -> void:
+	var t := on_table
+	on_table = null
+	if items != null and _item_ok(t) and _item_mode(t) != "broken":
+		items.break_table(t)
+	take_damage(dmg + TABLE_BREAK_DMG)
+	if attacker != null:
+		attacker.gain_spirit((dmg + TABLE_BREAK_DMG) * 1.5)
+	set_state(S.DOWN)
+	down_duration = TABLE_DOWN_TIME + (1.0 - health / 100.0) * 1.5
+	last_hit_tier = "strong"
+	current_move_key = "table_crash"
+	impact.emit(1.1)
+	if emit_sfx:
+		sfx.emit("table_break", 1.2, global_position + Vector3(0, 0.6, 0))
+		sfx.emit("big_thud", 1.0, global_position + Vector3(0, 0.3, 0))
+	announce.emit("THROUGH THE TABLE!")
+
+
+func _on_table_state() -> void:
+	if _item_mode(on_table) != "standing":
+		# Someone broke the table from under us (e.g. a dive that called break_table).
+		crash_through_table(null, 0.0, false)
+		return
+	if state_time > down_duration:
+		# Roll off the side and get up.
+		position += Vector3(facing.z, 0.0, -facing.x) * 0.75
+		set_state(S.GETTING_UP)
+
+
+## receive_ground_hit hook while ON_TABLE: stomps just hurt, anything bigger (drops,
+## weapon shots, dives) puts us through the table.
+func _weapons_ground_hit_on_table(attacker: Node3D, dmg: float, key: String) -> bool:
+	if key == "stomp":
+		take_damage(dmg)
+		attacker.gain_spirit(dmg * 1.5)
+		current_move_key = key
+		sfx.emit("thud", 0.45, global_position + Vector3(0, TABLE_TOP_Y + 0.3, 0))
+		return true
+	crash_through_table(attacker, dmg)
+	return true
+
+
+## _thrown hook (just landed, already DOWN): a throw onto a standing table breaks it.
+func _weapons_check_table_landing() -> void:
+	if items == null:
+		return
+	var t: Node3D = items.table_under(throw_to, 0.8)
+	if t == null:
+		return
+	items.break_table(t)
+	take_damage(TABLE_BREAK_DMG)
+	opponent.gain_spirit(15.0)
+	down_duration = maxf(down_duration, TABLE_DOWN_TIME)
+	if last_hit_tier != "finisher":
+		last_hit_tier = "strong"
+	impact.emit(1.1)
+	sfx.emit("table_break", 1.2, global_position + Vector3(0, 0.6, 0))
+	announce.emit("THROUGH THE TABLE!")
+
+
+# --- CPU ------------------------------------------------------------------------------
+
+## _ai hook (we are IDLE / WALK). Returns true when it took over this frame's inputs.
+func _ai_weapons(dist: float, toward: Vector2, os: int, can_act: bool) -> bool:
+	if items == null:
+		return false
+	if os != S.DOWN:
+		ai_down_roll = -1.0
+	elif ai_down_roll < 0.0:
+		ai_down_roll = randf()
+	var opp_up: bool = opponent.is_standing()
+	# Holding something: use it.
+	if held_item != null:
+		if os == S.DOWN or os == S.ON_TABLE:
+			var opp_hp: float = opponent.health
+			var tier: String = opponent.last_hit_tier
+			if os == S.DOWN and (opp_hp < 45.0 or tier == "finisher" or tier == "strong"):
+				if can_act:
+					in_grapple = true  # drop it; the next decision goes for the cover
+					ai_timer = 0.25
+				return true
+			if dist > 1.5:
+				in_move = toward
+			elif can_act:
+				ai_timer = randf_range(0.5, 0.9)
+				in_strike = true
+			return true
+		if not opp_up:
+			return false
+		if dist > 1.45:
+			in_move = toward
+			if can_act:
+				ai_timer = randf_range(0.5, 0.9)
+				var r := randf()
+				if dist > 3.0 and dist < 6.0 and r < 0.12:
+					in_pin = true   # throw it
+				elif dist > 3.2 and r < 0.3:
+					in_run = true   # running swing (the RUN branch presses STRIKE)
+			return true
+		if can_act:
+			ai_timer = randf_range(0.5, 1.0) * (1.4 - 0.6 * ai_skill)
+			in_strike = true
+		return true
+	# Opponent lying on a table: put them through it.
+	if os == S.ON_TABLE:
+		if dist > 1.6:
+			in_move = toward
+		elif can_act:
+			ai_timer = 0.6
+			in_strike = true
+		return true
+	# Walking to a weapon / folded table chosen earlier.
+	if ai_item_goal != null:
+		var gm := _item_mode(ai_item_goal)
+		var holder: Node = ai_item_goal.get("held_by") if _item_ok(ai_item_goal) else null
+		if (gm != "floor" and gm != "folded") or holder != null or anim_clock > ai_item_goal_until \
+				or (opp_up and dist < 1.3):
+			ai_item_goal = null
+		else:
+			var gp: Vector3 = ai_item_goal.position
+			var d := gp - position
+			d.y = 0.0
+			if d.length() > 1.0:
+				in_move = Vector2(d.x, d.z).normalized()
+			else:
+				in_grapple = true
+				ai_item_goal = null
+				ai_timer = 0.4
+			return true
+	if not can_act:
+		return false
+	if os == S.DOWN:
+		var tier2: String = opponent.last_hit_tier
+		var opp_hp2: float = opponent.health
+		var pin_worthy := opp_hp2 < 55.0 or tier2 == "finisher"
+		var t: Node3D = items.table_under(opponent.position, TABLE_PLACE_DIST)
+		if t != null and ai_down_roll < 0.7 and not pin_worthy:
+			if dist > 1.5:
+				in_move = toward
+			else:
+				ai_timer = 0.5
+				in_grapple = true
+			return true
+		var od: float = opponent.down_duration
+		var ot: float = opponent.state_time
+		if ai_down_roll < 0.35 and not pin_worthy and od - ot > 1.5:
+			var ft: Node3D = items.nearest_folded_table(position, 12.0)
+			if ft != null:
+				ai_item_goal = ft
+				ai_item_goal_until = anim_clock + 3.0
+				return true
+	var near: Node3D = items.nearest_item(position, 2.0)
+	if near != null and not (opp_up and dist < 1.6):
+		ai_timer = randf_range(0.3, 0.6)
+		if randf() < 0.25:
+			ai_item_goal = near
+			ai_item_goal_until = anim_clock + 2.0
+			return true
+	return false
+
+
+# --- poses (minimal; the animation pass can refine these) ------------------------------
+
+func _pose_weapons() -> void:
+	var t := state_time
+	match state:
+		S.PICKUP_ITEM:
+			var b := _hump(t, 0.0, 0.42)
+			_stance(0.5 + 0.7 * b)
+			pt_tor = Vector3(0.2 + 0.9 * b, 0.0, 0.0)
+			pt_hd = Vector3(0.2 * b - 0.1, 0.0, 0.0)
+			pt_ar = Vector3(-0.6 - 0.9 * b, 0.0, 0.25)
+			pt_el_r = Vector3(-0.3, 0.0, 0.0)
+			pt_al = Vector3(-0.6 - 0.4 * b, 0.0, -0.3)
+			r_limb = 18.0
+		S.SWING:
+			var hit_at := 0.18 if swing_running else SWING_HIT
+			var end_at := 0.55 if swing_running else SWING_END
+			var up := _smooth(_seg(t, 0.0, hit_at * 0.6))
+			var down := _ease_in(_seg(t, hit_at * 0.6, hit_at))
+			var back := _smooth(_seg(t, hit_at + 0.1, end_at))
+			var raise := up * (1.0 - down)
+			var ext := down * (1.0 - back)
+			var low := 0.6 if current_move_key == "swing_ground" else 0.0
+			_stance(0.55 + 0.25 * ext + 0.3 * low * ext)
+			pt_tor = Vector3(0.15 - 0.2 * raise + (0.35 + low) * ext, 0.3 * raise - 0.3 * ext, 0.0)
+			pt_hd = Vector3(-0.1 + 0.2 * ext, 0.0, 0.0)
+			pt_ar = Vector3(-0.6 - 2.3 * raise - (0.7 - low) * ext, 0.0, 0.2 - 0.25 * ext)
+			pt_al = Vector3(-0.6 - 2.1 * raise - (0.6 - low) * ext, 0.0, -0.2 + 0.25 * ext)
+			pt_el_r = Vector3(-0.3 - 0.9 * raise, 0.0, 0.0)
+			pt_el_l = Vector3(-0.5 - 0.9 * raise, 0.0, 0.0)
+			r_limb = 28.0
+			r_body = 20.0
+		S.THROW_ITEM:
+			var cock := _smooth(_seg(t, 0.0, 0.15))
+			var rel := _ease_in(_seg(t, 0.15, 0.25))
+			var back2 := _smooth(_seg(t, 0.3, 0.5))
+			var c := cock * (1.0 - rel)
+			var e := rel * (1.0 - back2)
+			_stance(0.55 + 0.2 * e)
+			pt_tor = Vector3(0.1 + 0.3 * e, 0.4 * c - 0.35 * e, 0.0)
+			pt_ar = Vector3(-0.6 - 2.3 * c - 1.0 * e, 0.0, 0.25)
+			pt_el_r = Vector3(-1.0 * c - 0.2, 0.0, 0.0)
+			pt_al = Vector3(-0.9 - 0.5 * e, 0.0, -0.3)
+			r_limb = 26.0
+		S.ON_TABLE:
+			pt_root_direct = true
+			r_limb = 8.0
+			r_body = 9.0
+			_down_relaxed()
+			pt_root_pos.y += TABLE_TOP_Y
+		S.SET_TABLE:
+			var b2 := _hump(t, 0.0, 0.7)
+			_stance(0.6 + 0.5 * b2)
+			pt_tor = Vector3(0.25 + 0.6 * b2, 0.0, 0.0)
+			pt_ar = Vector3(-0.8 - 0.8 * b2, 0.0, 0.25)
+			pt_al = Vector3(-0.8 - 0.8 * b2, 0.0, -0.25)
+			pt_el_r = Vector3(-0.5, 0.0, 0.0)
+			pt_el_l = Vector3(-0.5, 0.0, 0.0)
+			r_limb = 16.0
+
+
+## Carry pose for the right arm while walking around with an item.
+func _pose_hold_item() -> void:
+	if not (state in [S.IDLE, S.WALK, S.RUN]):
+		return
+	if _item_kind(held_item) == "trash_can":
+		pt_ar = Vector3(-0.5, 0.0, 0.35)
+		pt_el_r = Vector3(-0.6, 0.0, 0.0)
+	else:
+		pt_ar = Vector3(-0.85, 0.0, 0.3)
+		pt_el_r = Vector3(-1.1, 0.0, 0.0)
+
+
 # ---------------------------------------------------------------- CPU AI
 # The CPU fills the same in_* fields a human would. ai_skill (0..1) scales reaction delay,
 # reversal rate and pin kick-out strength. Decisions are paced by ai_timer and ai_react so
@@ -2098,6 +2730,8 @@ func _ai(delta: float) -> void:
 	if state != S.IDLE and state != S.WALK:
 		return
 	var can_act := ai_react <= 0.0 and ai_timer <= 0.0
+	if _ai_weapons(dist, toward, os, can_act):
+		return  # weapons hook
 
 	if os == S.DOWN:
 		_ai_vs_downed(dist, toward, opp_hp, can_act)
@@ -2505,6 +3139,10 @@ func _update_pose(delta: float) -> void:
 			_pose_pickup()
 		S.LIFTED:
 			_pose_lifted(delta)
+		S.PICKUP_ITEM, S.SWING, S.THROW_ITEM, S.ON_TABLE, S.SET_TABLE:
+			_pose_weapons()  # weapons hook
+	if held_item != null:
+		_pose_hold_item()  # weapons hook: carry the item in the right hand
 	_apply_pose(delta)
 
 

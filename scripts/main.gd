@@ -96,6 +96,18 @@ func _ready() -> void:
 	fx = Fx.new()
 	add_child(fx)
 
+	# Hardcore weapons (scripts/weapons.gd). Respawned fresh on every scene (re)load.
+	var item_mgr: Node3D = load("res://scripts/weapons.gd").new()
+	ring_root.add_child(item_mgr)
+	p1.items = item_mgr
+	p2.items = item_mgr
+	item_mgr.broke.connect(func(kind: String, where: Vector3):
+		if kind == "table" or kind == "plank":
+			if fx.has_method("splinters"):
+				fx.call("splinters", where, 1.0 if kind == "table" else 0.5)
+		elif fx.has_method("debris"):
+			fx.call("debris", where, 0.7, Color(0.6, 0.62, 0.65)))
+
 	_build_hud()
 	_announce("FIGHT!", 1.5)
 	audio.ring_bell(1)
