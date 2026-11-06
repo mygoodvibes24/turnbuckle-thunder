@@ -18,6 +18,8 @@ var match_over := false
 # Feel / FX (see "# ---- feel / FX")
 const Audio := preload("res://scripts/audio.gd")
 const Fx := preload("res://scripts/fx.gd")
+const StyleSys := preload("res://scripts/style.gd")
+const StyleHud := preload("res://scripts/style_hud.gd")
 const SLOWMO_SCALE := 0.35
 const SLOWMO_HOLD := 0.6          # real seconds at SLOWMO_SCALE
 const SLOWMO_EASE := 0.3          # real seconds easing back to 1.0
@@ -112,6 +114,12 @@ func _ready() -> void:
 			fx.call("debris", where, 0.7, Color(0.6, 0.62, 0.65)))
 
 	_build_hud()
+	# STYLE system: per-wrestler combo / hype / B-R-A-W-L logic + its own HUD overlay (layer 2).
+	for w in [p1, p2]:
+		w.add_child(StyleSys.new())
+	var style_hud: CanvasLayer = StyleHud.new()
+	add_child(style_hud)
+	style_hud.setup(self, [p1, p2])
 	_announce("FIGHT!", 1.5)
 	audio.ring_bell(1)
 	audio.start_crowd()
@@ -1635,6 +1643,24 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_snd("whoa", -3.0 + 2.0 * clampf(st, 0.0, 1.0), 0.05)
 		"pickup_item":
 			_snd("metal", -16.0, 0.12)
+		# ---- style system (scripts/style.gd)
+		"trick":
+			_snd("trick", -14.0 + 8.0 * clampf(st, 0.0, 1.0), 0.03)
+		"combo_bank":
+			_snd("combo_bank", -6.0 + 4.0 * clampf(st, 0.0, 1.0), 0.02)
+			_hype(0.1 * st)
+		"letter":
+			_snd("letter", -3.0, 0.0)
+			_kick_cam(-2.0, 0.1)
+			_hype(0.2)
+		"brawl_mode":
+			_snd("brawl_mode", 1.0, 0.0)
+			_hitstop(0.12)
+			_slowmo()
+			_fx_flash(1.0)
+			_kick_cam(-8.0, 0.6)
+			_buzz(90)
+			_hype(0.7)
 		_:
 			# Unknown kinds (added later): play a clip of the same name if one exists.
 			_snd(kind, -3.0)

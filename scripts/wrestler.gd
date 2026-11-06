@@ -10,6 +10,10 @@ signal won()
 ## "rope", "whoosh", "count", "kickout", "finisher", "reversal", "taunt", "grab".
 ## strength is 0..1+, where is the world-space contact point.
 signal sfx(kind: String, strength: float, where: Vector3)
+## STYLE: a move / trick landed (scripts/style.gd scores it). kind is one of "strike", "grapple",
+## "aerial", "air_trick", "weapon", "movement", "super"; kind "break" (empty name, 0 points)
+## means we got hit / botched and our combo breaks.
+signal trick(name: String, points: int, kind: String)
 
 enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THROWING, THROWN,
 	DOWN, GETTING_UP, PINNING, PINNED, TAUNT, WIN, LOSE,
@@ -143,6 +147,14 @@ var drop_to := Vector3.ZERO
 var taunt_cooldown := 0.0
 var taunt_bonus := false
 var special_timer := 0.0       # > 0 while SPECIAL (full spirit) is lit; drains to 80 at 0
+# STYLE (driven by scripts/style.gd, a child Node; hype mirrors spirit)
+var brawl_mode := false        # BRAWL MODE: all five B-R-A-W-L letters, 12 s of super moves
+var style_letters := 0         # 0..5 letters of B-R-A-W-L earned
+var hype := 0.0                # 0..100 style meter (== spirit)
+var combo_mult := 1            # current combo multiplier (x1..x8)
+var combo_points := 0          # running (unbanked) combo points
+var thrown_trick := ""         # name / points of the throw we are flying in (scored on landing)
+var thrown_pts := 0
 var reversal_window := 0.0     # > 0 while a timed-reversal window is open on us (HUD: "REVERSE!")
 var reversal_kind := ""        # "grapple", "strong", "whip", "punch" or "lariat"
 var reversal_age := 0.0
@@ -1209,7 +1221,38 @@ func is_standing() -> bool:
 
 
 func is_special_ready() -> bool:
-	return spirit >= 100.0
+	return spirit >= 100.0 or brawl_mode
+
+
+## STYLE: trick points for a MOVES entry, scaled by tier.
+func _trick_pts(m: Dictionary) -> int:
+	var dmg: float = m.get("dmg", 8.0)
+	var tier: String = m.get("tier", "weak")
+	var kind: String = m.get("kind", "throw")
+	if tier == "finisher":
+		return 2000
+	if kind == "dive":
+		return clampi(int(400.0 + dmg * 50.0), 500, 1500)
+	if tier == "reversal":
+		return 300
+	if tier == "strong":
+		return clampi(int(300.0 + dmg * 18.0), 300, 600)
+	if kind == "strike" or kind == "ground" or tier == "strike" or tier == "ground":
+		return clampi(int(30.0 + dmg * 10.0), 50, 150)
+	return clampi(int(150.0 + dmg * 18.0), 200, 450)
+
+
+## STYLE: trick kind for a MOVES entry.
+func _trick_kind(m: Dictionary) -> String:
+	if m.get("tier", "") == "finisher":
+		return "super"
+	var kind: String = m.get("kind", "throw")
+	match kind:
+		"dive":
+			return "aerial"
+		"strike", "ground":
+			return "strike"
+	return "grapple"
 
 
 func _flat_to_opponent() -> Vector3:
@@ -1266,6 +1309,8 @@ func gain_spirit(v: float) -> void:
 
 
 func take_damage(d: float) -> void:
+	if opponent != null and opponent.brawl_mode: d *= 1.4  # style hook: BRAWL MODE hits harder
+	trick.emit("", 0, "break")  # style hook
 	health = max(0.0, health - d)
 	spirit = max(0.0, spirit - d * 0.4)
 
@@ -1544,6 +1589,7 @@ func _run(delta: float) -> void:
 		_hf_on_rope_bounce()  # high flying hook: opens the springboard window
 		impact.emit(0.15)
 		sfx.emit("rope", 0.5, global_position + Vector3(0, 1.2, 0))
+		if not whipped: trick.emit("Rebound", 50, "movement")  # style hook
 		if rope_bounces > (1 if whipped else 2):
 			set_state(S.IDLE)
 			return
@@ -1590,7 +1636,9 @@ func _punch() -> void:
 			combo_hits += 1
 			combo_timer = 1.0
 			var knock := combo_hits >= 3
-			if opponent.receive_strike(self, 8.0 if knock else 4.0, knock) and knock:
+			var landed: bool = opponent.receive_strike(self, 8.0 if knock else 4.0, knock)
+			if landed: trick.emit("3-HIT COMBO" if knock else ("ONE-TWO" if combo_hits == 2 else "JAB"), 120 if knock else (70 if combo_hits == 2 else 50), "strike")  # style hook
+			if landed and knock:
 				announce.emit("3-Hit Combo!")
 				combo_hits = 0
 	if state_time >= PUNCH_END:
@@ -1613,6 +1661,7 @@ func _run_attack(delta: float) -> void:
 			hit_landed = true
 			if opponent.receive_strike(self, 11.0, true):
 				announce.emit("Running Clothesline!")
+				trick.emit("Running Clothesline", 150, "strike")  # style hook
 	if state_time >= 0.55:
 		set_state(S.IDLE)
 
@@ -1661,7 +1710,7 @@ func _stomp() -> void:
 		if _opp_state() == S.DOWN and _flat_to_opponent().length() < 1.9:
 			var m: Dictionary = MOVES["stomp"]
 			var dmg: float = m["dmg"]
-			opponent.receive_ground_hit(self, dmg, "stomp")
+			if opponent.receive_ground_hit(self, dmg, "stomp"): trick.emit("Stomp", _trick_pts(m), "strike")  # style hook
 	if state_time >= 0.5:
 		set_state(S.IDLE)
 
@@ -1691,6 +1740,7 @@ func _ground_drop() -> void:
 	if landed:
 		opponent.receive_ground_hit(self, dmg, key)
 		announce.emit(m["name"])
+		trick.emit(m["name"], _trick_pts(m), "strike")  # style hook
 	else:
 		take_damage(3.0)
 		announce.emit("Missed!")
@@ -1776,6 +1826,7 @@ func _try_grapple(strong: bool) -> void:
 		whiff_time = 0.6 if strong else 0.42
 		current_move_key = "whiff_strong" if strong else "whiff"
 		sfx.emit("whoosh", 0.25, _chest())
+		trick.emit("", 0, "break")  # style hook: a whiff breaks the combo
 
 
 func _tieup_attacker(delta: float) -> void:
@@ -1856,6 +1907,7 @@ func _do_move(key: String) -> void:
 		opponent.position += facing * 0.4
 		impact.emit(0.25)
 		sfx.emit("kick", 0.5, opponent.global_position + Vector3(0, 1.2, 0))
+		trick.emit(m["name"], _trick_pts(m), _trick_kind(m))  # style hook
 		set_state(S.PUNCH)
 		current_move_key = key
 		hit_landed = true
@@ -1876,6 +1928,7 @@ func start_thrown(land_pos: Vector3, m: Dictionary, key := "") -> void:
 	throw_height = m["height"]
 	throw_end_angle = -PI / 2 - (TAU if m["flip"] else 0.0)
 	pending_damage = m["dmg"]
+	thrown_trick = m.get("name", ""); thrown_pts = _trick_pts(m)  # style hook: scored on landing
 	# Visual throw path: keyframed in the thrower's frame (see _throw_keys).
 	var tp: Vector3 = opponent.position
 	var ty: float = opponent.rotation.y
@@ -1901,6 +1954,7 @@ func _thrown() -> void:
 		impact.emit(clamp(pending_damage / 20.0, 0.3, 1.2))
 		sfx.emit("big_thud" if pending_damage >= 20.0 else "thud", clamp(pending_damage / 20.0, 0.3, 1.3), global_position + Vector3(0, 0.3, 0))
 		_weapons_check_table_landing()  # weapons hook: thrown through a table?
+		opponent.trick.emit(thrown_trick, thrown_pts, "super" if thrown_pts >= 2000 else "grapple")  # style hook
 
 
 # ---------------------------------------------------------------- Irish whip
@@ -1914,6 +1968,7 @@ func _start_whip(dir: Vector3, label: String) -> void:
 	opponent.start_whipped(dir)
 	announce.emit(label)
 	sfx.emit("whoosh", 0.5, _chest())
+	trick.emit(label, 300 if label.begins_with("REVERSAL") else 100, "grapple")  # style hook
 
 
 func start_whipped(dir: Vector3) -> void:
@@ -1959,6 +2014,7 @@ func _whip_clothesline() -> void:
 	hit_landed = true
 	if opponent.receive_strike(self, dmg, true):
 		announce.emit(m["name"])
+		trick.emit(m["name"], _trick_pts(m), "strike")  # style hook
 
 
 ## A whipped runner met nobody's move: both wrestlers stagger.
@@ -2012,6 +2068,7 @@ func _taunt() -> void:
 	if state_time > TAUNT_TIME:
 		gain_spirit(30.0 if taunt_bonus else 20.0)
 		announce.emit("%s is fired up!" % display_name)
+		trick.emit("Showboat" if taunt_bonus else "Crowd Pleaser", 250 if taunt_bonus else 150, "movement")  # style hook
 		set_state(S.IDLE)
 
 
@@ -2060,6 +2117,7 @@ func _pinned(delta: float) -> void:
 		else:
 			announce.emit("KICK OUT!")
 		last_hit_tier = ""  # that move's effect is spent
+		trick.emit("Near-Fall Kick Out" if near_fall else "Kick Out", 500 if near_fall else 200, "movement")  # style hook
 		opponent.set_state(S.STUNNED)
 		opponent.stun_time = 0.7
 		opponent.position += opponent.facing * 1.0
@@ -2321,6 +2379,7 @@ func _swing_connect() -> void:
 				announce.emit(_item_call(kind, "run" if swing_running else "hit"))
 	if not hit:
 		return
+	trick.emit(_item_call(kind, "run" if swing_running else "hit"), 300, "weapon")  # style hook
 	var op: Vector3 = opponent.global_position
 	sfx.emit(_item_sfx(kind), 1.0, op + Vector3(0, 1.2, 0))
 	if items != null:
@@ -2375,6 +2434,7 @@ func _thrown_item_arrives() -> void:
 		dmg = d
 	if opponent.receive_strike(self, dmg, true):
 		announce.emit(_item_call(kind, "throw"))
+		trick.emit(_item_call(kind, "throw"), 300, "weapon")  # style hook
 		var og: Vector3 = opponent.global_position
 		sfx.emit(_item_sfx(kind), 0.9, og + Vector3(0, 1.5, 0))
 		if _item_ok(it) and items != null:
@@ -2455,6 +2515,7 @@ func crash_through_table(attacker: Node3D, dmg: float, emit_sfx := true) -> void
 	take_damage(dmg + TABLE_BREAK_DMG)
 	if attacker != null:
 		attacker.gain_spirit((dmg + TABLE_BREAK_DMG) * 1.5)
+		attacker.trick.emit("Through The Table", 800, "weapon")  # style hook
 	set_state(S.DOWN)
 	down_duration = TABLE_DOWN_TIME + (1.0 - health / 100.0) * 1.5
 	last_hit_tier = "strong"
@@ -2500,6 +2561,7 @@ func _weapons_check_table_landing() -> void:
 	items.break_table(t)
 	take_damage(TABLE_BREAK_DMG)
 	opponent.gain_spirit(15.0)
+	opponent.trick.emit("Through The Table", 800, "weapon")  # style hook
 	down_duration = maxf(down_duration, TABLE_DOWN_TIME)
 	if last_hit_tier != "finisher":
 		last_hit_tier = "strong"
@@ -5018,6 +5080,7 @@ func _hf_start_climb(mode: String) -> void:
 			hf_time = 0.7
 			sfx.emit("climb", 0.6, global_position + Vector3(0, 1.0, 0))
 			announce.emit("%s is going up top!" % display_name)
+			trick.emit("Going Up Top", 100, "movement")  # style hook
 		"down":
 			hf_to = Vector3(c.x * 3.35, 0.0, c.z * 3.35)
 			hf_time = 0.6
@@ -5251,6 +5314,7 @@ func _hf_land() -> void:
 			opponent.dazed = true  # stumbles out of the corner: free lock-up
 			opponent.position = op - Vector3(_hf_sign(op.x), 0.0, _hf_sign(op.z)).normalized() * 0.4
 			announce.emit(name_txt)
+			trick.emit(name_txt, _trick_pts(m), "aerial")  # style hook
 			impact.emit(0.45)
 			sfx.emit("big_thud", 0.8, contact + Vector3(0, 0.8, 0))
 		else:
@@ -5273,6 +5337,7 @@ func _hf_land() -> void:
 				opponent.receive_ground_hit(self, dmg, key)
 			if key != "gutter_star":
 				announce.emit(name_txt)
+			trick.emit(name_txt, _trick_pts(m), _trick_kind(m))  # style hook
 			opponent.last_hit_tier = tier
 			var ost: float = opponent.state_time
 			var odd: float = opponent.down_duration
@@ -5300,6 +5365,7 @@ func _hf_land() -> void:
 				opponent.last_hit_tier = tier
 				gain_spirit(4.0)
 				announce.emit(name_txt)
+				trick.emit(name_txt, _trick_pts(m), "aerial")  # style hook
 				impact.emit(clampf(dmg / 16.0, 0.5, 1.0))
 				sfx.emit("big_thud" if key != "springboard_forearm" else "thud", 0.8, contact + Vector3(0, 0.6, 0))
 				return
@@ -5307,11 +5373,13 @@ func _hf_land() -> void:
 			hf_result = "hit"
 			opponent.receive_ground_hit(self, dmg, key)
 			announce.emit(name_txt)
+			trick.emit(name_txt, _trick_pts(m), "aerial")  # style hook
 			impact.emit(0.6)
 			return
 	# the target moved: crash and burn
 	if key == "springboard_forearm":
 		announce.emit("Missed!")
+		trick.emit("", 0, "break")  # style hook
 		sfx.emit("thud", 0.4, contact)
 		return
 	hf_land_time = maxf(hf_land_time, 0.45)
