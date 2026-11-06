@@ -531,7 +531,7 @@ func _make_tarp_texture() -> ImageTexture:
 	var blot := _noise_img(n, n, 0.022, 3, false)
 	var grain := _noise_img(n, n, 0.35, 1, false)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
-	var base := Color(0.30, 0.40, 0.58)
+	var base := Color(0.28, 0.39, 0.62)  # ~Color(0.30, 0.40, 0.58), nudged bluer to survive the N64 post desaturation
 	var dirt := Color(0.25, 0.26, 0.29)
 	for y in n:
 		for x in n:
