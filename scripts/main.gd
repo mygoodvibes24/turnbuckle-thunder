@@ -65,20 +65,20 @@ func _ready() -> void:
 	# Each look: street clothes + style switches used by wrestler.gd's model.
 	# "gear" is the wrestler's signature colour (HUD, win banner).
 	var tank := {
-		"gear": Color(0.8, 0.14, 0.1), "skin": Color(0.87, 0.64, 0.47),
-		"hair": "flattop", "hair_color": Color(0.3, 0.18, 0.08), "stubble": true, "facial": "goatee",
+		"gear": Color(0.8, 0.14, 0.1), "skin": Color(0.36, 0.22, 0.14),
+		"hair": "dreads", "hair_color": Color(0.09, 0.06, 0.045), "stubble": true, "facial": "goatee",
 		"top": "flannel", "top_color": Color(0.72, 0.12, 0.1), "top_pattern": "plaid",
 		"top_accent": Color(0.08, 0.06, 0.06),
 		"bottom": "cargo_shorts", "bottom_color": Color(0.6, 0.53, 0.38),
 		"shoes": "hightops", "shoe_color": Color(0.1, 0.1, 0.12), "shoe_accent": Color(0.85, 0.15, 0.12),
 		"sock_l": Color(0.95, 0.95, 0.92), "sock_accent": Color(0.8, 0.14, 0.1),
-		"hat": "cap_back", "hat_color": Color(0.14, 0.2, 0.42), "wristband_color": Color(0.95, 0.95, 0.92),
+		"hat": "none", "wristband_color": Color(0.95, 0.95, 0.92),
 		"knee_brace": "left", "bulk": 1.15, "gut": 0.035,
 	}
 	var kid := {
 		"gear": Color(0.15, 0.75, 0.3), "skin": Color(0.66, 0.46, 0.32),
 		"mask": true, "mask_color": Color(0.12, 0.7, 0.28), "mask_trim": Color(1.0, 0.82, 0.1),
-		"hair_color": Color.BLACK,
+		"hair": "messy", "hair_color": Color(0.09, 0.07, 0.06),
 		"top": "hoodie", "top_color": Color(0.52, 0.52, 0.55), "top_pattern": "logo",
 		"top_accent": Color(0.12, 0.6, 0.25), "sleeves": "long",
 		"bottom": "basketball_shorts", "bottom_color": Color(0.14, 0.26, 0.75),

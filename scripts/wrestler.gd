@@ -242,7 +242,7 @@ const FONT_3X5 := {
 }
 
 
-func _sat(c: Color, amt := 1.15) -> Color:
+func _sat(c: Color, amt := 1.0) -> Color:
 	return Color.from_hsv(c.h, clampf(c.s * amt, 0.0, 1.0), c.v, c.a)
 
 
@@ -257,7 +257,7 @@ func _mat(c: Color, tex: Texture2D = null) -> StandardMaterial3D:
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	if tex != null:
 		m.albedo_texture = tex
-		m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+		m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 		m.texture_repeat = true
 	return m
 
@@ -279,17 +279,17 @@ func _box(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshIns
 	return _add_mesh(parent, b, pos, mat)
 
 
-func _ball(parent: Node3D, r: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 8, hemi := false) -> MeshInstance3D:
+func _ball(parent: Node3D, r: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 12, hemi := false) -> MeshInstance3D:
 	var s := SphereMesh.new()
 	s.radius = r
 	s.height = r if hemi else r * 2.0
 	s.is_hemisphere = hemi
 	s.radial_segments = segs
-	s.rings = 4
+	s.rings = 6
 	return _add_mesh(parent, s, pos, mat, scl)
 
 
-func _prism(parent: Node3D, top_r: float, bottom_r: float, h: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 8) -> MeshInstance3D:
+func _prism(parent: Node3D, top_r: float, bottom_r: float, h: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 12) -> MeshInstance3D:
 	var c := CylinderMesh.new()
 	c.top_radius = top_r
 	c.bottom_radius = bottom_r
@@ -339,10 +339,10 @@ func _cap(st: SurfaceTool, ring: PackedVector3Array, uvs: PackedVector2Array, ce
 		_tri(st, center, ring[i], ring[i + 1], n, n, n, cu, Vector2(uvs[i].x, v), Vector2(uvs[i + 1].x, v))
 
 
-## Builds a tapered 8-sided tube. rings: Array of Vector4(y, radius_x, radius_z, z_offset),
-## ordered top to bottom. Vertices sit half a segment off the axes so a flat face points
-## forward (+z) and to each side.
-func _loft_mesh(rings: Array, cap_top: bool, cap_bottom: bool, segs := 8) -> ArrayMesh:
+## Builds a tapered tube (12 sides by default: smooth Gouraud silhouettes). rings: Array of
+## Vector4(y, radius_x, radius_z, z_offset), ordered top to bottom. Vertices sit half a
+## segment off the axes so a face points forward (+z) and to each side.
+func _loft_mesh(rings: Array, cap_top: bool, cap_bottom: bool, segs := 12) -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var n_r := rings.size()
@@ -394,13 +394,26 @@ func _loft_mesh(rings: Array, cap_top: bool, cap_bottom: bool, segs := 8) -> Arr
 	return st.commit()
 
 
-func _loft(parent: Node3D, rings: Array, mat: Material, cap_top := true, cap_bottom := true, pos := Vector3.ZERO) -> MeshInstance3D:
-	return _add_mesh(parent, _loft_mesh(rings, cap_top, cap_bottom), pos, mat)
+func _loft(parent: Node3D, rings: Array, mat: Material, cap_top := true, cap_bottom := true, pos := Vector3.ZERO, segs := 12) -> MeshInstance3D:
+	return _add_mesh(parent, _loft_mesh(rings, cap_top, cap_bottom, segs), pos, mat)
+
+
+## A rounded block (pillowy box) of roughly `size`, centred on pos: mitt palms and fingers.
+func _block(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
+	var hx := size.x * 0.56
+	var hz := size.z * 0.56
+	var hy := size.y * 0.5
+	var rings := [Vector4(hy, hx * 0.6, hz * 0.7, 0.0), Vector4(hy * 0.55, hx, hz, 0.0),
+		Vector4(-hy * 0.55, hx, hz, 0.0), Vector4(-hy, hx * 0.6, hz * 0.7, 0.0)]
+	return _add_mesh(parent, _loft_mesh(rings, true, true, 8), pos, mat)
 
 
 # --- tiny painted textures -----------------------------------------------------------
 # All are drawn so that texture column w/2 is the front centre (u = 0.5); -x side at
-# w/4, +x side at 3w/4, back seam at the edges.
+# w/4, +x side at 3w/4, back seam at the edges. Cloth is laid out on a small grid, then
+# _finish() blows it up bilinearly (soft edges), paints broad ambient / fold shading,
+# bilinear-downsamples to 2x the grid and mipmaps it: soft, photo-ish N64 textures.
+# Faces and hair are painted directly at 2x with soft dabs and downsampled.
 
 func _px(img: Image, x: int, y: int, w: int, h: int, c: Color) -> void:
 	img.fill_rect(Rect2i(x, y, w, h), c)
@@ -429,16 +442,95 @@ func _paint_text(img: Image, text: String, center_x: int, y: int, c: Color) -> v
 					_px(img, x0 + k * 5 + col, y + r, 1, 1, c)
 
 
+## Soft elliptical dab. Centre and radii are in design units (image px / s); the outer
+## `soft` fraction of the radius feathers out; a = opacity at the centre.
+func _dab(img: Image, s: float, cx: float, cy: float, rx: float, ry: float, c: Color, a: float, soft := 0.6) -> void:
+	var w := img.get_width()
+	var h := img.get_height()
+	var x0 := maxi(0, int(floor((cx - rx) * s)))
+	var x1 := mini(w - 1, int(ceil((cx + rx) * s)))
+	var y0 := maxi(0, int(floor((cy - ry) * s)))
+	var y1 := mini(h - 1, int(ceil((cy + ry) * s)))
+	for y in range(y0, y1 + 1):
+		var dy := ((y + 0.5) / s - cy) / ry
+		for x in range(x0, x1 + 1):
+			var dx := ((x + 0.5) / s - cx) / rx
+			var d := sqrt(dx * dx + dy * dy)
+			if d >= 1.0:
+				continue
+			var k := a * (1.0 - smoothstep(1.0 - soft, 1.0, d))
+			img.set_pixel(x, y, img.get_pixel(x, y).lerp(c, k))
+
+
+## Soft diamond (L1 distance) — luchador mask shapes.
+func _diamond(img: Image, s: float, cx: float, cy: float, rx: float, ry: float, c: Color, a: float, soft := 0.25) -> void:
+	var w := img.get_width()
+	var h := img.get_height()
+	for y in range(maxi(0, int((cy - ry) * s)), mini(h, int((cy + ry) * s) + 2)):
+		var dy := absf(((y + 0.5) / s - cy) / ry)
+		for x in range(maxi(0, int((cx - rx) * s)), mini(w, int((cx + rx) * s) + 2)):
+			var d := absf(((x + 0.5) / s - cx) / rx) + dy
+			if d >= 1.0:
+				continue
+			var k := a * (1.0 - smoothstep(1.0 - soft, 1.0, d))
+			img.set_pixel(x, y, img.get_pixel(x, y).lerp(c, k))
+
+
+## Broad ambient / fold shading multiplied over a wrap texture (u around, v top->bottom).
+## "torso": darker flanks, armpits and hem, lit shoulders. "limb": darker ends + flanks.
+## "plain": a gentle flank darkening only.
+func _ao(img: Image, mode: String) -> void:
+	var w := img.get_width()
+	var h := img.get_height()
+	for y in h:
+		var v := (y + 0.5) / h
+		for x in w:
+			var u := (x + 0.5) / w
+			var side := 1.0 - absf(cos(TAU * u))   # 1 on the flanks (u .25 / .75), 0 front / back
+			var f := 1.0 - 0.09 * side * side
+			match mode:
+				"torso":
+					f -= 0.16 * side * side * smoothstep(0.08, 0.2, v) * (1.0 - smoothstep(0.25, 0.45, v))
+					f -= 0.13 * smoothstep(0.8, 1.0, v)
+					f += 0.06 * (1.0 - smoothstep(0.0, 0.22, v)) * (1.0 - side)
+					f -= 0.05 * side * smoothstep(0.55, 0.8, v)       # waist bunching
+				"limb":
+					f -= 0.1 * smoothstep(0.78, 1.0, v)
+					f -= 0.07 * (1.0 - smoothstep(0.0, 0.18, v))
+			var c := img.get_pixel(x, y)
+			img.set_pixel(x, y, Color(c.r * f, c.g * f, c.b * f, c.a))
+
+
+## Softens a grid-painted image (bilinear 4x up, shading, bilinear down to 2x), mipmaps it.
+func _finish(img: Image, mode := "plain") -> ImageTexture:
+	var w := img.get_width()
+	var h := img.get_height()
+	img.resize(w * 4, h * 4, Image.INTERPOLATE_BILINEAR)
+	img.resize(w * 2, h * 2, Image.INTERPOLATE_BILINEAR)
+	_ao(img, mode)
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+
+## Downsamples an image painted at 2x and mipmaps it.
+func _finish_2x(img: Image) -> ImageTexture:
+	img.resize(img.get_width() >> 1, img.get_height() >> 1, Image.INTERPOLATE_BILINEAR)
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+
 ## Fills the image with a pattern: "plaid" (crossing bands, tiles every 8 px), "stripe"
-## (horizontal bands every 6 px) or nothing.
+## (horizontal bands every 6 px) or nothing. Low contrast: the dark bands are a deep
+## shade of the base colour (a hint of the accent), never black.
 func _paint_pattern(img: Image, pattern: String, base: Color, accent: Color) -> void:
 	var w := img.get_width()
 	var h := img.get_height()
 	match pattern:
 		"plaid":
-			var band := base.lerp(accent, 0.6)
-			var cross := band.lerp(accent, 0.6)
-			var thread := base.lightened(0.25)
+			var dk := base.darkened(0.42).lerp(accent, 0.18)
+			var band := base.lerp(dk, 0.5)
+			var cross := base.lerp(dk, 0.85)
+			var thread := base.lerp(Color(1.0, 0.95, 0.85), 0.16)
 			for y in h:
 				for x in w:
 					var hx := x % 8 < 3
@@ -450,53 +542,57 @@ func _paint_pattern(img: Image, pattern: String, base: Color, accent: Color) -> 
 					elif x % 8 == 5 or y % 8 == 5:
 						img.set_pixel(x, y, thread)
 		"stripe":
+			var sc := base.lerp(accent, 0.6)
 			var y0 := 1
 			while y0 < h:
-				_px(img, 0, y0, w, 2, accent)
+				_px(img, 0, y0, w, 2, sc)
 				y0 += 6
 
 
 func _torso_texture(skin: Color) -> ImageTexture:
-	# 32x32 shirtless torso: soft pecs, belly line, darker flanks and back.
-	var img := _new_img(32, 32, skin)
-	var dk := skin.darkened(0.14)
-	var lt := skin.lightened(0.07)
-	_px(img, 0, 0, 6, 32, skin.darkened(0.06))
-	_px(img, 26, 0, 6, 32, skin.darkened(0.06))
-	_px(img, 0, 6, 1, 26, dk)
-	_px(img, 31, 6, 1, 26, dk)
-	_px(img, 6, 8, 3, 24, dk)
-	_px(img, 23, 8, 3, 24, dk)
-	_px(img, 10, 9, 12, 7, lt)
-	_px(img, 10, 16, 5, 1, dk)
-	_px(img, 17, 16, 5, 1, dk)
-	_px(img, 15, 8, 2, 9, dk)
-	_px(img, 15, 25, 2, 1, dk)          # navel
-	return ImageTexture.create_from_image(img)
+	# Shirtless torso painted at 2x (64x64 for a 32 grid): soft pecs, abs, darker flanks.
+	var img := _new_img(64, 64, skin)
+	var dk := _skin_shade(skin, 0.2)
+	var lt := _skin_light(skin, 0.1)
+	_dab(img, 2.0, 12.0, 12.0, 4.5, 3.5, lt, 0.5, 0.9)        # pecs
+	_dab(img, 2.0, 20.0, 12.0, 4.5, 3.5, lt, 0.5, 0.9)
+	_dab(img, 2.0, 12.0, 16.2, 4.0, 1.0, dk, 0.45, 0.8)       # pec undersides
+	_dab(img, 2.0, 20.0, 16.2, 4.0, 1.0, dk, 0.45, 0.8)
+	_dab(img, 2.0, 16.0, 18.0, 0.7, 9.0, dk, 0.35, 0.8)       # linea alba
+	for r in 3:
+		_dab(img, 2.0, 16.0, 19.5 + r * 2.4, 3.2, 0.5, dk, 0.25, 0.8)  # ab rows
+	_dab(img, 2.0, 16.0, 26.0, 0.7, 0.7, dk, 0.7, 0.6)        # navel
+	_dab(img, 2.0, 8.0, 18.0, 2.0, 14.0, dk, 0.3, 0.9)        # obliques / lats
+	_dab(img, 2.0, 24.0, 18.0, 2.0, 14.0, dk, 0.3, 0.9)
+	_dab(img, 2.0, 2.0, 14.0, 3.0, 12.0, lt, 0.2, 0.9)        # back muscles
+	_dab(img, 2.0, 30.0, 14.0, 3.0, 12.0, lt, 0.2, 0.9)
+	_ao(img, "torso")
+	return _finish_2x(img)
 
 
 func _top_texture(top: String, base: Color, pattern: String, accent: Color, skin: Color) -> ImageTexture:
 	# 32x32 shirt body. Rows ~0..8 are the shoulders/armpits, ~29..31 the hem.
 	var img := _new_img(32, 32, base)
-	var dk := base.darkened(0.22)
-	var lt := base.lightened(0.15)
+	var dk := base.darkened(0.15)
+	var lt := base.lightened(0.1)
 	_paint_pattern(img, pattern, base, accent)
 	if pattern == "logo":
 		# generic garage-band print on the chest: a ring, a jagged bolt, blocky letters
+		var acc := base.lerp(accent, 0.75)
 		for y in range(6, 19):
 			for x in range(10, 23):
 				var d := Vector2(x + 0.5 - 16.0, y + 0.5 - 12.5).length()
 				if d < 5.8 and d > 4.3:
-					img.set_pixel(x, y, accent)
-		var bolt := lt.lerp(Color(1.0, 0.95, 0.6), 0.6)
+					img.set_pixel(x, y, acc)
+		var bolt := lt.lerp(Color(1.0, 0.95, 0.6), 0.45)
 		_px(img, 16, 9, 2, 2, bolt)
 		_px(img, 15, 11, 2, 1, bolt)
 		_px(img, 15, 12, 4, 1, bolt)
 		_px(img, 16, 13, 2, 2, bolt)
 		_px(img, 15, 15, 1, 1, bolt)
-		_paint_text(img, "TRV", 16, 20, accent)
-		_px(img, 2, 8, 3, 6, accent)      # small print on the back
-		_px(img, 27, 8, 3, 6, accent)
+		_paint_text(img, "TRV", 16, 20, acc)
+		_px(img, 2, 8, 3, 6, acc)      # small print on the back
+		_px(img, 27, 8, 3, 6, acc)
 	# wrinkles: armpit folds and creases bunching at the waist
 	var fold := base.darkened(0.12)
 	for k in 3:
@@ -522,17 +618,18 @@ func _top_texture(top: String, base: Color, pattern: String, accent: Color, skin
 			_px(img, 5, 9, 6, 1, dk)
 			_px(img, 21, 9, 6, 1, dk)
 		"flannel":
-			# sleeves torn off: ragged arm holes with loose white threads
-			var thread := Color(0.92, 0.9, 0.84)
-			_px(img, 6, 1, 4, 8, skin)
-			_px(img, 22, 1, 4, 8, skin)
+			# sleeves torn off: ragged arm holes with loose pale threads
+			var thread := base.lerp(Color(0.95, 0.92, 0.85), 0.5)
+			var pit := skin.darkened(0.12)
+			_px(img, 6, 1, 4, 8, pit)
+			_px(img, 22, 1, 4, 8, pit)
 			for r in range(1, 9, 2):
 				img.set_pixel(5, r, thread)
 				img.set_pixel(10, r + 1, thread)
 				img.set_pixel(21, r + 1, thread)
 				img.set_pixel(26, r, thread)
 			# button placket + buttons, chest pockets
-			_px(img, 15, 2, 2, 30, dk)
+			_px(img, 15, 2, 2, 30, base.darkened(0.2))
 			for by in [6, 11, 16, 21, 26]:
 				var yy: int = by
 				_px(img, 15, yy, 1, 1, thread)
@@ -543,48 +640,49 @@ func _top_texture(top: String, base: Color, pattern: String, accent: Color, skin
 		"hoodie":
 			# kangaroo pocket, centre seam, ribbed hem
 			_px(img, 9, 19, 14, 8, dk)
-			_px(img, 10, 20, 12, 6, base.darkened(0.06))
-			_px(img, 9, 19, 2, 8, base.darkened(0.3))
-			_px(img, 21, 19, 2, 8, base.darkened(0.3))
+			_px(img, 10, 20, 12, 6, base.darkened(0.05))
+			_px(img, 9, 19, 2, 8, base.darkened(0.2))
+			_px(img, 21, 19, 2, 8, base.darkened(0.2))
 			_px(img, 0, 27, 32, 5, dk)
 			for x in range(0, 32, 2):
-				_px(img, x, 27, 1, 5, base.darkened(0.3))
+				_px(img, x, 27, 1, 5, base.darkened(0.2))
 		_:
 			_px(img, 11, 0, 10, 2, dk)          # tee neckline ribbing
 	if top != "hoodie":
 		_px(img, 0, 30, 32, 2, dk)              # hem
-	return ImageTexture.create_from_image(img)
+	return _finish(img, "torso")
 
 
 func _sleeve_texture(base: Color, pattern: String, accent: Color, cuff: bool) -> ImageTexture:
 	# 16x16 sleeve: pattern, a crease, and a hem (or ribbed cuff) at the bottom.
 	var img := _new_img(16, 16, base)
 	_paint_pattern(img, pattern, base, accent)
-	var dk := base.darkened(0.22)
-	img.set_pixel(7, 6, base.darkened(0.12))
-	img.set_pixel(8, 7, base.darkened(0.12))
-	img.set_pixel(9, 8, base.darkened(0.12))
+	var dk := base.darkened(0.15)
+	img.set_pixel(7, 6, base.darkened(0.1))
+	img.set_pixel(8, 7, base.darkened(0.1))
+	img.set_pixel(9, 8, base.darkened(0.1))
 	if cuff:
 		_px(img, 0, 12, 16, 4, dk)
 		for x in range(0, 16, 2):
-			_px(img, x, 12, 1, 4, base.darkened(0.32))
+			_px(img, x, 12, 1, 4, base.darkened(0.22))
 	else:
 		_px(img, 0, 14, 16, 2, dk)
-	return ImageTexture.create_from_image(img)
+	return _finish(img, "limb")
 
 
 func _bottoms_texture(kind: String, base: Color, accent: Color) -> ImageTexture:
 	# 32x16 pelvis piece: waistband/belt, fly, pockets.
 	var img := _new_img(32, 16, base)
-	var dk := base.darkened(0.25)
-	var lt := base.lightened(0.14)
-	var white := Color(0.94, 0.94, 0.9)
+	var dk := base.darkened(0.17)
+	var lt := base.lightened(0.1)
+	var white := base.lerp(Color(0.94, 0.94, 0.9), 0.75)
+	var acc := base.lerp(accent, 0.75)
 	match kind:
 		"basketball_shorts":
-			_px(img, 0, 0, 32, 3, accent)
-			_px(img, 0, 1, 32, 1, accent.lightened(0.2))
-			_px(img, 6, 3, 3, 13, accent)       # side stripes
-			_px(img, 23, 3, 3, 13, accent)
+			_px(img, 0, 0, 32, 3, acc)
+			_px(img, 0, 1, 32, 1, acc.lightened(0.12))
+			_px(img, 6, 3, 3, 13, acc)       # side stripes
+			_px(img, 23, 3, 3, 13, acc)
 			_px(img, 7, 3, 1, 13, white)
 			_px(img, 24, 3, 1, 13, white)
 			_px(img, 15, 3, 1, 4, white)        # drawstring
@@ -592,16 +690,16 @@ func _bottoms_texture(kind: String, base: Color, accent: Color) -> ImageTexture:
 		"sweatpants":
 			_px(img, 0, 0, 32, 3, dk)
 			for x in range(0, 32, 2):
-				_px(img, x, 0, 1, 3, base.darkened(0.12))
+				_px(img, x, 0, 1, 3, base.darkened(0.1))
 			_px(img, 15, 3, 1, 5, white)
 			_px(img, 17, 3, 1, 5, white)
-			_px(img, 7, 3, 1, 13, accent)
-			_px(img, 24, 3, 1, 13, accent)
+			_px(img, 7, 3, 1, 13, acc)
+			_px(img, 24, 3, 1, 13, acc)
 		_:
 			# jeans / cargo shorts: belt + buckle, loops, fly, front and back pockets
-			var belt := Color(0.22, 0.14, 0.08)
+			var belt := Color(0.25, 0.17, 0.11)
 			_px(img, 0, 0, 32, 2, belt)
-			_px(img, 14, 0, 4, 2, Color(0.78, 0.72, 0.5))
+			_px(img, 14, 0, 4, 2, Color(0.7, 0.65, 0.48))
 			_px(img, 15, 0, 2, 1, belt)
 			for lx in [4, 10, 21, 27]:
 				var xx: int = lx
@@ -613,27 +711,30 @@ func _bottoms_texture(kind: String, base: Color, accent: Color) -> ImageTexture:
 			_px(img, 21, 2, 1, 3, dk)
 			_px(img, 19, 5, 2, 1, dk)
 			_px(img, 1, 4, 6, 6, dk)            # back pockets
-			_px(img, 2, 5, 4, 4, base.darkened(0.08))
+			_px(img, 2, 5, 4, 4, base.darkened(0.06))
 			_px(img, 25, 4, 6, 6, dk)
-			_px(img, 26, 5, 4, 4, base.darkened(0.08))
+			_px(img, 26, 5, 4, 4, base.darkened(0.06))
 			if kind == "jeans":
 				_px(img, 12, 3, 3, 1, lt)       # whiskers
 				_px(img, 18, 3, 3, 1, lt)
 				_px(img, 13, 5, 2, 1, lt)
 				_px(img, 18, 5, 2, 1, lt)
-	return ImageTexture.create_from_image(img)
+	_px(img, 0, 13, 32, 3, base.darkened(0.08))   # crotch / seat shadow
+	return _finish(img, "plain")
 
 
 func _legwear_texture(kind: String, part: String, base: Color, accent: Color, side: int, skin: Color) -> ImageTexture:
 	# 32x16 for a thigh ("thigh", also used by the shorts shell) or a shin ("shin").
 	# The outer side of a left leg is u = 0.25 (x 8), of a right leg u = 0.75 (x 24).
 	var img := _new_img(32, 16, base)
-	var dk := base.darkened(0.25)
-	var lt := base.lightened(0.12)
+	var dk := base.darkened(0.17)
+	var lt := base.lightened(0.09)
+	var acc := base.lerp(accent, 0.75)
+	var pale := base.lerp(Color(0.94, 0.94, 0.9), 0.7)
 	var ox := 8 if side < 0 else 24
 	match kind:
 		"jeans":
-			_px(img, 11, 0, 10, 16, base.lightened(0.06))    # stone-washed front
+			_px(img, 11, 0, 10, 16, base.lightened(0.05))    # stone-washed front
 			_px(img, ox, 0, 1, 16, dk)                       # outseam
 			_px(img, 32 - ox, 0, 1, 16, dk)
 			if part == "thigh":
@@ -641,10 +742,10 @@ func _legwear_texture(kind: String, part: String, base: Color, accent: Color, si
 					_px(img, 12 + k, 2 + k * 2, 3, 1, lt)    # whiskers
 					_px(img, 18 - k, 2 + k * 2, 3, 1, lt)
 				if side > 0:
-					# ripped knee: skin showing through with frayed white threads
+					# ripped knee: skin showing through with frayed threads
 					_px(img, 12, 11, 8, 4, skin)
-					_px(img, 12, 12, 8, 1, Color(0.92, 0.9, 0.85))
-					_px(img, 13, 14, 6, 1, Color(0.92, 0.9, 0.85))
+					_px(img, 12, 12, 8, 1, pale)
+					_px(img, 13, 14, 6, 1, pale)
 			else:
 				for r in [10, 12, 14]:
 					var yy: int = r
@@ -653,186 +754,464 @@ func _legwear_texture(kind: String, part: String, base: Color, accent: Color, si
 		"cargo_shorts":
 			_px(img, 16, 0, 1, 16, dk)                       # front crease
 			_px(img, ox - 3, 5, 7, 9, dk)                    # big side cargo pocket
-			_px(img, ox - 2, 7, 5, 6, base.darkened(0.08))
-			_px(img, ox - 3, 5, 7, 2, base.darkened(0.15))   # flap
-			_px(img, ox, 6, 1, 1, Color(0.2, 0.18, 0.15))    # snap
+			_px(img, ox - 2, 7, 5, 6, base.darkened(0.06))
+			_px(img, ox - 3, 5, 7, 2, base.darkened(0.12))   # flap
+			_px(img, ox, 6, 1, 1, base.darkened(0.4))        # snap
 			_px(img, 0, 14, 32, 2, dk)                       # hem
 			img.set_pixel(13, 9, dk)
 			img.set_pixel(19, 10, dk)
 		"basketball_shorts":
-			_px(img, ox - 1, 0, 3, 16, accent)               # side panel
-			_px(img, ox, 0, 1, 16, Color(0.94, 0.94, 0.9))
-			_px(img, 0, 13, 32, 3, accent)                   # hem band
+			_px(img, ox - 1, 0, 3, 16, acc)                  # side panel
+			_px(img, ox, 0, 1, 16, pale)
+			_px(img, 0, 13, 32, 3, acc)                      # hem band
 			for x in range(0, 32, 3):
-				img.set_pixel(x, 6, base.darkened(0.1))      # mesh speckle
-				img.set_pixel(x + 1, 9, base.darkened(0.1))
+				img.set_pixel(x, 6, base.darkened(0.07))     # mesh speckle
+				img.set_pixel(x + 1, 9, base.darkened(0.07))
 		"sweatpants":
-			_px(img, ox, 0, 1, 16, accent)
+			_px(img, ox, 0, 1, 16, acc)
 			if part == "shin":
 				_px(img, 0, 12, 32, 4, dk)                   # elastic cuff
 			else:
 				img.set_pixel(14, 5, dk)
 				img.set_pixel(18, 8, dk)
-	return ImageTexture.create_from_image(img)
+	return _finish(img, "limb")
 
 
 func _sock_texture(base: Color, accent: Color) -> ImageTexture:
 	# 16x8 tube sock: two stripes at the top, ribbing.
 	var img := _new_img(16, 8, base)
-	_px(img, 0, 1, 16, 1, accent)
-	_px(img, 0, 3, 16, 1, accent)
+	var acc := base.lerp(accent, 0.8)
+	_px(img, 0, 1, 16, 1, acc)
+	_px(img, 0, 3, 16, 1, acc)
 	for x in range(0, 16, 2):
-		_px(img, x, 4, 1, 4, base.darkened(0.07))
-	return ImageTexture.create_from_image(img)
+		_px(img, x, 4, 1, 4, base.darkened(0.06))
+	return _finish(img, "limb")
 
 
 func _shoe_texture(base: Color, accent: Color) -> ImageTexture:
-	# 16x16 sneaker upper: padded collar, a generic swoop stripe down each side,
-	# lace panel with criss-cross white laces at the front, heel tab at the back.
+	# 16x16 high-top shaft: padded collar, a generic swoop stripe down each side,
+	# lace panel with criss-cross laces at the front, heel tab at the back.
 	var img := _new_img(16, 16, base)
-	var lace := Color(0.96, 0.96, 0.93)
-	_px(img, 0, 0, 16, 3, base.darkened(0.3))
-	_px(img, 0, 1, 16, 1, base.darkened(0.15))
+	var lace := base.lerp(Color(0.95, 0.95, 0.92), 0.8)
+	var acc := base.lerp(accent, 0.8)
+	_px(img, 0, 0, 16, 3, base.darkened(0.25))
+	_px(img, 0, 1, 16, 1, base.darkened(0.12))
 	for k in 8:
-		_px(img, 2 + int(k / 3.0), 4 + k, 3, 1, accent)       # -x side swoop
-		_px(img, 11 - int(k / 3.0), 4 + k, 3, 1, accent)      # +x side swoop
-	_px(img, 6, 2, 4, 14, base.darkened(0.2))
+		_px(img, 2 + int(k / 3.0), 4 + k, 3, 1, acc)       # -x side swoop
+		_px(img, 11 - int(k / 3.0), 4 + k, 3, 1, acc)      # +x side swoop
+	_px(img, 6, 2, 4, 14, base.darkened(0.15))
 	for r in range(3, 16):
 		if r % 2 == 1:
 			_px(img, 6, r, 1, 1, lace)
 			_px(img, 9, r, 1, 1, lace)
 		else:
 			_px(img, 7, r, 2, 1, lace)
-	_px(img, 0, 0, 1, 16, accent)
-	_px(img, 15, 0, 1, 16, accent)
-	return ImageTexture.create_from_image(img)
+	_px(img, 0, 0, 1, 16, acc)
+	_px(img, 15, 0, 1, 16, acc)
+	return _finish(img, "plain")
+
+
+func _foot_texture(base: Color, accent: Color) -> ImageTexture:
+	# 32x16 sneaker foot (lofted heel -> toe): u = 0.5 is the top of the foot (laces),
+	# u = 0.25 / 0.75 the sides, the seam (u 0 / 1) runs under the sole; v = heel (0) .. toe (1).
+	var img := _new_img(32, 16, base)
+	var lace := base.lerp(Color(0.95, 0.95, 0.92), 0.8)
+	var acc := base.lerp(accent, 0.8)
+	_px(img, 0, 0, 32, 2, base.darkened(0.2))            # heel counter
+	for k in 9:
+		var r := 3 + k
+		_px(img, 6 + int(k / 3.0), r, 4, 1, acc)         # swoops, rising toward the toe
+		_px(img, 22 - int(k / 3.0), r, 4, 1, acc)
+	_px(img, 13, 4, 6, 9, base.darkened(0.12))           # tongue / lace panel
+	for r in range(4, 13):
+		if r % 2 == 0:
+			_px(img, 13, r, 6, 1, lace)
+		else:
+			_px(img, 14, r, 1, 1, lace)
+			_px(img, 17, r, 1, 1, lace)
+	_px(img, 4, 13, 24, 3, base.lerp(Color(0.92, 0.92, 0.9), 0.35))   # toe box
+	_px(img, 0, 0, 3, 16, base.darkened(0.3))            # underside
+	_px(img, 29, 0, 3, 16, base.darkened(0.3))
+	return _finish(img, "plain")
 
 
 func _brace_texture() -> ImageTexture:
 	# 16x8 knee brace: black neoprene, grey patella ring at the front, velcro straps.
-	var img := _new_img(16, 8, Color(0.08, 0.08, 0.09))
-	var grey := Color(0.45, 0.45, 0.48)
+	var neo := Color(0.11, 0.11, 0.12)
+	var img := _new_img(16, 8, neo)
+	var grey := Color(0.38, 0.38, 0.4)
 	_px(img, 0, 0, 16, 1, grey)
 	_px(img, 0, 7, 16, 1, grey)
 	_px(img, 6, 2, 4, 4, grey)
-	_px(img, 7, 3, 2, 2, Color(0.08, 0.08, 0.09))
+	_px(img, 7, 3, 2, 2, neo)
 	_px(img, 2, 1, 1, 6, Color(0.2, 0.2, 0.22))
 	_px(img, 13, 1, 1, 6, Color(0.2, 0.2, 0.22))
-	return ImageTexture.create_from_image(img)
+	return _finish(img, "limb")
 
 
-func _cap_texture(base: Color) -> ImageTexture:
-	# 16x8 ball-cap crown: panel seams, button on top, eyelets.
-	var img := _new_img(16, 8, base)
-	var dk := base.darkened(0.25)
-	for x in [0, 4, 8, 12]:
+func _cap_texture(base: Color, skin: Color) -> ImageTexture:
+	# 32x16 ball-cap crown worn backwards: six panel seams, the button on top, and the
+	# strap opening (forehead showing through, adjuster strap) low at the front.
+	var img := _new_img(32, 16, base)
+	var dk := base.darkened(0.2)
+	for x in [0, 5, 11, 16, 21, 27]:
 		var xx: int = x
-		_px(img, xx, 0, 1, 8, dk)
-	_px(img, 0, 0, 16, 1, dk)
-	img.set_pixel(2, 3, dk)
-	img.set_pixel(6, 3, dk)
-	img.set_pixel(10, 3, dk)
-	img.set_pixel(14, 3, dk)
-	return ImageTexture.create_from_image(img)
+		_px(img, xx, 0, 1, 16, dk)
+	_px(img, 0, 0, 32, 2, dk)
+	for x in [3, 8, 14, 19, 24, 30]:
+		var xx: int = x
+		img.set_pixel(xx, 5, dk)
+	_px(img, 0, 14, 32, 2, base.darkened(0.12))          # sweatband edge
+	_px(img, 13, 9, 7, 7, skin)                           # strap opening
+	_px(img, 14, 8, 5, 1, skin)
+	_px(img, 12, 11, 9, 1, base.darkened(0.35))           # snapback strap
+	return _finish(img, "plain")
+
+
+func _hair_texture(hair_c: Color) -> ImageTexture:
+	# 32x32 (painted at 64x64) hair shell: soft strands, a sheen band, darker toward the edge.
+	var img := _new_img(64, 64, hair_c)
+	for y in 64:
+		var v := (y + 0.5) / 64.0
+		for x in 64:
+			var u := (x + 0.5) / 64.0
+			var strand := 0.5 + 0.5 * sin(u * TAU * 11.0 + sin(v * 9.0 + u * 20.0) * 1.4)
+			var f := 0.88 + 0.16 * strand
+			f += 0.14 * exp(-pow((v - 0.3) / 0.1, 2.0))   # sheen
+			f -= 0.18 * smoothstep(0.75, 1.0, v)
+			img.set_pixel(x, y, Color(hair_c.r * f, hair_c.g * f, hair_c.b * f))
+	return _finish_2x(img)
+
+
+# Head wrap layout (64x64 design grid, painted at 128x128): column 32 is the face centre,
+# ears at 16 / 48, back seam at 0 / 64. Rows follow the skull loft (y 0.34 .. 0): hairline
+# ~16, brow ~24.5, eyes ~28.5, nose tip ~38.5, mouth ~46.5, chin ~54, under the jaw 58+.
+const FACE_S := 2.0
+
+
+## Eyes (sockets, whites, irises, lids) and brows; used by bare faces and inside mask holes.
+func _paint_eyes(img: Image, skin: Color, brow_c: Color, sockets: bool) -> void:
+	var s := FACE_S
+	var shade := _skin_shade(skin, 0.32)
+	var white := Color(0.86, 0.83, 0.77)
+	var iris := Color(0.28, 0.18, 0.1)
+	var lid := Color(0.16, 0.09, 0.06)
+	for e in [-1.0, 1.0]:
+		var ex: float = 32.0 + 2.7 * e
+		if sockets:
+			_dab(img, s, ex, 28.4, 2.6, 2.0, shade, 0.65, 0.9)            # eye socket
+			_dab(img, s, ex + 0.4 * e, 25.4, 2.4, 0.75, brow_c, 0.85, 0.6)  # brow (outer end)
+			_dab(img, s, ex - 0.9 * e, 25.9, 1.5, 0.7, brow_c, 0.85, 0.6)  # brow (inner end, low: a scowl)
+		_dab(img, s, ex, 28.7, 1.35, 0.62, white, 0.95, 0.45)            # eye white
+		_dab(img, s, ex - 0.15 * e, 28.75, 0.6, 0.6, iris, 0.95, 0.4)    # iris
+		_dab(img, s, ex, 28.05, 1.5, 0.35, lid, 0.7, 0.5)                # upper lid
+	_dab(img, s, 32.0, 26.6, 1.0, 1.4, shade, 0.25, 0.9)                 # frown crease
+
+
+## Lips and mouth line (mouth row ~46.5).
+func _paint_mouth(img: Image, skin: Color) -> void:
+	var s := FACE_S
+	var lip := skin.lerp(Color(0.5, 0.24, 0.21), 0.42)
+	var dark := Color(0.2, 0.1, 0.08)
+	_dab(img, s, 32.0, 46.0, 2.5, 0.7, lip.darkened(0.15), 0.7, 0.6)    # upper lip
+	_dab(img, s, 32.0, 47.6, 2.0, 0.75, lip, 0.6, 0.7)                  # lower lip
+	_dab(img, s, 32.0, 46.75, 2.4, 0.3, dark, 0.75, 0.5)                # mouth line
+	_dab(img, s, 34.2, 46.4, 0.5, 0.35, dark, 0.5, 0.5)                 # smirk corner
+
+
+## Hair painted onto the head wrap below the hair shell / cap (sideburns, back and sides).
+func _paint_hairline(img: Image, hair_c: Color, style: String, skin: Color) -> void:
+	var s := FACE_S
+	var w := img.get_width()
+	var h := img.get_height()
+	var stub := skin.lerp(hair_c, 0.4)
+	for x in w:
+		var col := (x + 0.5) / s
+		var d := absf(col - 32.0)          # 0 at the face centre, 32 at the back seam
+		var line := -1.0
+		var c := hair_c
+		var a := 1.0
+		match style:
+			"flattop", "dreads", "messy":
+				if d < 8.5:
+					line = 15.5 + 2.0 * (d / 8.5) * (d / 8.5)
+				elif d < 11.0:
+					line = 33.0 if style == "flattop" else 22.0   # sideburns
+				elif d < 19.0:
+					line = 25.0                  # over the ears
+				else:
+					line = lerpf(30.0, 42.0, smoothstep(19.0, 30.0, d))
+			"long":
+				if d < 8.5:
+					line = 15.0 + 1.5 * (d / 8.5)
+				elif d < 11.0:
+					line = 38.0
+				else:
+					line = 63.0
+			"mohawk":
+				c = stub
+				a = 0.55
+				if d < 8.5:
+					line = 16.0
+				elif d < 11.0:
+					line = 30.0
+				elif d < 19.0:
+					line = 25.0
+				else:
+					line = 40.0
+		if line < 0.0:
+			continue
+		for y in h:
+			var row := (y + 0.5) / s
+			var k := a * (1.0 - smoothstep(line - 1.4, line + 0.6, row))
+			if k <= 0.0:
+				break
+			var strand := 0.5 + 0.5 * sin(col * 2.6 + row * 0.35)
+			img.set_pixel(x, y, img.get_pixel(x, y).lerp(c.darkened(0.1 * strand), k))
+	if style == "mohawk":
+		_dab(img, s, 32.0, 6.0, 2.6, 12.0, hair_c, 1.0, 0.4)
+		_dab(img, s, 0.0, 14.0, 2.6, 20.0, hair_c, 1.0, 0.4)
+		_dab(img, s, 64.0, 14.0, 2.6, 20.0, hair_c, 1.0, 0.4)
 
 
 func _head_texture(skin: Color, hair_c: Color, style: String) -> ImageTexture:
-	# 64x32 wrap-around head texture: face on the front (columns ~22..41), ears at the
-	# sides (u 0.25 / 0.75), hair or mask seams at the back.
-	var dark := Color(0.12, 0.07, 0.05)
-	var shade := skin.darkened(0.22)
-	if look.get("mask", false):
-		var mask_src: Color = look.get("mask_color", Color(0.12, 0.3, 0.85))
-		var trim_src: Color = look.get("mask_trim", Color(1.0, 0.55, 0.1))
-		var mask := _sat(mask_src)
-		var trim := _sat(trim_src)
-		var hot := trim.lerp(Color(1.0, 1.0, 1.0), 0.45)
-		var mimg := _new_img(64, 32, mask)
-		# cheap party-store luchador mask: pointed eye surrounds, forehead diamond,
-		# zigzag side trim, visible stitched seams and an elastic strap at the back.
-		for r in range(9, 22):
-			var hw := 6 - absi(r - 15)
-			if hw > 0:
-				_px(mimg, 29 - hw, r, hw * 2, 1, trim)
-				_px(mimg, 35 - hw, r, hw * 2, 1, trim)
-		for r in range(2, 10):
-			var dw := 3 - absi(r - 6)
-			if dw > 0:
-				_px(mimg, 32 - dw, r, dw * 2, 1, hot)
-		_px(mimg, 31, 0, 2, 2, trim)
-		_px(mimg, 27, 14, 4, 3, Color.WHITE)       # eye holes
-		_px(mimg, 33, 14, 4, 3, Color.WHITE)
-		_px(mimg, 28, 14, 2, 3, dark)
-		_px(mimg, 34, 14, 2, 3, dark)
-		_px(mimg, 28, 23, 8, 4, skin)              # mouth hole
-		_px(mimg, 29, 24, 6, 1, dark)
-		_px(mimg, 30, 25, 4, 1, shade)
-		for x in range(2, 62):
-			if x > 21 and x < 43:
-				continue
-			_px(mimg, x, 19 + (1 if x % 4 < 2 else 0), 1, 2, trim)
-		var seam := mask.darkened(0.3)
-		_px(mimg, 16, 0, 1, 18, seam)
-		_px(mimg, 48, 0, 1, 18, seam)
-		_px(mimg, 0, 12, 1, 18, seam)
-		_px(mimg, 63, 12, 1, 18, seam)
-		_px(mimg, 0, 24, 6, 2, Color(0.1, 0.1, 0.1))   # elastic strap
-		_px(mimg, 58, 24, 6, 2, Color(0.1, 0.1, 0.1))
-		_px(mimg, 0, 30, 64, 2, trim)               # bottom hem
-		return ImageTexture.create_from_image(mimg)
-
-	var img := _new_img(64, 32, skin)
-	_px(img, 0, 28, 64, 4, skin.darkened(0.12))   # under the jaw
-	_px(img, 22, 17, 4, 10, skin.darkened(0.07))  # cheek shading
-	_px(img, 38, 17, 4, 10, skin.darkened(0.07))
+	# 64x64 wrap-around head painted softly at 128x128, bilinear-downsampled and mipmapped.
+	var s := FACE_S
+	var shade := _skin_shade(skin, 0.3)
+	var lt := _skin_light(skin, 0.14)
+	var img := _new_img(128, 128, skin)
+	# broad forms: under-jaw / neck darkening, darker temples and back of the head
+	for y in 128:
+		var row := (y + 0.5) / s
+		var jaw := smoothstep(52.0, 62.0, row) * 0.26
+		for x in 128:
+			var col := (x + 0.5) / s
+			var back := smoothstep(8.0, 26.0, absf(col - 32.0)) * 0.08
+			var f := 1.0 - jaw - back
+			var c := img.get_pixel(x, y)
+			img.set_pixel(x, y, Color(c.r * f, c.g * f, c.b * f))
+	var dark_h := hair_c.lerp(Color(0.05, 0.03, 0.02), 0.3)
+	# lit forehead, cheekbones, nose bridge and chin; shadowed temples
+	_dab(img, s, 32.0, 19.0, 8.0, 5.0, lt, 0.4, 1.0)
+	_dab(img, s, 27.0, 34.5, 3.0, 2.6, lt, 0.35, 1.0)
+	_dab(img, s, 37.0, 34.5, 3.0, 2.6, lt, 0.35, 1.0)
+	_dab(img, s, 22.5, 30.0, 3.5, 9.0, shade, 0.25, 1.0)
+	_dab(img, s, 41.5, 30.0, 3.5, 9.0, shade, 0.25, 1.0)
+	_dab(img, s, 32.0, 25.2, 6.0, 1.0, lt, 0.35, 0.9)              # brow ridge
+	# stubble before the features so lips sit on top of it
+	var stub_c := skin.lerp(hair_c, 0.5).darkened(0.1)
 	if look.get("stubble", false):
-		_px(img, 23, 21, 18, 8, shade.lerp(hair_c, 0.3))
-	var facial: String = look.get("facial", "none")
-	if facial == "goatee":
-		_px(img, 28, 23, 8, 2, hair_c)        # moustache
-		_px(img, 27, 24, 1, 4, hair_c)
-		_px(img, 36, 24, 1, 4, hair_c)
-		_px(img, 28, 27, 8, 4, hair_c)        # chin beard
-	# brows, eyes, nose shading, smirk
-	_px(img, 26, 12, 5, 2, hair_c)
-	_px(img, 33, 12, 5, 2, hair_c)
-	_px(img, 27, 14, 4, 2, Color.WHITE)
-	_px(img, 33, 14, 4, 2, Color.WHITE)
-	_px(img, 28, 14, 2, 2, dark)
-	_px(img, 34, 14, 2, 2, dark)
-	_px(img, 27, 16, 4, 1, shade)
-	_px(img, 33, 16, 4, 1, shade)
-	_px(img, 30, 19, 1, 3, shade)
-	_px(img, 33, 19, 1, 3, shade)
-	_px(img, 29, 25, 6, 1, dark)
-	_px(img, 34, 24, 1, 1, dark)
-	var stubble_tone := skin.lerp(hair_c, 0.3)
-	match style:
-		"flattop":
-			_px(img, 0, 0, 64, 8, hair_c)
-			_px(img, 0, 0, 20, 18, hair_c)      # back half
-			_px(img, 44, 0, 20, 18, hair_c)
-			_px(img, 20, 0, 3, 19, hair_c)      # sideburns
-			_px(img, 41, 0, 3, 19, hair_c)
-			_px(img, 23, 7, 18, 1, hair_c.lightened(0.15))
-		"long":
-			_px(img, 0, 0, 64, 9, hair_c)
-			_px(img, 0, 0, 22, 32, hair_c)
-			_px(img, 42, 0, 22, 32, hair_c)
-			_px(img, 22, 0, 2, 27, hair_c)
-			_px(img, 40, 0, 2, 27, hair_c)
-		"mohawk":
-			_px(img, 0, 0, 64, 11, stubble_tone)
-			_px(img, 29, 0, 6, 11, hair_c)
-			_px(img, 0, 0, 3, 15, hair_c)
-			_px(img, 61, 0, 3, 15, hair_c)
-	return ImageTexture.create_from_image(img)
+		_dab(img, s, 32.0, 48.5, 8.0, 8.0, stub_c, 0.5, 0.8)
+		_dab(img, s, 25.5, 44.0, 2.5, 7.0, stub_c, 0.4, 0.9)
+		_dab(img, s, 38.5, 44.0, 2.5, 7.0, stub_c, 0.4, 0.9)
+	# nose: bridge highlight, side shadows, shadow under the tip
+	_dab(img, s, 32.0, 32.0, 0.7, 4.5, lt, 0.4, 0.8)
+	_dab(img, s, 30.8, 34.5, 0.7, 3.5, shade, 0.35, 0.9)
+	_dab(img, s, 33.2, 34.5, 0.7, 3.5, shade, 0.35, 0.9)
+	_dab(img, s, 32.0, 39.4, 2.0, 0.9, shade.darkened(0.15), 0.55, 0.8)
+	_dab(img, s, 32.0, 53.5, 2.4, 1.4, lt, 0.25, 1.0)              # chin
+	_dab(img, s, 32.0, 49.6, 1.8, 0.6, shade, 0.35, 0.9)           # under the lower lip
+	_paint_eyes(img, skin, dark_h, true)
+	_paint_mouth(img, skin)
+	if look.get("facial", "none") == "goatee":
+		_dab(img, s, 32.0, 45.0, 3.0, 0.85, hair_c, 0.9, 0.5)      # moustache
+		_dab(img, s, 29.3, 47.6, 0.7, 2.5, hair_c, 0.85, 0.5)
+		_dab(img, s, 34.7, 47.6, 0.7, 2.5, hair_c, 0.85, 0.5)
+		_dab(img, s, 32.0, 51.8, 2.3, 3.0, hair_c, 0.9, 0.5)       # chin beard
+	# ears (u 0.25 / 0.75)
+	for ecx in [16.0, 48.0]:
+		var ex: float = ecx
+		_dab(img, s, ex, 30.5, 2.2, 4.0, shade, 0.35, 0.9)
+		_dab(img, s, ex, 30.5, 1.0, 2.2, shade.darkened(0.2), 0.45, 0.8)
+	_paint_hairline(img, hair_c, style, skin)
+	return _finish_2x(img)
+
+
+## Warm skin shadow / highlight (deep browns on dark skin, never grey).
+func _skin_shade(skin: Color, amt: float) -> Color:
+	return Color(skin.r * (1.0 - amt * 1.0), skin.g * (1.0 - amt * 1.18), skin.b * (1.0 - amt * 1.3))
+
+
+func _skin_light(skin: Color, amt: float) -> Color:
+	return skin.lerp(Color(1.0, 0.78, 0.58), amt)
+
+
+func _hash01(k: float) -> float:
+	var v := sin(k * 12.9898 + 4.1414) * 43758.5453
+	return v - floor(v)
+
+
+func _dread_texture(hair_c: Color) -> ImageTexture:
+	# 16x32 (painted at 32x64) twisted loc: diagonal twist bands, lighter sun-faded tips at
+	# the top rows (loft v = 0 is the tip), dark roots.
+	var img := _new_img(32, 64, hair_c)
+	var tip := hair_c.lerp(Color(0.42, 0.3, 0.2), 0.45)
+	for y in 64:
+		var v := (y + 0.5) / 64.0
+		for x in 32:
+			var u := (x + 0.5) / 32.0
+			var twist := 0.5 + 0.5 * sin((u * 2.0 + v * 7.0) * TAU)
+			var c := hair_c.lerp(tip, 1.0 - smoothstep(0.05, 0.4, v))
+			var f := 0.82 + 0.3 * twist - 0.15 * smoothstep(0.7, 1.0, v)
+			img.set_pixel(x, y, Color(c.r * f, c.g * f, c.b * f))
+	return _finish_2x(img)
+
+
+## Short twisted locs / messy tufts radiating from the scalp: n small tapered lofts
+## (`sides`-sided) on the head geometry node. droop bends the side / back ones down and out;
+## sd picks a different scatter.
+func _build_twists(hg: Node3D, mat: Material, n: int, len_min: float, len_max: float, r: float,
+		sides: int, droop: float, sd: float) -> void:
+	var c := Vector3(0.0, 0.19, -0.005)
+	var rad := Vector3(0.165, 0.15, 0.178)
+	for k in n:
+		var z := (float(k) + 0.5) / float(n)
+		var phi := acos(1.0 - z * (1.0 - cos(1.35)))           # 0 = crown .. 1.35 rad down the sides
+		var theta := float(k) * 2.39996 + sd + (_hash01(k + sd) - 0.5) * 0.6
+		var front := maxf(0.0, cos(theta))
+		phi = minf(phi, lerpf(1.35, 0.8, front))                # keep them off the face
+		var out := Vector3(sin(phi) * sin(theta), cos(phi), sin(phi) * cos(theta))
+		var pos := c + out * rad * 0.96
+		var nrm := Vector3(out.x / rad.x, out.y / rad.y, out.z / rad.z).normalized()
+		var dir := (nrm + Vector3(0.0, -droop * phi, 0.0) + Vector3(0.0, 0.0, 0.25 * front * phi)).normalized()
+		var ln := lerpf(len_min, len_max, _hash01(k * 3.7 + sd))
+		var rr := r * lerpf(0.85, 1.15, _hash01(k * 5.3 + sd))
+		var p := _pivot(hg, pos)
+		p.basis = Basis(Quaternion(Vector3.UP, dir))
+		_add_mesh(p, _loft_mesh([Vector4(ln, rr * 0.45, rr * 0.45, 0.0), Vector4(ln * 0.6, rr * 0.85, rr * 0.85, 0.0),
+			Vector4(ln * 0.2, rr, rr, 0.0), Vector4(-0.02, rr * 0.9, rr * 0.9, 0.0)], true, false, sides), Vector3.ZERO, mat)
+
+
+# Skull loft rings (head geometry space, before HEAD_SCALE): y, rx, rz, z offset.
+const SKULL := [
+	Vector4(0.34, 0.03, 0.035, -0.01), Vector4(0.33, 0.09, 0.1, -0.01), Vector4(0.305, 0.13, 0.142, -0.008),
+	Vector4(0.265, 0.155, 0.168, -0.004), Vector4(0.215, 0.165, 0.178, 0.0), Vector4(0.16, 0.163, 0.177, 0.004),
+	Vector4(0.11, 0.152, 0.17, 0.008), Vector4(0.065, 0.134, 0.158, 0.012), Vector4(0.03, 0.11, 0.137, 0.014),
+	Vector4(0.0, 0.07, 0.095, 0.01)]
+
+
+func _skull_at(y: float) -> Vector4:
+	for j in SKULL.size() - 1:
+		var a: Vector4 = SKULL[j]
+		var b: Vector4 = SKULL[j + 1]
+		if y <= a.x and y >= b.x:
+			return a.lerp(b, (a.x - y) / maxf(0.0001, a.x - b.x))
+	var last: Vector4 = SKULL[SKULL.size() - 1]
+	var first: Vector4 = SKULL[0]
+	return first if y > first.x else last
+
+
+## Curved shell over the front of the face (not a full ring): angle a0..a1 around the head
+## (0 = front) maps to u, y1 (top) .. y0 (bottom) to v. Sits `gap` outside the skull with a
+## moulded nose bump.
+func _face_patch_mesh(a0: float, a1: float, y0: float, y1: float, gap: float, cols := 14, rows := 12) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var pts: Array = []
+	var nrs: Array = []
+	var uvs: Array = []
+	for j in rows + 1:
+		var v := float(j) / float(rows)
+		var y := lerpf(y1, y0, v)
+		var sk := _skull_at(y)
+		var prow := PackedVector3Array()
+		var nrow := PackedVector3Array()
+		var urow := PackedVector2Array()
+		for i in cols + 1:
+			var u := float(i) / float(cols)
+			var a := lerpf(a0, a1, u)
+			var rx := sk.y + gap
+			var rz := sk.z + gap
+			var p := Vector3(sin(a) * rx, y, cos(a) * rz + sk.w)
+			p.z += 0.03 * exp(-pow(a / 0.2, 2.0) - pow((y - 0.15) / 0.045, 2.0))   # nose
+			p.z += 0.008 * exp(-pow(a / 0.5, 2.0) - pow((y - 0.215) / 0.02, 2.0))  # brow
+			prow.append(p)
+			nrow.append(Vector3(sin(a) / rx, 0.15 * (0.5 - v), cos(a) / rz).normalized())
+			urow.append(Vector2(u, 0.02 + 0.96 * v))
+		pts.append(prow)
+		nrs.append(nrow)
+		uvs.append(urow)
+	for j in rows:
+		var p0: PackedVector3Array = pts[j]
+		var p1: PackedVector3Array = pts[j + 1]
+		var n0: PackedVector3Array = nrs[j]
+		var n1: PackedVector3Array = nrs[j + 1]
+		var u0: PackedVector2Array = uvs[j]
+		var u1: PackedVector2Array = uvs[j + 1]
+		for i in cols:
+			_tri(st, p0[i], p0[i + 1], p1[i + 1], n0[i], n0[i + 1], n1[i + 1], u0[i], u0[i + 1], u1[i + 1])
+			_tri(st, p0[i], p1[i + 1], p1[i], n0[i], n1[i + 1], n1[i], u0[i], u1[i + 1], u1[i])
+	return st.commit()
+
+
+## Cheap Halloween-store luchador face mask: printed flames and teardrop eyes, big eye
+## holes, a mouth slit; transparent outside the face outline (alpha scissor).
+func _costume_mask_texture(base: Color, trim: Color) -> ImageTexture:
+	var s := FACE_S
+	var img := _new_img(128, 128, base)
+	var hot := Color(0.92, 0.22, 0.12)
+	var clear := Color(0.0, 0.0, 0.0, 0.0)
+	for y in 128:
+		var row := (y + 0.5) / s
+		for x in 128:
+			var col := (x + 0.5) / s
+			var d := Vector2((col - 32.0) / 31.0, (row - 33.0) / 31.5).length()
+			if d >= 1.0:
+				img.set_pixel(x, y, clear)
+				continue
+			var f := 1.1 - 0.28 * d * d - 0.12 * smoothstep(0.9, 1.0, d)
+			img.set_pixel(x, y, Color(base.r * f, base.g * f, base.b * f))
+	# crude printed flames licking up from the brow
+	for i in 8:
+		var cx := 12.0 + i * 5.7
+		var hh := 11.0 + 7.0 * _hash01(i * 1.7 + 3.0) - absf(cx - 32.0) * 0.12
+		_dab(img, s, cx, 21.0 - hh * 0.5, 2.7, hh * 0.55, hot, 1.0, 0.3)
+		_dab(img, s, cx, 21.5 - hh * 0.35, 1.5, hh * 0.38, trim, 1.0, 0.35)
+	# flames up from the jaw on both cheeks
+	for i in 3:
+		for sd in [-1.0, 1.0]:
+			var sgn: float = sd
+			var cx := 32.0 + sgn * (13.0 + i * 4.0)
+			_dab(img, s, cx, 50.0 - i * 2.0, 2.2, 6.0, hot, 1.0, 0.3)
+			_dab(img, s, cx, 51.5 - i * 2.0, 1.2, 4.0, trim, 1.0, 0.35)
+	# teardrop eye surrounds (point down), red outline
+	for sd in [-1.0, 1.0]:
+		var ex: float = 32.0 + 6.5 * float(sd)
+		_diamond(img, s, ex, 29.5, 6.8, 11.0, hot, 1.0, 0.15)
+		_diamond(img, s, ex, 29.5, 5.6, 9.4, Color(0.96, 0.95, 0.9), 1.0, 0.15)
+		_dab(img, s, ex, 26.5, 4.0, 2.9, clear, 1.0, 0.25)          # oversized eye hole
+	_dab(img, s, 32.0, 39.0, 2.0, 2.5, base.lightened(0.15), 0.6, 0.8)   # moulded nose sheen
+	_dab(img, s, 30.9, 41.0, 0.6, 0.5, clear, 1.0, 0.3)          # nostril holes
+	_dab(img, s, 33.1, 41.0, 0.6, 0.5, clear, 1.0, 0.3)
+	_dab(img, s, 32.0, 49.8, 4.4, 1.3, clear, 1.0, 0.25)         # mouth slit
+	return _finish_2x(img)
+
+
+## The costume mask: a face-only glossy plastic shell, a bit oversized and crooked, held on
+## by a thin black elastic strap around the back of the head.
+func _build_costume_mask(hg: Node3D) -> void:
+	var mask_src: Color = look.get("mask_color", Color(0.15, 0.7, 0.3))
+	var trim_src: Color = look.get("mask_trim", Color(1.0, 0.82, 0.1))
+	var mm := _mat(Color.WHITE, _costume_mask_texture(_sat(mask_src, 1.0), _sat(trim_src, 1.0)))
+	mm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	mm.alpha_scissor_threshold = 0.5
+	mm.specular_mode = BaseMaterial3D.SPECULAR_SCHLICK_GGX
+	mm.roughness = 0.2
+	mm.metallic_specular = 0.9
+	var mk := _pivot(hg, Vector3(0.008, -0.006, 0.004))
+	mk.rotation = Vector3(0.04, 0.06, -0.08)                      # slapped on crooked
+	_add_mesh(mk, _face_patch_mesh(-1.2, 1.2, 0.01, 0.305, 0.03), Vector3.ZERO, mm)
+	var strap := _mat(Color(0.06, 0.06, 0.07))
+	_loft(hg, [Vector4(0.212, 0.171, 0.186, -0.002), Vector4(0.196, 0.172, 0.187, -0.002)], strap, false, false)
 
 
 # --- the model ------------------------------------------------------------------
-# Backyard street clothes: the clothes are lofted shells a little larger than the body
-# parts they cover (shirt over the torso, sleeves over the upper arms, shorts flaring
-# over the thighs, jeans legs, chunky sneakers). look keys (all optional):
+# AKI-era proportions: a small head (~1/7 of the height), broad sloping traps, deltoids
+# and flared lats over a narrow waist, arms as thick as the head, big mitt hands, chunky
+# shoes; every part is a smooth 12-sided loft so the Gouraud shading rolls softly.
+# Backyard street clothes are lofted shells a little larger than the body parts they cover
+# (shirt over the torso, sleeves over the upper arms, shorts flaring over the thighs, jeans
+# legs, chunky sneakers). look keys (all optional):
 #   top: "tshirt" | "tank" | "flannel" | "hoodie" | "shirtless"; top_color, top_accent,
 #   top_pattern: "plaid" | "stripe" | "logo" | "none"; sleeves (hoodie): "long" | "cut"
 #   bottom: "jeans" | "cargo_shorts" | "basketball_shorts" | "sweatpants"; bottom_color,
@@ -842,8 +1221,12 @@ func _head_texture(skin: Color, hair_c: Color, style: String) -> ImageTexture:
 #   hair, hair_color, mask, mask_color, mask_trim; bulk (0.8..1.25, torso width and
 #   limb thickness; pivots never move); gut (0..0.06, belly push).
 
-var hand_r: Node3D  # right fist attach point (child of elbow_r): held items go here
+var hand_r: Node3D  # right hand attach point (child of elbow_r): held items go here
 var hand_l: Node3D
+var finger_curl := 1.6        # mitt fingers: 1.6 = fist ... 0.3 = open hand (see _apply_hands)
+var _hand_parts: Array = []   # per hand: [side, finger knuckle pivot, finger tip pivot, thumb pivot]
+
+const HEAD_SCALE := 0.85      # head geometry scale (the head pivot itself never moves)
 
 
 ## Scales the radii of loft rings (x by kx, z and the z offset by kz) and adds a margin.
@@ -856,22 +1239,22 @@ func _bulked(rings: Array, kx: float, kz: float, add := 0.0) -> Array:
 
 
 func _build_body() -> void:
-	var skin_c := _sat(skin_color, 1.12)
+	var skin_c := _sat(skin_color, 1.05)
 	var hair_c: Color = look.get("hair_color", Color(0.15, 0.1, 0.07))
 	var hair_style: String = look.get("hair", "none")
 	var is_mask: bool = look.get("mask", false)
 	var top: String = look.get("top", "tshirt")
 	var top_src: Color = look.get("top_color", gear_color)
-	var top_c := _sat(top_src)
+	var top_c := _sat(top_src, 0.92)
 	var top_pattern: String = look.get("top_pattern", "none")
 	var top_acc_src: Color = look.get("top_accent", top_src.darkened(0.5))
-	var top_acc := _sat(top_acc_src)
+	var top_acc := _sat(top_acc_src, 0.92)
 	var sleeves: String = look.get("sleeves", "long")
 	var bottom: String = look.get("bottom", "jeans")
 	var bot_src: Color = look.get("bottom_color", Color(0.24, 0.34, 0.58))
-	var bot_c := _sat(bot_src, 1.0)
+	var bot_c := _sat(bot_src, 0.92)
 	var bot_acc_src: Color = look.get("bottom_accent", gear_color)
-	var bot_acc := _sat(bot_acc_src)
+	var bot_acc := _sat(bot_acc_src, 0.92)
 	var shoes: String = look.get("shoes", "hightops")
 	var shoe_src: Color = look.get("shoe_color", gear_color)
 	var shoe_acc_src: Color = look.get("shoe_accent", Color(0.95, 0.95, 0.95))
@@ -891,10 +1274,10 @@ func _build_body() -> void:
 
 	var skin := _mat(skin_c)
 	var skin_dark := _mat(skin_c.darkened(0.12))
-	var hair := _mat(hair_c)
-	var white := _mat(Color(0.95, 0.95, 0.92))
+	var hair := _mat(Color.WHITE, _hair_texture(hair_c))
+	var white := _mat(Color(0.9, 0.9, 0.87))
 	var top_solid := _mat(top_c)
-	var top_dark := _mat(top_c.darkened(0.25))
+	var top_dark := _mat(top_c.darkened(0.2))
 	var torso_mat: Material
 	if top == "shirtless":
 		torso_mat = _mat(Color.WHITE, _torso_texture(skin_c))
@@ -902,9 +1285,8 @@ func _build_body() -> void:
 		torso_mat = _mat(Color.WHITE, _top_texture(top, top_c, top_pattern, top_acc, skin_c))
 	var head_mat := _mat(Color.WHITE, _head_texture(skin_c, hair_c, hair_style))
 	var head_solid := skin
-	if is_mask:
-		var mask_src: Color = look.get("mask_color", gear_color)
-		head_solid = _mat(_sat(mask_src))
+	var shoe_c := _sat(shoe_src, 0.92)
+	var shoe_acc := _sat(shoe_acc_src, 0.92)
 
 	var m := {
 		"skin": skin, "skin_dark": skin_dark, "white": white, "top_solid": top_solid,
@@ -915,24 +1297,25 @@ func _build_body() -> void:
 		"thigh_r": _mat(Color.WHITE, _legwear_texture(bottom, "thigh", bot_c, bot_acc, 1, skin_c)),
 		"shin_l": _mat(Color.WHITE, _legwear_texture(bottom, "shin", bot_c, bot_acc, -1, skin_c)),
 		"shin_r": _mat(Color.WHITE, _legwear_texture(bottom, "shin", bot_c, bot_acc, 1, skin_c)),
-		"sock_l": _mat(Color.WHITE, _sock_texture(_sat(sock_l_src, 1.0), _sat(sock_acc_src))),
-		"sock_r": _mat(Color.WHITE, _sock_texture(_sat(sock_r_src, 1.0), _sat(sock_acc_src))),
-		"shoe": _mat(Color.WHITE, _shoe_texture(_sat(shoe_src), _sat(shoe_acc_src))),
-		"shoe_plain": _mat(_sat(shoe_src)),
-		"shoe_accent": _mat(_sat(shoe_acc_src)),
+		"sock_l": _mat(Color.WHITE, _sock_texture(_sat(sock_l_src, 0.92), _sat(sock_acc_src, 0.92))),
+		"sock_r": _mat(Color.WHITE, _sock_texture(_sat(sock_r_src, 0.92), _sat(sock_acc_src, 0.92))),
+		"shoe": _mat(Color.WHITE, _shoe_texture(shoe_c, shoe_acc)),
+		"foot": _mat(Color.WHITE, _foot_texture(shoe_c, shoe_acc)),
+		"shoe_plain": _mat(shoe_c),
+		"shoe_accent": _mat(shoe_acc),
 		"brace": _mat(Color.WHITE, _brace_texture()),
 		"wristband": null,
 	}
 	if look.has("wristband_color"):
 		var wb_src: Color = look.get("wristband_color", Color.WHITE)
-		m["wristband"] = _mat(_sat(wb_src))
+		m["wristband"] = _mat(_sat(wb_src, 0.92).darkened(0.05))
 
 	# Blob shadow (stays flat on the mat)
 	var sh := CylinderMesh.new()
 	sh.top_radius = 0.6
 	sh.bottom_radius = 0.6
 	sh.height = 0.01
-	sh.radial_segments = 10
+	sh.radial_segments = 16
 	var sh_mat := StandardMaterial3D.new()
 	sh_mat.albedo_color = Color(0, 0, 0, 0.5)
 	sh_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -944,92 +1327,133 @@ func _build_body() -> void:
 	hips = _pivot(pose_root, Vector3.ZERO)
 
 	# Pelvis: the waist of the shorts / jeans (belt, fly and pockets painted on)
-	var bot_add := 0.02 if bottom == "basketball_shorts" else 0.008
+	var bot_add := 0.024 if bottom == "basketball_shorts" else 0.01
 	var pelvis_mi := _loft(hips, _bulked([
-		Vector4(0.17, 0.285, 0.19, 0.0), Vector4(0.12, 0.29, 0.195, 0.0), Vector4(0.0, 0.28, 0.195, 0.0),
-		Vector4(-0.1, 0.25, 0.18, 0.0), Vector4(-0.17, 0.16, 0.13, 0.0)], kx, kz, bot_add),
-		_mat(Color.WHITE, _bottoms_texture(bottom, bot_c, bot_acc)))
+		Vector4(0.17, 0.275, 0.19, 0.0), Vector4(0.12, 0.282, 0.195, 0.0), Vector4(0.04, 0.285, 0.198, 0.0),
+		Vector4(-0.04, 0.275, 0.192, 0.0), Vector4(-0.11, 0.24, 0.175, 0.0), Vector4(-0.17, 0.16, 0.13, 0.0)],
+		kx, kz, bot_add), _mat(Color.WHITE, _bottoms_texture(bottom, bot_c, bot_acc)))
 	pelvis_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 
-	# Torso: bare chest, or an untucked shirt whose hem hangs over the waistband
+	# Torso: trapezius sloping from a thick neck into broad shoulders, chest and flared
+	# lats tapering to a narrow waist (V-taper). Shirts hang loose from the chest.
 	torso = _pivot(hips, Vector3(0, 0.12, 0))
+	var body_rings := [
+		Vector4(0.66, 0.12, 0.11, -0.01),                            # neck base
+		Vector4(0.635, 0.2, 0.125, -0.02),                           # traps
+		Vector4(0.59, 0.32, 0.165, -0.02),
+		Vector4(0.53, 0.39, 0.2, -0.01),                             # shoulder line
+		Vector4(0.45, 0.41, 0.218 + gut * 0.2, 0.005),               # chest / lats
+		Vector4(0.36, 0.38, 0.216 + gut * 0.4, 0.01 + gut * 0.3),
+		Vector4(0.24, 0.32, 0.2 + gut, gut * 0.7),                   # ribs
+		Vector4(0.12, 0.275, 0.182 + gut * 0.9, gut * 0.6),
+		Vector4(0.0, 0.26, 0.172 + gut * 0.7, gut * 0.5)]            # waist
 	var torso_rings: Array
+	var lx := 0.0
+	var lz := 0.0
 	if top == "shirtless":
-		torso_rings = _bulked([
-			Vector4(0.64, 0.11, 0.09, -0.01), Vector4(0.58, 0.27, 0.15, -0.02), Vector4(0.48, 0.37, 0.2, 0.0),
-			Vector4(0.34, 0.355, 0.215 + gut * 0.4, 0.01 + gut * 0.3),
-			Vector4(0.2, 0.3, 0.19 + gut, gut * 0.7), Vector4(0.0, 0.26, 0.17 + gut * 0.7, gut * 0.5)], kx, kz)
+		torso_rings = _bulked(body_rings, kx, kz)
 	else:
-		var lx := 0.035 if top == "hoodie" else 0.012
-		var lz := 0.018 if top == "hoodie" else 0.01
+		lx = 0.035 if top == "hoodie" else 0.014
+		lz = 0.02 if top == "hoodie" else 0.012
 		var hem_y := -0.12 if top == "hoodie" else -0.1
-		torso_rings = [
-			Vector4(0.66, 0.11, 0.095, -0.01),
-			Vector4(0.6, 0.28 * kx + lx, 0.16 * kz + lz, -0.02),
-			Vector4(0.48, 0.38 * kx + lx, 0.21 * kz + lz, 0.0),
-			Vector4(0.34, 0.365 * kx + lx, 0.225 * kz + lz + gut * 0.4, 0.01 + gut * 0.3),
-			Vector4(0.18, 0.315 * kx + lx, 0.205 * kz + lz + gut, gut * 0.7),
-			Vector4(0.0, 0.3 * kx + lx, 0.205 * kz + lz + gut * 0.8, gut * 0.5),
-			Vector4(hem_y, 0.315 * kx + lx, 0.212 * kz + lz + gut * 0.5, gut * 0.3)]
+		torso_rings = []
+		for r in body_rings:
+			var v: Vector4 = r
+			var rx := v.y
+			if v.x < 0.3:
+				rx = maxf(rx, 0.3 + (0.3 - v.x) * 0.05)   # loose: hangs straight from the lats
+			torso_rings.append(Vector4(v.x, rx * kx + lx, v.z * kz + lz, v.w * kz))
+		torso_rings.append(Vector4(hem_y, 0.31 * kx + lx, (0.18 + gut * 0.5) * kz + lz, gut * 0.3))
 		if top == "hoodie":
-			torso_rings.append(Vector4(hem_y - 0.04, 0.295 * kx + lx, 0.2 * kz + lz, gut * 0.2))  # ribbed hem
+			torso_rings.append(Vector4(hem_y - 0.04, 0.295 * kx + lx, (0.17 + gut * 0.3) * kz + lz, gut * 0.2))  # ribbed hem
 	var torso_mi := _add_mesh(torso, _loft_mesh(torso_rings, true, true), Vector3.ZERO, torso_mat)
 	torso_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 
-	# Collars and the hoodie's hood bunched up on the back
+	# Thick neck (r ~0.12), flaring into the traps
+	var kn := lerpf(1.0, bulk, 0.6)
+	var neck_r := 0.12 * kn
+	_loft(torso, _bulked([Vector4(0.79, 0.112, 0.11, 0.015), Vector4(0.7, 0.12, 0.118, 0.01),
+		Vector4(0.6, 0.13, 0.125, 0.0)], kn, kn), skin, false, false)
+
+	# Collars and the hoodie's hood bunched up on the back (sitting on the trap slope)
 	match top:
 		"tshirt":
-			_loft(torso, [Vector4(0.67, 0.112, 0.102, -0.008), Vector4(0.62, 0.13, 0.118, -0.004)], top_dark, false, false)
+			_loft(torso, [Vector4(0.685, neck_r + 0.012, neck_r + 0.008, 0.0),
+				Vector4(0.64, 0.19 * kx + lx + 0.012, 0.125 * kz + lz + 0.01, -0.012)], top_dark, false, false)
 		"flannel":
-			_loft(torso, [Vector4(0.7, 0.122, 0.11, -0.012), Vector4(0.61, 0.16, 0.14, -0.004)], top_dark, false, false)
+			_loft(torso, [Vector4(0.72, neck_r + 0.02, neck_r + 0.014, 0.0), Vector4(0.68, neck_r + 0.03, neck_r + 0.022, -0.004),
+				Vector4(0.635, 0.2 * kx + lx + 0.016, 0.125 * kz + lz + 0.014, -0.016)], top_dark, false, false)
 		"hoodie":
-			_loft(torso, [Vector4(0.69, 0.135, 0.125, -0.025), Vector4(0.6, 0.175, 0.155, -0.035)], top_solid, false, false)
-			_ball(torso, 0.15, Vector3(0, 0.6, -0.14), top_solid, Vector3(1.15 * kx, 0.55, 0.45))  # hood lump
-			var fz := (0.21 * kz + 0.018) * 0.93 + 0.01
-			for sx in [-0.045, 0.045]:
+			_loft(torso, [Vector4(0.71, neck_r + 0.03, neck_r + 0.025, -0.02),
+				Vector4(0.63, 0.21 * kx + lx + 0.02, 0.13 * kz + lz + 0.02, -0.035)], top_solid, false, false)
+			_ball(torso, 0.16, Vector3(0, 0.62, -0.15), top_solid, Vector3(1.2 * kx, 0.55, 0.5))  # hood lump
+			var fz := (0.218 * kz + lz) + 0.006
+			for sx in [-0.05, 0.05]:
 				var dx: float = sx
-				_box(torso, Vector3(0.012, 0.13, 0.012), Vector3(dx, 0.52, fz), white)      # drawstrings
-				_box(torso, Vector3(0.018, 0.025, 0.018), Vector3(dx, 0.445, fz), top_dark)  # aglets
+				_loft(torso, [Vector4(0.6, 0.008, 0.008, fz), Vector4(0.47, 0.008, 0.008, fz + 0.004)],
+					white, false, false, Vector3(dx, 0, 0), 6)                                  # drawstrings
+				_ball(torso, 0.013, Vector3(dx, 0.462, fz + 0.004), top_dark, Vector3(1.0, 1.4, 1.0), 6)  # aglets
 
-	# Neck + head (head ~0.33 wide x 0.36 tall x 0.35 deep, top ~2.03 m when standing)
-	var kn := lerpf(1.0, bulk, 0.6)
-	_loft(torso, _bulked([Vector4(0.72, 0.095, 0.095, 0.02), Vector4(0.52, 0.115, 0.11, 0.0)], kn, kn), skin, false, false)
+	# Head: a smaller skull (HEAD_SCALE, ~0.28 wide) on its own geometry node, lifted a touch
+	# so a bit of the thick neck shows. The head pivot (nods, looks) stays where it was.
 	head = _pivot(torso, Vector3(0, 0.6, 0.02))
-	_loft(head, [
-		Vector4(0.36, 0.075, 0.085, -0.01), Vector4(0.32, 0.15, 0.16, -0.005), Vector4(0.22, 0.165, 0.175, 0.0),
-		Vector4(0.12, 0.16, 0.172, 0.005), Vector4(0.05, 0.13, 0.15, 0.012), Vector4(0.0, 0.085, 0.1, 0.005)], head_mat)
-	_box(head, Vector3(0.05, 0.065, 0.05), Vector3(0, 0.145, 0.172), head_solid)       # nose
+	var hg := _pivot(head, Vector3(0, 0.035, 0.005))
+	hg.scale = Vector3.ONE * HEAD_SCALE
+	_loft(hg, SKULL, head_mat)
+	_loft(hg, [Vector4(0.205, 0.012, 0.01, 0.17), Vector4(0.16, 0.021, 0.02, 0.182),
+		Vector4(0.135, 0.03, 0.026, 0.18), Vector4(0.122, 0.026, 0.02, 0.172)], head_solid, true, true, Vector3.ZERO, 8)  # nose
 	if hair_style != "long" or hat != "none":
-		_box(head, Vector3(0.04, 0.08, 0.06), Vector3(-0.168, 0.17, -0.01), head_solid)  # ears
-		_box(head, Vector3(0.04, 0.08, 0.06), Vector3(0.168, 0.17, -0.01), head_solid)
-	if facial == "goatee" and not is_mask:
-		_box(head, Vector3(0.06, 0.05, 0.03), Vector3(0, 0.035, 0.145), hair)             # chin tuft
-	if not is_mask and hat == "none":
+		for es in [-1.0, 1.0]:
+			var ex: float = es
+			_ball(hg, 0.036, Vector3(0.163 * ex, 0.185, -0.005), head_solid, Vector3(0.5, 1.1, 0.8), 8)  # ears
+	if facial == "goatee":
+		_ball(hg, 0.03, Vector3(0, 0.03, 0.145), hair, Vector3(1.1, 1.0, 0.6), 8)            # chin tuft
+	if hat == "none":
 		match hair_style:
+			"dreads":
+				var dread := _mat(Color.WHITE, _dread_texture(hair_c))
+				_loft(hg, [Vector4(0.362, 0.06, 0.065, -0.01), Vector4(0.348, 0.12, 0.13, -0.01),
+					Vector4(0.312, 0.158, 0.17, -0.008), Vector4(0.268, 0.17, 0.183, -0.004),
+					Vector4(0.24, 0.172, 0.186, -0.002)], dread, true, false)
+				_build_twists(hg, dread, 26, 0.1, 0.17, 0.024, 5, 0.42, 1.0)
+			"messy":
+				_loft(hg, [Vector4(0.36, 0.06, 0.065, -0.01), Vector4(0.346, 0.12, 0.13, -0.01),
+					Vector4(0.31, 0.158, 0.17, -0.008), Vector4(0.265, 0.17, 0.183, -0.004),
+					Vector4(0.245, 0.171, 0.185, -0.002)], hair, true, false)
+				_build_twists(hg, hair, 18, 0.05, 0.09, 0.026, 4, 0.12, 7.0)
 			"flattop":
-				_box(head, Vector3(0.3, 0.09, 0.32), Vector3(0, 0.345, -0.005), hair)
+				_loft(hg, [Vector4(0.395, 0.13, 0.14, -0.005), Vector4(0.388, 0.168, 0.18, -0.005),
+					Vector4(0.34, 0.176, 0.188, -0.006), Vector4(0.29, 0.175, 0.188, -0.004),
+					Vector4(0.255, 0.172, 0.186, -0.002)], hair, true, false)
 			"long":
-				_box(head, Vector3(0.3, 0.34, 0.07), Vector3(0, 0.13, -0.165), hair)
-				_box(head, Vector3(0.34, 0.06, 0.3), Vector3(0, 0.33, -0.02), hair)
+				_loft(hg, [Vector4(0.36, 0.05, 0.055, -0.012), Vector4(0.35, 0.11, 0.12, -0.012),
+					Vector4(0.32, 0.15, 0.162, -0.01), Vector4(0.28, 0.17, 0.182, -0.006),
+					Vector4(0.255, 0.175, 0.187, -0.004)], hair, true, false)
+				_loft(hg, [Vector4(0.28, 0.15, 0.07, -0.115), Vector4(0.12, 0.168, 0.078, -0.125),
+					Vector4(0.0, 0.16, 0.062, -0.12), Vector4(-0.08, 0.14, 0.045, -0.11)], hair)
 			"mohawk":
-				_box(head, Vector3(0.06, 0.1, 0.32), Vector3(0, 0.36, -0.01), hair)
-	var hat_c := _sat(hat_src)
+				_ball(hg, 0.05, Vector3(0, 0.34, -0.01), hair, Vector3(0.6, 1.0, 3.4))
+	if is_mask:
+		_build_costume_mask(hg)
+	var hat_c := _sat(hat_src, 0.92)
 	match hat:
 		"cap_back":
-			var cap_mat := _mat(Color.WHITE, _cap_texture(hat_c))
-			_loft(head, [Vector4(0.395, 0.035, 0.035, 0.0), Vector4(0.37, 0.125, 0.135, -0.005),
-				Vector4(0.31, 0.172, 0.182, -0.005), Vector4(0.24, 0.18, 0.19, 0.0)], cap_mat, true, false)
-			var brim := _box(head, Vector3(0.2, 0.018, 0.13), Vector3(0, 0.265, -0.21), _mat(hat_c.darkened(0.15)))
-			brim.rotation.x = 0.6                                                        # bill tipped up at the back
-			_box(head, Vector3(0.07, 0.035, 0.012), Vector3(0, 0.265, 0.172), skin)       # strap gap at the forehead
-			_box(head, Vector3(0.08, 0.008, 0.014), Vector3(0, 0.282, 0.173), _mat(hat_c.darkened(0.35)))
+			var cap_mat := _mat(Color.WHITE, _cap_texture(hat_c, skin_c.darkened(0.15)))
+			_loft(hg, [Vector4(0.378, 0.03, 0.03, -0.01), Vector4(0.368, 0.1, 0.11, -0.01),
+				Vector4(0.342, 0.146, 0.156, -0.008), Vector4(0.3, 0.172, 0.185, -0.004),
+				Vector4(0.255, 0.18, 0.193, 0.0), Vector4(0.232, 0.181, 0.194, 0.0)], cap_mat, true, false)
+			_ball(hg, 0.012, Vector3(0, 0.38, -0.01), _mat(hat_c.darkened(0.2)), Vector3(1, 0.6, 1), 6)  # button
+			var brim := _loft(hg, [Vector4(0.007, 0.11, 0.09, 0.0), Vector4(-0.007, 0.112, 0.092, 0.0)],
+				_mat(hat_c.darkened(0.12)), true, true, Vector3(0, 0.245, -0.2))
+			brim.rotation.x = 0.35                                                       # bill tipped up at the back
 		"beanie":
 			var bn := _mat(hat_c)
-			_loft(head, [Vector4(0.42, 0.04, 0.04, 0.0), Vector4(0.39, 0.13, 0.14, -0.01),
-				Vector4(0.32, 0.172, 0.182, -0.005), Vector4(0.25, 0.18, 0.19, 0.0)], bn, true, false)
-			_loft(head, [Vector4(0.27, 0.186, 0.196, 0.0), Vector4(0.2, 0.184, 0.194, 0.0)], _mat(hat_c.darkened(0.2)), false, false)
+			_loft(hg, [Vector4(0.405, 0.04, 0.04, -0.01), Vector4(0.39, 0.13, 0.14, -0.01),
+				Vector4(0.335, 0.175, 0.186, -0.005), Vector4(0.27, 0.182, 0.193, 0.0),
+				Vector4(0.25, 0.183, 0.194, 0.0)], bn, true, false)
+			_loft(hg, [Vector4(0.27, 0.19, 0.2, 0.0), Vector4(0.228, 0.189, 0.199, 0.0)], _mat(hat_c.darkened(0.15)), false, false)
 
-	# Arms: shoulder -> elbow -> fist
+	# Arms: shoulder -> elbow -> mitt hand
 	arm_l = _build_arm(-1, m, top, sleeves, bulk)
 	arm_r = _build_arm(1, m, top, sleeves, bulk)
 
@@ -1040,50 +1464,103 @@ func _build_body() -> void:
 
 func _build_arm(side: int, m: Dictionary, top: String, sleeves: String, bulk: float) -> Node3D:
 	var skin: Material = m["skin"]
-	var skin_dark: Material = m["skin_dark"]
 	var sleeve: Material = m["sleeve"]
 	var top_solid: Material = m["top_solid"]
 	var top_dark: Material = m["top_dark"]
 	var k := bulk
 	var sh := _pivot(torso, Vector3(0.42 * side, 0.47, 0))
-	_ball(sh, 0.13 * k, Vector3(0.01 * side, -0.01, 0), skin)                             # deltoid
-	_loft(sh, _bulked([Vector4(0.03, 0.105, 0.105, 0.0), Vector4(-0.12, 0.115, 0.12, 0.01),
-		Vector4(-0.34, 0.08, 0.085, 0.0)], k, k), skin)                                    # upper arm
+	_ball(sh, 0.14 * k, Vector3(0.012 * side, -0.005, 0), skin, Vector3(1.0, 1.05, 1.0))   # deltoid
+	_loft(sh, _bulked([Vector4(0.03, 0.12, 0.12, 0.0), Vector4(-0.06, 0.13, 0.13, 0.004),
+		Vector4(-0.16, 0.128, 0.13, 0.012), Vector4(-0.27, 0.105, 0.105, 0.004),
+		Vector4(-0.35, 0.09, 0.09, 0.0)], k, k), skin)                                   # upper arm (r ~0.13)
 	var hoodie_sleeves := top == "hoodie" and sleeves != "cut"
 	if top == "tshirt" or hoodie_sleeves:
 		var a := 0.03 if top == "hoodie" else 0.016
-		_ball(sh, 0.13 * k + a, Vector3(0.01 * side, -0.005, 0), top_solid)                # shirt shoulder
+		_ball(sh, 0.14 * k + a, Vector3(0.012 * side, 0.0, 0), top_solid, Vector3(1.0, 1.05, 1.0))  # shirt shoulder
 	if top == "tshirt":
-		_loft(sh, _bulked([Vector4(0.02, 0.12, 0.12, 0.0), Vector4(-0.17, 0.122, 0.128, 0.01)], k, k, 0.022),
-			sleeve, false, false)                                                           # short sleeve
+		_loft(sh, _bulked([Vector4(0.02, 0.13, 0.13, 0.0), Vector4(-0.08, 0.135, 0.136, 0.006),
+			Vector4(-0.18, 0.132, 0.136, 0.012)], k, k, 0.022), sleeve, false, false)    # short sleeve
 	elif hoodie_sleeves:
-		_loft(sh, _bulked([Vector4(0.03, 0.12, 0.12, 0.0), Vector4(-0.15, 0.125, 0.13, 0.01),
-			Vector4(-0.36, 0.1, 0.105, 0.0)], k, k, 0.032), top_solid, false, false)        # baggy upper sleeve
+		_loft(sh, _bulked([Vector4(0.03, 0.13, 0.13, 0.0), Vector4(-0.15, 0.132, 0.135, 0.01),
+			Vector4(-0.36, 0.108, 0.11, 0.0)], k, k, 0.032), top_solid, false, false)    # baggy upper sleeve
 	var el := _pivot(sh, Vector3(0, -0.32, 0))
 	if side < 0:
 		elbow_l = el
 	else:
 		elbow_r = el
-	_loft(el, _bulked([Vector4(0.02, 0.085, 0.085, 0.0), Vector4(-0.09, 0.095, 0.09, 0.005),
-		Vector4(-0.27, 0.065, 0.065, 0.0)], k, k), skin)                                    # forearm
+	_loft(el, _bulked([Vector4(0.03, 0.095, 0.095, 0.0), Vector4(-0.06, 0.115, 0.108, 0.006),
+		Vector4(-0.16, 0.1, 0.094, 0.004), Vector4(-0.275, 0.075, 0.07, 0.0)], k, k), skin)  # forearm 0.115 -> 0.075
 	if hoodie_sleeves:
-		_loft(el, _bulked([Vector4(0.05, 0.1, 0.1, 0.0), Vector4(-0.1, 0.1, 0.098, 0.005),
-			Vector4(-0.2, 0.085, 0.085, 0.0)], k, k, 0.028), sleeve, false, false)          # lower sleeve + cuff
-		_loft(el, _bulked([Vector4(-0.19, 0.075, 0.075, 0.0), Vector4(-0.24, 0.07, 0.07, 0.0)], k, k, 0.018),
-			top_dark, false, false)
+		_loft(el, _bulked([Vector4(0.05, 0.112, 0.11, 0.0), Vector4(-0.08, 0.118, 0.112, 0.006),
+			Vector4(-0.2, 0.094, 0.09, 0.0)], k, k, 0.026), sleeve, false, false)        # lower sleeve
+		_loft(el, _bulked([Vector4(-0.19, 0.088, 0.084, 0.0), Vector4(-0.255, 0.078, 0.074, 0.0)], k, k, 0.018),
+			top_dark, false, false)                                                      # ribbed cuff
 	var band: Material = m["wristband"]
 	if band != null:
-		_loft(el, _bulked([Vector4(-0.18, 0.078, 0.078, 0.0), Vector4(-0.27, 0.072, 0.072, 0.0)], k, k, 0.01),
-			band)                                                                           # sweatband
+		_loft(el, _bulked([Vector4(-0.17, 0.098, 0.093, 0.003), Vector4(-0.265, 0.08, 0.076, 0.0)], k, k, 0.012),
+			band)                                                                        # sweatband
 	var kf := lerpf(1.0, bulk, 0.5)
-	_box(el, Vector3(0.13, 0.12, 0.14) * kf, Vector3(0, -0.33, 0.005), skin)              # fist
-	_box(el, Vector3(0.115 * kf, 0.035, 0.02), Vector3(0, -0.36, 0.005 + 0.075 * kf), skin_dark)  # knuckles
-	var hand := _pivot(el, Vector3(0, -0.33, 0.005))
+	var hand := _build_hand(el, side, kf, skin)
 	if side < 0:
 		hand_l = hand
 	else:
 		hand_r = hand
 	return sh
+
+
+## Mitt hand: a palm, a two-joint finger block curled by finger_curl, and a thumb.
+## The returned pivot is the attach point for held items (same place the cube fist had).
+## The palm faces the body (-x on the right hand); fingers curl toward it around z.
+func _build_hand(el: Node3D, side: int, kf: float, skin: Material) -> Node3D:
+	var s := float(side)
+	var hand := _pivot(el, Vector3(0, -0.33, 0.005))
+	var t := 0.058 * kf        # palm thickness (x)
+	var w := 0.11 * kf         # palm width (z)
+	var ph := 0.12 * kf        # palm height (y)
+	var py := 0.005            # palm centre
+	_block(hand, Vector3(t, ph, w), Vector3(0, py, 0), skin)
+	var ft := 0.046 * kf       # finger thickness
+	var fw := 0.104 * kf       # finger block width
+	var l1 := 0.056 * kf
+	var l2 := 0.05 * kf
+	var knuckle := _pivot(hand, Vector3(-s * t * 0.5, py - ph * 0.5 + 0.006, 0.0))
+	_block(knuckle, Vector3(ft, l1 + 0.01, fw), Vector3(s * ft * 0.5, -l1 * 0.5, 0.0), skin)
+	var tip := _pivot(knuckle, Vector3(0.0, -l1, 0.0))
+	_block(tip, Vector3(ft * 0.95, l2 + 0.008, fw * 0.96), Vector3(s * ft * 0.48, -l2 * 0.5, 0.0), skin)
+	var thumb := _pivot(hand, Vector3(-s * t * 0.2, py + ph * 0.18, w * 0.42))
+	_block(thumb, Vector3(0.036, 0.068, 0.036) * kf, Vector3(0.0, -0.03 * kf, 0.0), skin)
+	_hand_parts.append([s, knuckle, tip, thumb])
+	_pose_hand(s, knuckle, tip, thumb, finger_curl)
+	return hand
+
+
+func _pose_hand(s: float, knuckle: Node3D, tip: Node3D, thumb: Node3D, curl: float) -> void:
+	knuckle.rotation = Vector3(0.0, 0.0, -s * curl)
+	tip.rotation = Vector3(0.0, 0.0, -s * curl * 0.9)
+	var c := clampf((curl - 0.3) / 1.3, 0.0, 1.0)
+	thumb.rotation = Vector3(-0.6 + 0.25 * c, 0.0, -s * (0.15 + 0.55 * c))
+
+
+const OPEN_HAND_STATES := [S.GRAB_WINDUP, S.TIEUP_ATK, S.TIEUP_DEF, S.THROWING, S.PICKUP, S.TAUNT,
+	S.CLIMB, S.PERCHED]
+
+
+## Pose hook: open mitts while reaching / grappling / hauling / taunting / climbing,
+## fists otherwise (and always around a held item); eased.
+func _apply_hands(delta: float) -> void:
+	var want := 1.6
+	if held_item == null:
+		if state in OPEN_HAND_STATES and not (state == S.TAUNT and _style == 1):
+			want = 0.3
+		elif state == S.PICKUP_ITEM and state_time < 0.2:
+			want = 0.3
+	finger_curl = lerpf(finger_curl, want, 1.0 - exp(-14.0 * delta))
+	for hp in _hand_parts:
+		var s: float = hp[0]
+		var kn: Node3D = hp[1]
+		var tp: Node3D = hp[2]
+		var th: Node3D = hp[3]
+		_pose_hand(s, kn, tp, th, finger_curl)
 
 
 func _build_leg(side: int, m: Dictionary, bottom: String, shoes: String, bulk: float, brace: bool) -> Node3D:
@@ -1095,88 +1572,79 @@ func _build_leg(side: int, m: Dictionary, bottom: String, shoes: String, bulk: f
 	var k := bulk
 	var long_pants := bottom == "jeans" or bottom == "sweatpants"
 	var hp := _pivot(hips, Vector3(0.14 * side, -0.06, 0))
-	var thigh_rings := [Vector4(0.07, 0.135, 0.14, 0.0), Vector4(-0.12, 0.14, 0.15, 0.005),
-		Vector4(-0.3, 0.115, 0.125, 0.005), Vector4(-0.45, 0.095, 0.1, 0.0)]
+	var thigh_rings := [Vector4(0.08, 0.15, 0.155, 0.0), Vector4(-0.08, 0.16, 0.165, 0.008),
+		Vector4(-0.25, 0.14, 0.146, 0.008), Vector4(-0.38, 0.118, 0.122, 0.004), Vector4(-0.45, 0.108, 0.112, 0.0)]
 	var thigh: MeshInstance3D
 	if long_pants:
 		thigh = _loft(hp, _bulked(thigh_rings, k, k, 0.016), thigh_tex)                    # pant leg
 	else:
-		thigh = _loft(hp, _bulked(thigh_rings, k, k), skin)                                # bare thigh
+		thigh = _loft(hp, _bulked(thigh_rings, k, k), skin)                                # bare thigh (r ~0.16)
 		var flare := 0.055 if bottom == "basketball_shorts" else 0.04
 		var low := -0.44 if bottom == "basketball_shorts" else -0.37
-		var shorts := _add_mesh(hp, _loft_mesh([Vector4(0.08, 0.15 * k + 0.02, 0.155 * k + 0.02, 0.0),
-			Vector4(-0.1, 0.155 * k + 0.026, 0.165 * k + 0.026, 0.005),
-			Vector4(low, 0.14 * k + flare, 0.145 * k + flare, 0.01)], false, false), Vector3.ZERO, thigh_tex)  # shorts leg
+		var shorts := _add_mesh(hp, _loft_mesh([Vector4(0.08, 0.162 * k + 0.02, 0.167 * k + 0.02, 0.0),
+			Vector4(-0.08, 0.17 * k + 0.026, 0.175 * k + 0.026, 0.006),
+			Vector4((low - 0.08) * 0.5, 0.162 * k + (flare + 0.026) * 0.5, 0.167 * k + (flare + 0.026) * 0.5, 0.008),
+			Vector4(low, 0.15 * k + flare, 0.155 * k + flare, 0.01)], false, false), Vector3.ZERO, thigh_tex)  # shorts leg
 		shorts.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
-		if bottom == "cargo_shorts":
-			var pocket: Material = m["bottom_dark"]
-			var px := (0.15 * k + 0.033) * 0.93 + 0.012
-			_box(hp, Vector3(0.026, 0.12, 0.11), Vector3(px * side, -0.24, 0.0), pocket)     # cargo pocket
-			_box(hp, Vector3(0.03, 0.03, 0.115), Vector3((px + 0.004) * side, -0.18, 0.0), pocket)  # flap
 	thigh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	var kn := _pivot(hp, Vector3(0, -0.43, 0))
 	if side < 0:
 		knee_l = kn
 	else:
 		knee_r = kn
-	var knee_rings := [Vector4(0.06, 0.106, 0.112, 0.01), Vector4(0.0, 0.114, 0.12, 0.014),
-		Vector4(-0.07, 0.1, 0.108, 0.01)]
+	var knee_rings := [Vector4(0.06, 0.112, 0.118, 0.01), Vector4(0.0, 0.118, 0.124, 0.014),
+		Vector4(-0.07, 0.108, 0.115, 0.01)]
 	if brace:
 		var brace_mat: Material = m["brace"]
-		_loft(kn, _bulked([Vector4(0.1, 0.11, 0.116, 0.008), Vector4(0.0, 0.118, 0.124, 0.014),
-			Vector4(-0.1, 0.104, 0.112, 0.008)], k, k, 0.014), brace_mat)                 # knee brace
+		_loft(kn, _bulked([Vector4(0.1, 0.116, 0.122, 0.008), Vector4(0.0, 0.122, 0.128, 0.014),
+			Vector4(-0.1, 0.115, 0.122, 0.006)], k, k, 0.014), brace_mat)                 # knee brace
 	elif long_pants:
 		_loft(kn, _bulked(knee_rings, k, k, 0.016), thigh_tex)                             # pants over the knee
 	else:
 		_loft(kn, _bulked(knee_rings, k, k), skin)                                         # bare knee
-	var shin_rings := [Vector4(0.0, 0.095, 0.1, 0.0), Vector4(-0.1, 0.1, 0.11, -0.01), Vector4(-0.3, 0.075, 0.08, 0.0)]
+	var shin_rings := [Vector4(0.0, 0.105, 0.11, 0.0), Vector4(-0.1, 0.12, 0.125, -0.012),
+		Vector4(-0.2, 0.105, 0.11, -0.006), Vector4(-0.3, 0.08, 0.085, 0.0), Vector4(-0.33, 0.076, 0.08, 0.0)]
 	var shin: MeshInstance3D
 	match bottom:
 		"jeans":
-			shin = _loft(kn, _bulked([Vector4(0.04, 0.105, 0.11, 0.008), Vector4(-0.12, 0.1, 0.108, 0.0),
-				Vector4(-0.32, 0.105, 0.113, 0.006)], k, k, 0.018), shin_tex, true, false)     # straight jeans leg
+			shin = _loft(kn, _bulked([Vector4(0.04, 0.115, 0.12, 0.008), Vector4(-0.12, 0.118, 0.124, 0.0),
+				Vector4(-0.32, 0.12, 0.126, 0.006)], k, k, 0.018), shin_tex, true, false)     # straight jeans leg
 		"sweatpants":
-			shin = _loft(kn, _bulked([Vector4(0.04, 0.105, 0.11, 0.008), Vector4(-0.12, 0.1, 0.108, 0.0),
-				Vector4(-0.26, 0.08, 0.085, 0.0), Vector4(-0.32, 0.075, 0.08, 0.0)], k, k, 0.016), shin_tex, true, false)
+			shin = _loft(kn, _bulked([Vector4(0.04, 0.115, 0.12, 0.008), Vector4(-0.12, 0.118, 0.124, 0.0),
+				Vector4(-0.26, 0.09, 0.094, 0.0), Vector4(-0.32, 0.082, 0.086, 0.0)], k, k, 0.016), shin_tex, true, false)
 		_:
-			shin = _loft(kn, _bulked(shin_rings, k, k), skin)                              # bare shin
-			_loft(kn, _bulked([Vector4(-0.15, 0.1, 0.11, -0.01), Vector4(-0.34, 0.078, 0.084, 0.0)], k, k, 0.008),
-				sock, false, false)                                                         # tube sock
+			shin = _loft(kn, _bulked(shin_rings, k, k), skin)                              # bare shin (calf ~0.12)
+			_loft(kn, _bulked([Vector4(-0.13, 0.118, 0.123, -0.011), Vector4(-0.24, 0.1, 0.105, -0.004),
+				Vector4(-0.345, 0.08, 0.085, 0.0)], k, k, 0.008), sock, false, false)       # tube sock
 	shin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_build_shoe(kn, m, shoes)
 	return hp
 
 
 func _build_shoe(kn: Node3D, m: Dictionary, shoes: String) -> void:
-	# Chunky sneaker; the sole's bottom sits at knee-local -0.46 (= the floor).
+	# Chunky sneaker (~0.32 m long) lofted heel -> toe: the loft runs along its local y, the
+	# mesh is turned -90 deg about x so local y points backward and local z up. The cupsole
+	# bottom sits at knee-local -0.46 (= the floor).
 	var upper: Material = m["shoe"]
+	var foot: Material = m["foot"]
 	var plain: Material = m["shoe_plain"]
-	var accent: Material = m["shoe_accent"]
 	var white: Material = m["white"]
+	var puff := 1.08 if shoes == "skate" else 1.0
+	var f := _loft(kn, _bulked([Vector4(0.1, 0.06, 0.035, 0.0), Vector4(0.085, 0.085, 0.055, 0.005),
+		Vector4(0.03, 0.092, 0.062, 0.008), Vector4(-0.05, 0.096, 0.054, 0.0), Vector4(-0.13, 0.096, 0.042, -0.012),
+		Vector4(-0.19, 0.086, 0.032, -0.02), Vector4(-0.22, 0.05, 0.018, -0.024)], puff, puff), foot,
+		true, true, Vector3(0, -0.395, 0))
+	f.rotation.x = -PI / 2
+	var sole := _loft(kn, _bulked([Vector4(0.112, 0.074, 0.02, 0.0), Vector4(0.09, 0.098, 0.023, 0.0),
+		Vector4(0.0, 0.1, 0.023, 0.0), Vector4(-0.12, 0.1, 0.022, 0.0), Vector4(-0.2, 0.092, 0.02, 0.002),
+		Vector4(-0.235, 0.06, 0.016, 0.004)], puff, 1.0), white, true, true, Vector3(0, -0.437, 0))
+	sole.rotation.x = -PI / 2
 	if shoes == "skate":
-		_loft(kn, [Vector4(-0.31, 0.098, 0.108, 0.0), Vector4(-0.4, 0.112, 0.125, 0.012)], upper, false, false)
-		_ball(kn, 0.06, Vector3(0, -0.31, -0.01), plain, Vector3(1.6, 0.5, 1.7))           # padded collar
-		_box(kn, Vector3(0.185, 0.095, 0.29), Vector3(0, -0.39, 0.06), plain)              # puffy upper
-		_box(kn, Vector3(0.195, 0.05, 0.31), Vector3(0, -0.435, 0.06), white)              # thick cupsole
-		_box(kn, Vector3(0.198, 0.008, 0.314), Vector3(0, -0.425, 0.06), _mat(Color(0.25, 0.25, 0.27)))
-		for sx in [-1.0, 1.0]:
-			var s: float = sx
-			var st := _box(kn, Vector3(0.006, 0.026, 0.15), Vector3(0.0935 * s, -0.385, 0.05), accent)  # side stripe
-			st.rotation.x = 0.25
-		var lc := _box(kn, Vector3(0.08, 0.012, 0.12), Vector3(0, -0.343, 0.11), white)    # laces
-		lc.rotation.x = 0.18
+		_loft(kn, [Vector4(-0.31, 0.1, 0.11, 0.0), Vector4(-0.345, 0.114, 0.124, 0.004),
+			Vector4(-0.37, 0.108, 0.118, 0.006)], plain, false, false)                  # padded collar
 	else:
-		_loft(kn, [Vector4(-0.2, 0.108, 0.115, 0.0), Vector4(-0.3, 0.1, 0.11, 0.0),
-			Vector4(-0.4, 0.105, 0.12, 0.01)], upper, true, false)                         # high-top shaft
-		_box(kn, Vector3(0.165, 0.085, 0.27), Vector3(0, -0.395, 0.06), plain)             # foot
-		_box(kn, Vector3(0.16, 0.055, 0.075), Vector3(0, -0.41, 0.17), white)              # toe cap
-		_box(kn, Vector3(0.178, 0.04, 0.295), Vector3(0, -0.44, 0.06), white)              # sole
-		for sx in [-1.0, 1.0]:
-			var s: float = sx
-			var st := _box(kn, Vector3(0.006, 0.028, 0.15), Vector3(0.0835 * s, -0.39, 0.045), accent)  # side stripe
-			st.rotation.x = 0.3
-		var lc := _box(kn, Vector3(0.07, 0.012, 0.1), Vector3(0, -0.348, 0.115), white)    # laces
-		lc.rotation.x = 0.2
+		_loft(kn, [Vector4(-0.2, 0.11, 0.117, 0.0), Vector4(-0.3, 0.103, 0.112, 0.0),
+			Vector4(-0.37, 0.1, 0.112, 0.006)], upper, true, false)                       # high-top shaft
 
 
 # ---------------------------------------------------------------- helpers
@@ -3618,6 +4086,7 @@ func _update_pose(delta: float) -> void:
 		_pose_hold_item()  # weapons hook: carry / hoist the item with both hands
 	_apply_pose(delta)
 	_apply_item_wrist(delta)
+	_apply_hands(delta)  # mitt hands: open for grabs, fists otherwise
 
 
 func _apply_pose(delta: float) -> void:
