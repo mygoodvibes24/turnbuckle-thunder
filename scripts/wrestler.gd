@@ -194,7 +194,22 @@ var in_pin := false
 var any_pressed := false
 
 # AI
-var ai_skill := 0.5            # 0..1: reaction speed, reversal rate, pin kick-out strength
+var ai_skill := 0.3            # 0..1: reaction speed, reversal rate, pin kick-out strength
+# Difficulty ramp: the CPU starts at CPU_SKILL_START and gets CPU_SKILL_STEP better per player
+# win, up to CPU_SKILL_MAX. A static var (plus an Engine meta mirror), so it survives the
+# scene reload between matches.
+const CPU_SKILL_START := 0.3
+const CPU_SKILL_STEP := 0.1
+const CPU_SKILL_MAX := 0.8
+const CPU_GRACE_TIME := 6.0      # CPU: strikes only (no grapples / whips / climbs / runs) this long
+const CPU_PIN_HP := 45.0         # CPU only covers a human below this health
+const COMBO_HIT_GAP := 1.6       # hits taken less than this apart count as one combo (damage scaling)
+static var cpu_skill_level := CPU_SKILL_START
+var ai_match_time := 0.0         # CPU: seconds of this match it has been thinking
+var ai_streak := 0               # CPU: hits landed in its current flurry (backs off after 3)
+var ai_streak_at := -10.0
+var pin_freebie_left := true     # human: the first pin of the match auto-kicks out at 2
+var pin_freebie_now := false     # human: the current pin is that first one
 var ai_timer := 0.0
 var ai_backoff := 0.0
 var ai_tie_delay := 0.5
@@ -233,6 +248,8 @@ func setup(p_name: String, p_look: Dictionary, p_cpu: bool) -> void:
 	trunk_color = look.get("trunks", Color.BLACK)
 	skin_color = look.get("skin", Color(0.86, 0.64, 0.48))
 	is_cpu = p_cpu
+	if is_cpu:
+		ai_skill = cpu_skill_for_match()  # difficulty ramp
 	_build_body()
 	_build_rev_tell()
 
@@ -1766,7 +1783,11 @@ func set_state(s: int) -> void:
 	if s == S.DOWN:
 		ground_hits = 0
 	if s == S.TIEUP_ATK or s == S.TIEUP_DEF:
-		ai_tie_delay = randf_range(0.35, 0.85) * (1.5 - ai_skill)
+		ai_tie_delay = randf_range(0.45, 0.95) * (1.6 - ai_skill)
+	if s == S.PINNED:
+		pin_freebie_now = pin_freebie_left and not is_cpu  # fair pins: the first one is free
+		if not is_cpu:
+			pin_freebie_left = false
 	_weapons_on_state(s)  # weapons hook: drops the held item when hit / grappled
 
 
@@ -1866,6 +1887,19 @@ func gain_spirit(v: float) -> void:
 
 func take_damage(d: float) -> void:
 	if opponent != null and opponent.brawl_mode: d *= 1.15  # style hook: BRAWL MODE hits a bit harder (supers already scale up)
+	if d > 0.0:
+		# Combo damage scaling: hits taken less than COMBO_HIT_GAP apart are one combo;
+		# the 4th hit on does x0.7, the 7th on x0.5 (no 10-second deaths).
+		combo_hits = combo_hits + 1 if combo_timer > 0.0 else 1
+		combo_timer = COMBO_HIT_GAP
+		if combo_hits >= 7:
+			d *= 0.5
+		elif combo_hits >= 4:
+			d *= 0.7
+		if opponent != null and opponent.is_cpu and not is_cpu:
+			var cpu_skill: float = opponent.ai_skill
+			d *= 0.7 + 0.4 * cpu_skill   # an easy CPU hits softer (x0.82 at 0.3, x1.02 at 0.8)
+			opponent._ai_note_hit(d)
 	health = max(0.0, health - d)
 	spirit = max(0.0, spirit - d * 0.4)
 	if d > 0.0:
@@ -2638,7 +2672,9 @@ func _whip_bump() -> void:
 
 func _try_pin_or_taunt() -> void:
 	var os := _opp_state()
-	if os == S.DOWN and _flat_to_opponent().length() < 2.0:
+	# Fair pins: a CPU only covers a human who is properly worn down.
+	var cover_ok: bool = not is_cpu or opponent.is_cpu or opponent.health < CPU_PIN_HP
+	if os == S.DOWN and _flat_to_opponent().length() < 2.0 and cover_ok:
 		set_state(S.PINNING)
 		current_move_key = "cover"
 		# Lie across the opponent: chest over their chest, perpendicular, from our side.
@@ -2686,6 +2722,8 @@ func _pinning() -> void:
 			position -= Vector3(facing.x, 0.0, facing.z) * 0.8
 			_clamp_ring()
 			opponent.set_state(S.LOSE)
+			if not is_cpu and opponent.is_cpu:
+				bump_cpu_skill()  # difficulty ramp: the next CPU is a bit tougher
 			won.emit()
 
 
@@ -2706,11 +2744,17 @@ func _pinned(delta: float) -> void:
 	if is_cpu:
 		pin_escape += delta * (health / 100.0) * 10.0 * randf_range(0.5, 1.5) * (0.8 + 0.4 * ai_skill)
 	elif any_pressed:
-		pin_escape += 0.3 + 0.9 * (health / 100.0)
-	if pin_escape >= _pin_escape_needed() and _opp_state() == S.PINNING:
+		# Per press: 0.45 + 1.1 * health (mid health ~1.0, so ~3.5 presses/s escapes in time).
+		pin_escape += 0.45 + 1.1 * (health / 100.0)
+	var freebie: bool = pin_freebie_now and opponent.pin_count_value >= 2
+	if (freebie or pin_escape >= _pin_escape_needed()) and _opp_state() == S.PINNING:
+		pin_freebie_now = false
 		var count: int = opponent.pin_count_value
 		var near_fall := count >= 2
-		if near_fall:
+		if freebie:
+			announce.emit("KICKED OUT AT 2!")
+			gain_spirit(8.0)
+		elif near_fall:
 			announce.emit(NEAR_FALL_CALLS[randi() % NEAR_FALL_CALLS.size()])
 			gain_spirit(8.0)  # the crowd rallies behind a near fall
 		else:
@@ -3223,7 +3267,9 @@ func _ai_string(toward: Vector2) -> void:
 	var st: Dictionary = STRIKES[current_move_key]
 	if st.get("ender", false) or st.get("juggle", false):
 		return
-	if randf() > 0.4 + 0.45 * ai_skill:
+	if ai_backoff > 0.0 or string_step >= 1 + int(ai_skill * 3.0):
+		return  # 3 hits in: back off (and a low-skill CPU strings fewer hits)
+	if randf() > 0.25 + 0.5 * ai_skill:
 		return  # stop the string here
 	if randf() < 0.12:
 		in_grapple = true  # strike-to-grapple
@@ -3244,7 +3290,9 @@ func _ai_chain() -> void:
 	if nexts.is_empty():
 		return
 	ai_string_plan = "decided"
-	if randf() < 0.25 + 0.35 * ai_skill - 0.1 * chain_link:
+	if ai_skill < 0.45 and chain_link >= 1:
+		return  # a low-skill CPU chains at most two moves
+	if randf() < 0.1 + 0.4 * ai_skill - 0.1 * chain_link:
 		if nexts.has("grab") and (randf() < 0.65 or not nexts.has("strike")):
 			in_grapple = true
 		else:
@@ -4469,9 +4517,58 @@ func _apply_item_wrist(delta: float) -> void:
 # reversal rate and pin kick-out strength. Decisions are paced by ai_timer and ai_react so
 # the CPU never mashes.
 
+## Difficulty ramp (static, survives scene reloads; mirrored in Engine meta to be safe).
+static func cpu_skill_for_match() -> float:
+	if Engine.has_meta("c2c_cpu_skill"):
+		var v: float = Engine.get_meta("c2c_cpu_skill")
+		cpu_skill_level = maxf(cpu_skill_level, v)
+	return clampf(cpu_skill_level, 0.0, CPU_SKILL_MAX)
+
+
+static func bump_cpu_skill() -> void:
+	cpu_skill_level = minf(CPU_SKILL_MAX, cpu_skill_for_match() + CPU_SKILL_STEP)
+	Engine.set_meta("c2c_cpu_skill", cpu_skill_level)
+
+
+## take_damage hook: our hit on a human landed. 3 hits in a flurry or one big move -> back off.
+func _ai_note_hit(d: float) -> void:
+	if anim_clock - ai_streak_at > 1.5:
+		ai_streak = 0
+	ai_streak += 1
+	ai_streak_at = anim_clock
+	if ai_streak >= 3 or d >= 8.0:
+		ai_streak = 0
+		ai_backoff = maxf(ai_backoff, randf_range(0.9, 1.4) * (1.3 - 0.4 * ai_skill))
+
+
+func _ai_grace() -> bool:
+	return ai_match_time < CPU_GRACE_TIME
+
+
 func _ai(delta: float) -> void:
+	ai_match_time += delta
+	var was_free := state == S.IDLE or state == S.WALK
+	_ai_think(delta)
+	# Post-filter the inputs the decision code chose (reversal presses are never touched).
+	if reversal_window > 0.0:
+		return
+	if _ai_grace():
+		# Opening grace period: strikes only, and slower.
+		in_grapple = false
+		in_run = false
+		if was_free and in_strike:
+			ai_timer = maxf(ai_timer, randf_range(1.1, 1.7))
+		if state == S.PUNCH and string_step >= 1:
+			in_strike = false  # at most two-hit strings
+	if in_pin and not opponent.is_cpu and _opp_state() == S.DOWN and opponent.health >= CPU_PIN_HP \
+			and _flat_to_opponent().length() < 2.2:
+		in_pin = false  # fair pins: no covers on a healthy human
+
+
+func _ai_think(delta: float) -> void:
 	ai_timer -= delta
-	ai_backoff -= delta
+	if state == S.IDLE or state == S.WALK:
+		ai_backoff -= delta  # only counts down while free (chains / strings finish first)
 	ai_react -= delta
 	ai_strafe_time -= delta
 	in_move = Vector2.ZERO
@@ -4488,7 +4585,8 @@ func _ai(delta: float) -> void:
 	var situation := 1 if os == S.DOWN else (0 if opp_standing else 2)
 	if situation != ai_seen_state:
 		ai_seen_state = situation
-		ai_react = randf_range(0.12, 0.4) * (1.6 - ai_skill)
+		# Reaction delay scales with (1 - ai_skill): 0.5-0.9 s at 0.3, ~0.15-0.25 s at 0.8.
+		ai_react = maxf(0.1, randf_range(0.5, 0.9) * (1.0 - ai_skill) / 0.7)
 
 	if state == S.GRAB_WINDUP:
 		in_grapple_held = ai_strong_grab  # set before any early return, or strong grabs turn weak
@@ -4504,6 +4602,10 @@ func _ai(delta: float) -> void:
 			in_grapple = true
 		return
 
+	var free_now := state == S.IDLE or state == S.WALK
+	if free_now and ai_backoff > 0.0:
+		_ai_back_off(dist, toward, os)  # after a flurry / big move: walk away, maybe taunt
+		return
 	if _hf_ai(dist, toward, os):  # high flying hook: climbs, dives, springboards, corner spots
 		return
 	match state:
@@ -4566,27 +4668,36 @@ func _ai(delta: float) -> void:
 		if dist > 1.8:
 			in_move = toward
 		return
-	if ai_backoff > 0.0:
-		in_move = -toward
-		return
 	if dist > 1.3:
 		_ai_approach(dist, toward, can_act)
 		return
 	if can_act:
-		ai_timer = randf_range(0.45, 1.0) * (1.4 - 0.6 * ai_skill)
+		# Slower, more hesitant decisions at low skill (~1.2 s apart at 0.3, ~0.6 s at 0.8).
+		ai_timer = randf_range(0.6, 1.2) * (1.6 - 0.8 * ai_skill)
+		var g := 0.18 + 0.3 * ai_skill   # grapple share: 0.27 at 0.3, 0.42 at 0.8
 		var r := randf()
-		if r < 0.28:
+		if r < g * 0.6:
 			in_grapple = true
 			ai_strong_grab = false
-		elif r < 0.46:
+		elif r < g:
 			in_grapple = true
 			ai_strong_grab = true
-		elif r < 0.8:
+		elif r < g + 0.36:
 			in_strike = true
-		elif r < 0.9:
+		elif r < g + 0.5:
 			ai_backoff = 0.45
 		else:
 			_ai_start_strafe()
+
+
+## Backing off: walk away, sometimes play to the crowd.
+func _ai_back_off(dist: float, toward: Vector2, os: int) -> void:
+	if dist < 3.2:
+		in_move = -toward * 0.8
+	if ai_timer <= 0.0 and dist > 2.3 and taunt_cooldown <= 0.0 and os != S.PINNED:
+		ai_timer = 0.5
+		if randf() < 0.3:
+			in_pin = true  # taunt (far from the opponent, so never a cover)
 
 
 func _ai_approach(dist: float, toward: Vector2, can_act: bool) -> void:
@@ -4598,8 +4709,11 @@ func _ai_approach(dist: float, toward: Vector2, can_act: bool) -> void:
 		in_move = toward
 	if not can_act:
 		return
-	ai_timer = randf_range(0.5, 1.1)
+	ai_timer = randf_range(0.5, 1.1) * (1.4 - 0.6 * ai_skill)
 	var r := randf()
+	if dist < 2.1 and randf() < 0.3 * (1.0 - ai_skill):
+		in_strike = true  # low skill: swings from too far out and whiffs
+		return
 	if dist > 3.6 and r < 0.25:
 		in_run = true  # charge in for a lariat
 		in_move = toward
@@ -4617,12 +4731,21 @@ func _ai_start_strafe() -> void:
 
 func _ai_vs_downed(dist: float, toward: Vector2, opp_hp: float, can_act: bool) -> void:
 	var tier: String = opponent.last_hit_tier
-	var pin_worthy := opp_hp < 55.0 or tier == "finisher"
+	var pin_cap: float = CPU_PIN_HP if not opponent.is_cpu else 55.0
+	var pin_worthy := opp_hp < pin_cap or (tier == "finisher" and opp_hp < pin_cap + 10.0)
+	if not opponent.is_cpu and opp_hp >= CPU_PIN_HP:
+		pin_worthy = false  # fair pins
+	# A low-skill CPU only gets a hit or two in on a downed opponent before backing off.
+	var ground_cap := 1 + int(ai_skill * 3.0)
+	var oground: int = opponent.ground_hits
+	if not pin_worthy and oground >= ground_cap:
+		ai_backoff = maxf(ai_backoff, randf_range(0.9, 1.4))
+		return
 	if pin_worthy:
 		if dist > 1.6:
 			in_move = toward
 		elif can_act:
-			ai_timer = 0.4
+			ai_timer = 0.4 + 0.4 * (1.0 - ai_skill)
 			if randf() < 0.55 + 0.4 * ai_skill:
 				in_pin = true
 			else:
@@ -4650,19 +4773,19 @@ func _ai_vs_downed(dist: float, toward: Vector2, opp_hp: float, can_act: bool) -
 		var r := randf()
 		if r < 0.45:
 			in_strike = true   # stomp
-		elif r < 0.75:
+		elif r < 0.45 + 0.15 + 0.3 * ai_skill:
 			in_grapple = true  # pick them up for more punishment
 		elif r < 0.85:
-			in_pin = true      # cheeky early cover
+			ai_backoff = randf_range(0.9, 1.4)  # let them up
 
 
 func _ai_lockup_move(toward: Vector2) -> void:
 	var r := randf()
-	if is_special_ready() and r < 0.75:
+	if is_special_ready() and r < 0.35 + 0.5 * ai_skill:
 		in_grapple = true
 		in_move = toward  # finisher
 		return
-	if r < 0.2:
+	if r < 0.1 + 0.2 * ai_skill:
 		in_run = true  # Irish whip
 	elif r < 0.5:
 		in_grapple = true
@@ -4675,15 +4798,15 @@ func _ai_lockup_move(toward: Vector2) -> void:
 
 
 func _ai_reversal_chance() -> float:
-	var c := 0.1 + 0.5 * ai_skill
+	var c := 0.08 + 0.3 * ai_skill   # 0.17 at 0.3, 0.32 at 0.8
 	if reversal_kind == "strong":
-		c += 0.1
+		c += 0.06
 	elif reversal_kind == "punch":
-		c = 0.05 + 0.15 * ai_skill
+		c = 0.04 + 0.12 * ai_skill
 	elif reversal_kind == "ender":
-		c = 0.08 + 0.3 * ai_skill
+		c = 0.06 + 0.26 * ai_skill
 	elif reversal_kind == "chain":
-		c = 0.05 + 0.25 * ai_skill
+		c = 0.04 + 0.22 * ai_skill
 	return clampf(c, 0.0, 0.95)
 
 
