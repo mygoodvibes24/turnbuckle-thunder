@@ -533,7 +533,7 @@ func _grain(img: Image, grain: String) -> void:
 					f += 0.035 * sin(float(x) * 2.6) * sin(float(y) * 2.6)
 					f += 0.04 * (_hash01(float(y) * 3.3 + floor(x / 2.0)) - 0.5)
 				"knit":
-					f += 0.05 * sin(float(x) * 1.6)
+					f += 0.025 * sin(float(x) * 2.9) + 0.02 * (_hash01(float(x) * 0.7 + floor(y / 2.0) * 9.1) - 0.5)
 				"leather":
 					f = 1.0 + n * 0.04
 			var c := img.get_pixel(x, y)
@@ -556,10 +556,10 @@ func _paint_pattern(img: Image, pattern: String, base: Color, accent: Color) -> 
 	var h := img.get_height()
 	match pattern:
 		"plaid":
-			var dk := base.darkened(0.42).lerp(accent, 0.18)
-			var band := base.lerp(dk, 0.5)
-			var cross := base.lerp(dk, 0.85)
-			var thread := base.lerp(Color(1.0, 0.95, 0.85), 0.16)
+			var dk := base.darkened(0.55).lerp(accent, 0.25)
+			var band := base.lerp(dk, 0.55)
+			var cross := base.lerp(dk, 0.9)
+			var thread := base.lerp(Color(1.0, 0.95, 0.85), 0.3)
 			for y in h:
 				for x in w:
 					var hx := x % 8 < 3
@@ -1505,7 +1505,7 @@ func _build_arm(side: int, m: Dictionary, top: String, sleeves: String, bulk: fl
 		Vector4(-0.35, 0.078, 0.078, 0.0)], k, k), skin)                                 # upper arm
 	var hoodie_sleeves := top == "hoodie" and sleeves != "cut"
 	if top == "tshirt" or hoodie_sleeves:
-		var a := 0.03 if top == "hoodie" else 0.016
+		var a := 0.02 if top == "hoodie" else 0.014
 		_ball(sh, 0.122 * k + a, Vector3(-0.012 * side, -0.005, 0), top_solid, Vector3(1.0, 1.08, 1.0))  # shirt shoulder
 	if top == "tshirt":
 		_loft(sh, _bulked([Vector4(0.02, 0.112, 0.112, 0.0), Vector4(-0.08, 0.116, 0.117, 0.006),
