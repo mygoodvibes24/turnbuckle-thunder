@@ -700,6 +700,16 @@ func _fx_flash(s: float) -> void:
 		fx.flash(s)
 
 
+func _fx_splinters(where: Vector3, s: float) -> void:
+	if fx != null:
+		fx.splinters(where, s)
+
+
+func _fx_debris(where: Vector3, s: float, c: Color) -> void:
+	if fx != null:
+		fx.debris(where, s, c)
+
+
 func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 	var st: float = clampf(s, 0.0, 1.5)
 	match kind:
@@ -736,7 +746,7 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_hype(0.15)
 		"finisher":
 			_snd("whoosh", 0.0, 0.03)
-			_snd("pop", -1.0, 0.03)
+			_snd("cheer_small", -1.0, 0.03)
 			_hitstop(0.14)
 			_slowmo()
 			_fx_flash(1.0)
@@ -762,12 +772,12 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 				_snd("ooh", 1.0, 0.04)   # near-fall!
 				_hype(0.4)
 			else:
-				_snd("pop", -8.0)
+				_snd("cheer_small", -8.0)
 				_hype(0.15)
 			feel_last_count = 0
 		"reversal":
 			_snd("whoosh", -2.0)
-			_snd("pop", -9.0)
+			_snd("cheer_small", -9.0)
 			_hitstop(0.06)
 			_fx_spark(where, st)
 			_kick_cam(-2.0, 0.3)
@@ -775,11 +785,57 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_hype(0.2)
 		"taunt":
 			var cpu: bool = w.is_cpu
-			_snd("boo" if cpu else "pop", -5.0)
+			_snd("boo" if cpu else "cheer_small", -5.0)
 			_hype(0.1)
 		"grab":
 			_snd("punch", -9.0, 0.15)
 			_kick_cam(-1.0, 0.0)
+		# ---- backyard / hardcore
+		"chair_hit":
+			_snd("chair", -1.0 + 2.0 * st, 0.06)
+			_hitstop(0.09)
+			_fx_spark(where, maxf(st, 0.7))
+			_kick_cam(-3.0, maxf(st, 0.5) * 0.7)
+			_buzz(45)
+			_hype(0.2)
+		"metal_hit":
+			_snd("metal", -1.0 + 2.0 * st, 0.06)
+			_hitstop(0.08)
+			_fx_spark(where, maxf(st, 0.6))
+			_kick_cam(-3.0, maxf(st, 0.5) * 0.7)
+			_buzz(45)
+			_hype(0.15)
+		"wood_hit":
+			_snd("wood", -1.0 + 2.0 * st, 0.08)
+			_hitstop(0.07)
+			_fx_splinters(where, 0.2 + 0.3 * clampf(st, 0.0, 1.0))
+			_kick_cam(-2.0, st * 0.6)
+			_buzz(30)
+			_hype(0.12)
+		"table_break":
+			_snd("crack", 3.0, 0.03)
+			_snd("whoa", 0.0, 0.04)
+			_hitstop(0.16)
+			_slowmo()
+			_fx_flash(0.8)
+			_fx_splinters(where, 1.5)
+			_fx_splinters(where + Vector3(0, 0.15, 0), 1.0)
+			if where.y >= RING_TOP - 0.2:
+				_fx_dust(where, 1.2)   # dust sits on the mat; skip it for floor-level tables
+			_kick_cam(-7.0, 0.8)
+			_buzz(90)
+			_hype(0.6)
+		"dive":
+			_snd("dive_whoosh", -1.0, 0.04)
+			_hype(0.15)
+		"climb":
+			_snd("climb", -4.0, 0.1)
+			_snd("whoa", -12.0, 0.06)
+			_hype(0.1)
+		"whoa":
+			_snd("whoa", -3.0 + 2.0 * clampf(st, 0.0, 1.0), 0.05)
+		"pickup_item":
+			_snd("metal", -16.0, 0.12)
 		_:
 			# Unknown kinds (added later): play a clip of the same name if one exists.
 			_snd(kind, -3.0)
