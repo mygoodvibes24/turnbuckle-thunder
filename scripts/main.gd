@@ -2096,8 +2096,42 @@ func _fx_debris(where: Vector3, s: float, c: Color) -> void:
 		fx.debris(where, s, c)
 
 
+## Ground impact: surface-coloured dust plus grass clumps (lawn) or grey grit (patio / drive).
+func _fx_ground(where: Vector3, s: float) -> void:
+	if fx == null:
+		return
+	var surf: String = surface_at(where)
+	if where.y < 0.8:
+		fx.ground_hit(where, s, surf)
+	else:
+		_fx_dust(where, s)   # high contact (fence, perch): plain dust, no flying clumps
+
+
+## The wrestler a hit at `where` landed on: whichever is closest to the impact point.
+func _fx_victim(where: Vector3) -> Node3D:
+	if p1 == null or p2 == null:
+		return null
+	var d1: float = p1.global_position.distance_squared_to(where)
+	var d2: float = p2.global_position.distance_squared_to(where)
+	return p1 if d1 <= d2 else p2
+
+
+## White body flash on the victim; a big hit on the player also pulses the red vignette.
+func _fx_hit_body(where: Vector3, s: float) -> void:
+	if fx == null:
+		return
+	var v: Node3D = _fx_victim(where)
+	if v == null:
+		return
+	fx.body_flash(v)
+	if s >= 0.6 and not v.is_cpu:
+		fx.hurt(clampf(s, 0.6, 1.2))
+
+
 func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 	var st: float = clampf(s, 0.0, 1.5)
+	if kind in ["punch", "kick", "thud", "thud_concrete", "big_thud", "chair_hit", "metal_hit", "wood_hit", "table_break"]:
+		_fx_hit_body(where, st)
 	match kind:
 		"punch":
 			_snd("punch", -3.0 + 3.0 * st)
@@ -2110,13 +2144,15 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_snd("kick", -1.0 + 2.0 * st)
 			_hitstop(0.06 + 0.01 * clampf(st, 0.0, 1.0))
 			_fx_spark(where, st)
-			_kick_cam(-2.0, st * 0.6)
+			# Launchers pop the victim into JUGGLED as this sfx fires: punch the FOV in.
+			var launched: bool = int(w.get("state")) == Wrestler.S.JUGGLED
+			_kick_cam(-4.0 if launched else -2.0, st * 0.6)
 			_buzz(20)
 			_hype(0.05)
 		"thud":
 			_snd("thud", -1.0 + 2.0 * st, 0.05)
 			_hitstop(0.1)
-			_fx_dust(where, st)
+			_fx_ground(where, st)
 			_fx_spark(where + Vector3(0, 0.2, 0), st * 0.6)
 			_kick_cam(-4.0, st)
 			_buzz(45)
@@ -2126,7 +2162,7 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_snd("thud_concrete", 1.0 + 2.0 * clampf(st, 0.0, 1.0), 0.04)
 			_snd("ooh", -9.0, 0.05)
 			_hitstop(0.13)
-			_fx_dust(where, maxf(st, 0.8))
+			_fx_ground(where, maxf(st, 0.8))
 			_fx_spark(where + Vector3(0, 0.15, 0), maxf(st, 0.7))
 			_kick_cam(-5.0, maxf(st, 0.9))
 			_buzz(60)
@@ -2135,7 +2171,7 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_snd("big_thud", 2.0, 0.03)
 			_snd("ooh", -6.0, 0.05)
 			_hitstop(0.14)
-			_fx_dust(where, maxf(st, 1.0))
+			_fx_ground(where, maxf(st, 1.0))
 			_fx_spark(where + Vector3(0, 0.2, 0), 0.9)
 			_kick_cam(-4.0, maxf(st, 0.8))
 			_buzz(45)
