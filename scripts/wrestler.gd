@@ -2609,77 +2609,466 @@ func _ai_weapons(dist: float, toward: Vector2, os: int, can_act: bool) -> bool:
 	return false
 
 
-# --- poses (minimal; the animation pass can refine these) ------------------------------
+# --- poses ------------------------------------------------------------------------------
+# Every held item is posed two-handed. The right fist (which carries the prop, see
+# weapons.gd pick_up) is placed on an arc around the shoulder line by an arc key
+# hk = (yaw, elevation, radius) in the torso frame; the prop's long axis (model +Y) is aimed
+# independently through the wrist (ik = (yaw, elevation), torso frame; applied to hand_r in
+# _apply_item_wrist), and the left hand grabs a point on the prop itself, so it stays glued
+# to it. Swings blend four keys: carry -> wind-up (smooth) -> impact (ease-in: the snap)
+# -> follow-through (ease-out) -> back to carry. Angles in the key tables are in degrees.
 
-func _pose_weapons() -> void:
-	var t := state_time
+const W_RIGHT := Vector3(1.0, 0.0, 0.0)
+const W_UP := Vector3(0.0, 1.0, 0.0)
+
+
+## Arc centre (x) of the right fist for an item kind: half the gap between the two hands.
+func _w_x0(kind: String) -> float:
+	match kind:
+		"chair":
+			return 0.2
+		"trash_can":
+			return 0.29
+	return 0.04
+
+
+## World point of the right fist for arc key hk (degrees, degrees, metres); mirror = left hand.
+func _w_hand_pt(kind: String, hk: Vector3, mirror := false) -> Vector3:
+	var yw := deg_to_rad(hk.x)
+	var el := deg_to_rad(hk.y)
+	var ce := cos(el)
+	var x := _w_x0(kind) + hk.z * ce * sin(yw)
+	if mirror:
+		x = -x
+	return torso.to_global(Vector3(x, 0.47 + hk.z * sin(el), hk.z * ce * cos(yw)))
+
+
+## Left hand onto the held prop (the other chair leg, the far side of the rim, the knob of
+## the 2x4); with nothing in hand it mirrors the right fist's arc instead.
+func _w_grip_left(kind: String, hk: Vector3, w := 1.0) -> void:
+	if not _item_ok(held_item):
+		_reach(true, _w_hand_pt(kind, hk, true), w)
+		return
+	var mdl: Node3D = held_item.get("model")
+	if mdl == null:
+		return
+	var g := Vector3(0.0, 0.02, 0.0)
+	match kind:
+		"chair":
+			g = Vector3(-0.2, 0.15, 0.0)
+		"trash_can":
+			g = Vector3(-0.3, 0.6, 0.0)
+	_reach(true, mdl.global_transform * g, w)
+
+
+## Both hands on the item: right fist at arc key hk, item long axis along ik (yaw, elevation;
+## degrees, torso frame), xh = preferred direction of the item's side axis (model +X).
+func _w_hold(kind: String, hk: Vector3, ik: Vector3, xh: Vector3, w := 1.0) -> void:
+	_reach(false, _w_hand_pt(kind, hk), w)
+	var yw := deg_to_rad(ik.x)
+	var el := deg_to_rad(ik.y)
+	pt_item_on = held_item != null
+	pt_item_y = Vector3(sin(yw) * cos(el), sin(el), cos(yw) * cos(el))
+	pt_item_x = xh
+	_w_grip_left(kind, hk, w)
+
+
+## Picks key i -> i+1 of a four-key loop (carry, wind-up, impact, follow-through).
+func _w_mix(i: int, u: float, k0: Vector3, k1: Vector3, k2: Vector3, k3: Vector3) -> Vector3:
+	match i:
+		0:
+			return k0.lerp(k1, u)
+		1:
+			return k1.lerp(k2, u)
+		2:
+			return k2.lerp(k3, u)
+	return k3.lerp(k0, u)
+
+
+## Phase of a swing / heave: x = segment (0 wind-up, 1 snap, 2 follow-through, 3 recover),
+## y = eased progress inside it. Between fol_end and rec_start the follow-through holds.
+func _w_phase(t: float, cock_end: float, hit_at: float, fol_end: float, rec_start: float, end_at: float) -> Vector2:
+	if t < cock_end:
+		return Vector2(0.0, _smooth(t / cock_end))
+	if t < hit_at:
+		return Vector2(1.0, _ease_in(_seg(t, cock_end, hit_at)))
+	if t < fol_end:
+		return Vector2(2.0, _ease_out(_seg(t, hit_at, fol_end)))
+	return Vector2(3.0, _smooth(_seg(t, rec_start, end_at)))
+
+
+## Carry key for an item kind: [hand arc key, item key, side-axis hint]. overhead = the 2x4 is
+## about to be chopped down (same direction, expressed over the top so it blends forward).
+func _w_carry(kind: String, overhead := false) -> Array:
+	match kind:
+		"chair":
+			# folded chair up in front of the face with both hands on the legs, ready to come down
+			return [Vector3(0.0, 15.0, 0.45), Vector3(0.0, 90.0, 0.0), W_RIGHT]
+		"trash_can":
+			# carried in front of the belly by the rim, both hands
+			return [Vector3(0.0, -8.0, 0.56), Vector3(0.0, 90.0, 0.0), W_RIGHT]
+	# the 2x4 rests over the right shoulder like a bat
+	if overhead:
+		return [Vector3(4.0, -9.5, 0.36), Vector3(-23.0, 142.0, 0.0), W_RIGHT]
+	return [Vector3(4.0, -9.5, 0.36), Vector3(157.0, 38.0, 0.0), W_UP]
+
+
+## Swing keys [hk wind-up, ik wind-up, hk impact, ik impact, hk follow, ik follow].
+func _w_swing_keys(kind: String, ground: bool, horizontal: bool) -> Array:
+	if horizontal:
+		# 2x4 baseball swing: loaded behind the right shoulder, whipped flat across the front
+		return [Vector3(79.0, 17.0, 0.3), Vector3(170.0, 25.0, 0.0),
+			Vector3(0.0, -3.0, 0.45), Vector3(-10.0, 8.0, 0.0),
+			Vector3(-54.0, -3.0, 0.42), Vector3(-110.0, 15.0, 0.0)]
+	match kind:
+		"trash_can":
+			# hoisted overhead upside down, then slammed bottom-first
+			if ground:
+				return [Vector3(0.0, 79.0, 0.62), Vector3(0.0, 260.0, 0.0),
+					Vector3(0.0, -10.0, 0.6), Vector3(0.0, 172.0, 0.0),
+					Vector3(0.0, -18.0, 0.6), Vector3(0.0, 165.0, 0.0)]
+			return [Vector3(0.0, 79.0, 0.62), Vector3(0.0, 260.0, 0.0),
+				Vector3(0.0, 30.0, 0.6), Vector3(0.0, 210.0, 0.0),
+				Vector3(0.0, -20.0, 0.6), Vector3(0.0, 160.0, 0.0)]
+		"chair":
+			# wound up behind the head (chair hanging down the back), then brought down flat
+			if ground:
+				return [Vector3(0.0, 102.0, 0.59), Vector3(0.0, 210.0, 0.0),
+					Vector3(0.0, -30.0, 0.6), Vector3(0.0, 26.0, 0.0),
+					Vector3(0.0, -38.0, 0.6), Vector3(0.0, 12.0, 0.0)]
+			return [Vector3(0.0, 102.0, 0.59), Vector3(0.0, 210.0, 0.0),
+				Vector3(0.0, 8.0, 0.56), Vector3(0.0, 57.0, 0.0),
+				Vector3(0.0, -35.0, 0.6), Vector3(0.0, -10.0, 0.0)]
+	# 2x4 chopped down onto a downed opponent
+	return [Vector3(0.0, 100.0, 0.55), Vector3(0.0, 200.0, 0.0),
+		Vector3(0.0, -30.0, 0.6), Vector3(0.0, 20.0, 0.0),
+		Vector3(0.0, -40.0, 0.6), Vector3(0.0, 5.0, 0.0)]
+
+
+func _pose_weapons(delta: float) -> void:
 	match state:
 		S.PICKUP_ITEM:
-			var b := _hump(t, 0.0, 0.42)
-			_stance(0.5 + 0.7 * b)
-			pt_tor = Vector3(0.2 + 0.9 * b, 0.0, 0.0)
-			pt_hd = Vector3(0.2 * b - 0.1, 0.0, 0.0)
-			pt_ar = Vector3(-0.6 - 0.9 * b, 0.0, 0.25)
-			pt_el_r = Vector3(-0.3, 0.0, 0.0)
-			pt_al = Vector3(-0.6 - 0.4 * b, 0.0, -0.3)
-			r_limb = 18.0
+			_pose_pickup_item()
 		S.SWING:
-			var hit_at := 0.18 if swing_running else SWING_HIT
-			var end_at := 0.55 if swing_running else SWING_END
-			var up := _smooth(_seg(t, 0.0, hit_at * 0.6))
-			var down := _ease_in(_seg(t, hit_at * 0.6, hit_at))
-			var back := _smooth(_seg(t, hit_at + 0.1, end_at))
-			var raise := up * (1.0 - down)
-			var ext := down * (1.0 - back)
-			var low := 0.6 if current_move_key == "swing_ground" else 0.0
-			_stance(0.55 + 0.25 * ext + 0.3 * low * ext)
-			pt_tor = Vector3(0.15 - 0.2 * raise + (0.35 + low) * ext, 0.3 * raise - 0.3 * ext, 0.0)
-			pt_hd = Vector3(-0.1 + 0.2 * ext, 0.0, 0.0)
-			pt_ar = Vector3(-0.6 - 2.3 * raise - (0.7 - low) * ext, 0.0, 0.2 - 0.25 * ext)
-			pt_al = Vector3(-0.6 - 2.1 * raise - (0.6 - low) * ext, 0.0, -0.2 + 0.25 * ext)
-			pt_el_r = Vector3(-0.3 - 0.9 * raise, 0.0, 0.0)
-			pt_el_l = Vector3(-0.5 - 0.9 * raise, 0.0, 0.0)
-			r_limb = 28.0
-			r_body = 20.0
+			_pose_swing(delta)
 		S.THROW_ITEM:
-			var cock := _smooth(_seg(t, 0.0, 0.15))
-			var rel := _ease_in(_seg(t, 0.15, 0.25))
-			var back2 := _smooth(_seg(t, 0.3, 0.5))
-			var c := cock * (1.0 - rel)
-			var e := rel * (1.0 - back2)
-			_stance(0.55 + 0.2 * e)
-			pt_tor = Vector3(0.1 + 0.3 * e, 0.4 * c - 0.35 * e, 0.0)
-			pt_ar = Vector3(-0.6 - 2.3 * c - 1.0 * e, 0.0, 0.25)
-			pt_el_r = Vector3(-1.0 * c - 0.2, 0.0, 0.0)
-			pt_al = Vector3(-0.9 - 0.5 * e, 0.0, -0.3)
-			r_limb = 26.0
+			_pose_throw_item()
 		S.ON_TABLE:
-			pt_root_direct = true
-			r_limb = 8.0
-			r_body = 9.0
-			_down_relaxed()
-			pt_root_pos.y += TABLE_TOP_Y
+			_pose_on_table()
 		S.SET_TABLE:
-			var b2 := _hump(t, 0.0, 0.7)
-			_stance(0.6 + 0.5 * b2)
-			pt_tor = Vector3(0.25 + 0.6 * b2, 0.0, 0.0)
-			pt_ar = Vector3(-0.8 - 0.8 * b2, 0.0, 0.25)
-			pt_al = Vector3(-0.8 - 0.8 * b2, 0.0, -0.25)
-			pt_el_r = Vector3(-0.5, 0.0, 0.0)
-			pt_el_l = Vector3(-0.5, 0.0, 0.0)
-			r_limb = 16.0
+			if current_move_key == "place_table":
+				_pose_place_on_table()
+			else:
+				_pose_set_table()
 
 
-## Carry pose for the right arm while walking around with an item.
-func _pose_hold_item() -> void:
-	if not (state in [S.IDLE, S.WALK, S.RUN]):
-		return
-	if _item_kind(held_item) == "trash_can":
-		pt_ar = Vector3(-0.5, 0.0, 0.35)
+## Squat (rear knee nearly down), lunge in, grab it off the mat at 0.2 s, stand up with it.
+func _pose_pickup_item() -> void:
+	var t := state_time
+	if _item_ok(weapon_target):
+		# Where the hands go: the near edge of the prop, cached in our own frame because the
+		# target is handed to the hands (and forgotten) at 0.2 s.
+		var ip: Vector3 = weapon_target.position
+		var rel := ip - position
+		rel.y = 0.0
+		var ik := _item_kind(weapon_target)
+		var gp := Vector3(0.0, 0.12, 0.0)
+		if ik == "trash_can":
+			gp = Vector3(0.0, 0.6, 0.0) - rel.normalized() * 0.18
+		_pick_pt = to_local(weapon_target.global_position + gp)
+		_pick_lunge = clampf(rel.length() - 0.55, 0.0, 0.65)
+	var kind := _item_kind(held_item)
+	var down := _smooth(_seg(t, 0.0, 0.17))
+	var up := _smooth(_seg(t, 0.22, 0.42))
+	var b := down * (1.0 - up)
+	r_limb = 20.0
+	r_root = 18.0
+	r_body = 16.0
+	# lead foot steps in, rear knee drops toward the mat, hips back and the back bent over
+	_legs_blend(0.5, 0.6, 0.6, -1.6, 0.2, b)
+	pt_root_pos.z = _pick_lunge * b
+	pt_tor = Vector3(0.15 + 0.85 * b, 0.0, 0.0)
+	pt_hd = Vector3(-0.15 - 0.25 * b, 0.0, 0.0)
+	var low := to_global(_pick_pt)
+	var side := global_basis.x * 0.15
+	if kind == "":
+		# reaching down for it
+		pt_al = Vector3(-0.6, 0.0, -0.3)
+		pt_ar = Vector3(-0.6, 0.0, 0.3)
+		pt_el_l = Vector3(-0.6, 0.0, 0.0)
 		pt_el_r = Vector3(-0.6, 0.0, 0.0)
+		_reach(false, low + side, down)
+		_reach(true, low - side, down)
+		return
+	# got it: haul it up into the carry
+	var c: Array = _w_carry(kind)
+	var hk: Vector3 = c[0]
+	var ikc: Vector3 = c[1]
+	var xh: Vector3 = c[2]
+	var carry_pt := _w_hand_pt(kind, hk)
+	_reach(false, (low + side).lerp(carry_pt, up))
+	pt_item_on = true
+	var yw := deg_to_rad(ikc.x)
+	var el := deg_to_rad(ikc.y)
+	pt_item_y = Vector3(sin(yw) * cos(el), sin(el), cos(yw) * cos(el))
+	pt_item_x = xh
+	r_item = 14.0
+	_w_grip_left(kind, hk)
+
+
+func _pose_swing(delta: float) -> void:
+	var t := state_time
+	var kind := _item_kind(held_item)
+	if kind == "":
+		kind = _swing_kind  # the prop broke on impact: finish the motion empty-handed
 	else:
-		pt_ar = Vector3(-0.85, 0.0, 0.3)
-		pt_el_r = Vector3(-1.1, 0.0, 0.0)
+		_swing_kind = kind
+	var run := swing_running
+	var ground := current_move_key == "swing_ground"
+	var horizontal := kind == "plank" and not ground
+	var ph: Vector2
+	if run:
+		ph = _w_phase(t, 0.08, 0.18, 0.27, 0.32, 0.55)
+	elif ground:
+		ph = _w_phase(t, 0.15, SWING_HIT, 0.36, 0.48, SWING_END)
+	else:
+		ph = _w_phase(t, 0.15, SWING_HIT, 0.4, 0.46, SWING_END)
+	var i := int(ph.x)
+	var u := ph.y
+	var c: Array = _w_carry(kind, kind == "plank" and ground)
+	var k: Array = _w_swing_keys(kind, ground, horizontal)
+	var hk := _w_mix(i, u, c[0], k[0], k[2], k[4])
+	var ik := _w_mix(i, u, c[1], k[1], k[3], k[5])
+	var xh: Vector3 = c[2]
+	if horizontal and i == 3:
+		hk.z += 0.15 * sin(PI * u)  # bring the bat back around out in front, clear of the chest
+	# body keys: (lean, crouch, pelvis forward) and (twist, lead-foot step, 0)
+	var b0 := Vector3(0.12, 0.5, 0.0)
+	var b1 := Vector3(-0.28, 0.35, -0.06)
+	var b2 := Vector3(0.35, 0.85, 0.12)
+	var b3 := Vector3(0.5, 0.95, 0.15)
+	var tw1 := Vector3(0.0, 0.1, 0.0)
+	var tw2 := Vector3(0.0, -0.35, 0.0)
+	var tw3 := Vector3(0.0, -0.35, 0.0)
+	if ground:
+		b2 = Vector3(0.85, 1.05, 0.15)
+		b3 = Vector3(0.95, 1.1, 0.17)
+	if horizontal:
+		b1 = Vector3(0.1, 0.6, -0.04)
+		b2 = Vector3(0.2, 0.75, 0.1)
+		b3 = Vector3(0.25, 0.7, 0.1)
+		tw1 = Vector3(0.75, 0.25, 0.0)
+		tw2 = Vector3(-0.1, -0.35, 0.0)
+		tw3 = Vector3(-0.85, -0.35, 0.0)
+	var bd := _w_mix(i, u, b0, b1, b2, b3)
+	var tw := _w_mix(i, u, Vector3.ZERO, tw1, tw2, tw3)
+	var coil := _w_coil(i, u)
+	r_limb = 34.0 if i == 1 or i == 2 else 22.0
+	r_body = 26.0 if i == 1 or i == 2 else 16.0
+	r_item = 40.0 if i == 1 or i == 2 else 22.0
+	if run:
+		# still carried by the run: the stride freezes into a long lunge at the hit
+		var stride := _smooth(_seg(t, 0.0, 0.18))
+		_gait += delta * 15.0 * (1.0 - stride)
+		var s := sin(_gait)
+		pt_ll = Vector3(lerpf(-0.35 - s * 0.85, -0.85, stride), 0.0, -0.08)
+		pt_lr = Vector3(lerpf(-0.35 + s * 0.85, 0.45, stride), 0.0, 0.08)
+		pt_kn_l = lerpf(0.6, 0.75, stride)
+		pt_kn_r = lerpf(0.6, 0.9, stride)
+		pt_auto_height = true
+		bd.x += 0.12
+	else:
+		_stance(bd.y)
+		pt_ll.x += tw.y        # the lead foot lifts on the wind-up, plants long on the hit
+		pt_kn_l += 0.35 * coil
+		pt_root_pos.z = bd.z
+	pt_tor = Vector3(bd.x, tw.x, 0.0)
+	pt_hd = Vector3(-0.6 * bd.x - 0.1, -0.5 * tw.x, 0.0)
+	_w_hold(kind, hk, ik, xh)
+
+
+## 1 while loaded on the wind-up (lifts the lead knee), 0 once the swing is under way.
+func _w_coil(i: int, u: float) -> float:
+	if i == 0:
+		return u
+	if i == 1:
+		return 1.0 - u
+	return 0.0
+
+
+## Wind-up behind the head, two-handed heave (released at 0.22 s), follow-through.
+func _pose_throw_item() -> void:
+	var t := state_time
+	var kind := _item_kind(held_item)
+	if kind == "":
+		kind = _swing_kind
+	else:
+		_swing_kind = kind
+	var ph := _w_phase(t, 0.15, 0.22, 0.32, 0.36, 0.5)
+	var i := int(ph.x)
+	var u := ph.y
+	var c: Array = _w_carry(kind, true)
+	var hk1 := Vector3(0.0, 112.0, 0.6)
+	var ik1 := Vector3(0.0, 215.0, 0.0)
+	var ik2 := Vector3(0.0, 120.0, 0.0)
+	if kind == "trash_can":
+		hk1 = Vector3(0.0, 92.0, 0.62)  # the can is wide: kept higher, clear of the head
+		ik1 = Vector3(0.0, 255.0, 0.0)
+		ik2 = Vector3(0.0, 225.0, 0.0)
+	elif kind == "plank":
+		ik1 = Vector3(0.0, 205.0, 0.0)
+		ik2 = Vector3(0.0, 110.0, 0.0)
+	var hk := _w_mix(i, u, c[0], hk1, Vector3(0.0, 50.0, 0.62), Vector3(0.0, -10.0, 0.6))
+	var ik := _w_mix(i, u, c[1], ik1, ik2, ik2)
+	var bd := _w_mix(i, u, Vector3(0.12, 0.5, 0.0), Vector3(-0.35, 0.4, -0.08), Vector3(0.2, 0.7, 0.1),
+		Vector3(0.55, 0.8, 0.15))
+	r_limb = 32.0 if i == 1 or i == 2 else 20.0
+	r_body = 24.0 if i == 1 or i == 2 else 14.0
+	r_item = 36.0
+	_stance(bd.y)
+	var e := 1.0 if i == 2 else (u if i == 1 else (1.0 - u if i == 3 else 0.0))
+	pt_ll.x -= 0.35 * e          # step into the heave
+	pt_lr.x += 0.35 * e * e      # trailing leg kicks up behind
+	pt_kn_r += 0.6 * e * e
+	pt_root_pos.z = bd.z
+	pt_tor = Vector3(bd.x, 0.0, 0.0)
+	pt_hd = Vector3(-0.6 * bd.x - 0.1, 0.0, 0.0)
+	if held_item != null:
+		_w_hold(kind, hk, ik, c[2])
+	else:
+		_reach(false, _w_hand_pt(kind, hk))
+		_reach(true, _w_hand_pt(kind, hk, true))
+
+
+## Flat on the back on top of the table (the pose is raised by the table height): arms
+## dangling off the sides, both knees up with the feet on the table top.
+func _pose_on_table() -> void:
+	var ac := anim_clock
+	pt_root_direct = true
+	r_limb = 8.0
+	r_body = 9.0
+	_down_relaxed()
+	pt_root_pos.y += TABLE_TOP_Y
+	pt_al = Vector3(1.15 + 0.05 * sin(ac * 1.3), 0.0, -0.55)
+	pt_ar = Vector3(1.05 + 0.05 * sin(ac * 1.1), 0.0, 0.6)
+	pt_el_l = Vector3(-0.45, 0.0, 0.0)
+	pt_el_r = Vector3(-0.35, 0.0, 0.0)
+	pt_ll = Vector3(-0.85, 0.0, -0.14 + 0.06 * sin(ac * 0.9))
+	pt_kn_l = 1.85
+	pt_lr = Vector3(-0.95, 0.0, 0.16)
+	pt_kn_r = 2.0
+	pt_hd.z = 0.18 * sin(ac * 0.6)  # groggy head roll
+
+
+## Unfolding the table: bend and grab, rip the legs open with the arms spread wide, then slam
+## it down onto its feet in front of us (it appears 1.3 m ahead at 0.35 s).
+func _pose_set_table() -> void:
+	var t := state_time
+	var grab := _smooth(_seg(t, 0.0, 0.12))
+	var pull := _smooth(_seg(t, 0.1, 0.27))
+	var slam := _ease_in(_seg(t, 0.27, 0.36))
+	var rec := _smooth(_seg(t, 0.45, 0.7))
+	var press := slam * (1.0 - rec)
+	r_limb = 22.0
+	r_body = 18.0
+	_stance(0.5 + 0.35 * grab * (1.0 - pull) + 0.25 * pull * (1.0 - slam) + 0.4 * press)
+	pt_tor = Vector3(0.15 + 0.4 * grab * (1.0 - pull) - 0.25 * pull * (1.0 - slam) + 0.6 * press, 0.0, 0.0)
+	pt_hd = Vector3(-0.2 - 0.3 * pull * (1.0 - slam), 0.0, 0.0)
+	pt_root_pos.z = 0.22 * press - 0.08 * pull * (1.0 - slam)
+	# grab low in front -> arms wrenched wide apart, elbows locked -> palms down on the top
+	var wide := pull * (1.0 - slam)
+	pt_al = Vector3(lerpf(-1.1, -1.25, wide), 0.0, lerpf(-0.15, -1.35, wide))
+	pt_ar = Vector3(lerpf(-1.1, -1.25, wide), 0.0, lerpf(0.15, 1.35, wide))
+	pt_el_l = Vector3(lerpf(-0.5, -0.15, wide), 0.0, 0.0)
+	pt_el_r = Vector3(lerpf(-0.5, -0.15, wide), 0.0, 0.0)
+	if slam > 0.0:
+		var w := slam * (1.0 - rec)
+		_reach(true, to_global(Vector3(-0.5, 0.84, 0.95)), w)
+		_reach(false, to_global(Vector3(0.5, 0.84, 0.95)), w)
+
+
+## Dragging the downed opponent onto the table: bend over, grab under the shoulders, haul
+## (legs drive, back straightens) and shove them up onto it (they land on it at 0.35 s).
+func _pose_place_on_table() -> void:
+	var t := state_time
+	var bend := _smooth(_seg(t, 0.0, 0.15))
+	var haul := _smooth(_seg(t, 0.15, 0.35))
+	var rec := _smooth(_seg(t, 0.45, 0.7))
+	var on := 1.0 - rec
+	r_limb = 20.0
+	r_body = 16.0
+	_stance(0.5 + 0.55 * bend * on - 0.2 * haul * on)
+	pt_tor = Vector3(0.15 + 0.85 * bend * on - 0.45 * haul * on, 0.0, 0.0)
+	pt_hd = Vector3(-0.1 - 0.2 * haul, 0.0, 0.0)
+	pt_root_pos.z = -0.1 * haul * on
+	var ot := _opp_node("torso")
+	var p1 := ot.to_global(Vector3(-0.22, 0.35, 0.0))
+	var p2 := ot.to_global(Vector3(0.22, 0.35, 0.0))
+	if t < 0.35:
+		# pulled toward us and up while hauling
+		var pull := (global_position + Vector3(0.0, 1.2, 0.0) - (p1 + p2) * 0.5) * 0.25 * haul
+		p1 += pull
+		p2 += pull
+	_reach_pair(p1, p2, on * bend)
+
+
+## Carry pose while walking around with an item (IDLE / WALK / RUN), or hoisting it to the
+## crowd (TAUNT / WIN). Called after the state's own pose: replaces the arms only.
+func _pose_hold_item() -> void:
+	var kind := _item_kind(held_item)
+	if kind == "":
+		return
+	var c: Array = _w_carry(kind)
+	var hk: Vector3 = c[0]
+	var ik: Vector3 = c[1]
+	var xh: Vector3 = c[2]
+	match state:
+		S.IDLE, S.WALK, S.RUN:
+			if state != S.IDLE:
+				hk.y += 4.0 * sin(_gait * 2.0)  # the prop bounces with the steps
+			else:
+				hk.y += 1.5 * sin(anim_clock * 2.3)
+			if state == S.RUN:
+				hk.z -= 0.04
+			_w_hold(kind, hk, ik, xh)
+		S.TAUNT, S.WIN:
+			# hoisted overhead and shaken at the crowd
+			var on := 1.0
+			if state == S.TAUNT:
+				on = _smooth(_seg(state_time, 0.05, 0.3)) * (1.0 - _smooth(_seg(state_time, TAUNT_TIME - 0.2, TAUNT_TIME)))
+			var shake := sin(anim_clock * 11.0) * on
+			var up_hk := Vector3(4.0 * shake, 66.0 + 6.0 * shake, 0.62)
+			var up_ik := Vector3(0.0, 98.0 + 8.0 * shake, 0.0)
+			if kind == "trash_can":
+				up_ik = Vector3(0.0, 262.0 + 8.0 * shake, 0.0)  # upside down over the head
+			elif kind == "plank":
+				ik = Vector3(-23.0, 142.0, 0.0)  # same direction, blends over the top
+			_w_hold(kind, hk.lerp(up_hk, on), ik.lerp(up_ik, on), W_RIGHT)
+			pt_tor.x = lerpf(pt_tor.x, -0.12, on)
+			pt_hd.x = lerpf(pt_hd.x, -0.35, on)
+
+
+## Wrist: turns hand_r (which carries the held prop) so the prop's long axis follows
+## pt_item_y (torso frame); eases back to straight when nothing is posed.
+func _apply_item_wrist(delta: float) -> void:
+	if hand_r == null:
+		return
+	var target := Quaternion.IDENTITY
+	if pt_item_on and _item_ok(held_item) and held_item.get_parent() == hand_r:
+		var mdl: Node3D = held_item.get("model")
+		if mdl != null:
+			var hb: Basis = mdl.get_meta("base_basis", Basis.IDENTITY)
+			var y := pt_item_y.normalized()
+			var xh := pt_item_x
+			if absf(xh.dot(y)) > 0.92:
+				xh = W_UP if absf(y.y) < 0.7 else Vector3(0.0, 0.0, -1.0)
+			var z := xh.cross(y).normalized()
+			var x := y.cross(z)
+			var want := torso.global_basis.orthonormalized() * Basis(x, y, z)
+			var par := elbow_r.global_basis.orthonormalized()
+			target = (par.inverse() * want * hb.inverse()).orthonormalized().get_rotation_quaternion()
+	var k := 1.0 - exp(-r_item * delta)
+	hand_r.quaternion = hand_r.quaternion.slerp(target, k).normalized()
 
 
 # ---------------------------------------------------------------- CPU AI
@@ -2930,6 +3319,11 @@ var pt_breath := 0.0
 var r_body := 12.0
 var r_limb := 14.0
 var r_root := 12.0
+var pt_item_on := false            # aim the held prop through the wrist (hand_r)
+var pt_item_y := Vector3.UP        # held prop's long axis (model +Y), torso frame
+var pt_item_x := Vector3.RIGHT     # preferred direction of the prop's side axis (model +X)
+var r_item := 22.0
+var pt_basis_off := Vector3.ZERO   # extra pelvis offset in the basis-posed (throw_pose_q) mode
 
 # animation bookkeeping (never read by gameplay)
 var _gait := 0.0
@@ -2942,6 +3336,13 @@ var _entry_root_x := 0.0
 var _entry_root_y := STAND_Y
 var _seen_health := 100.0
 var _hit_clock := -10.0
+var _pick_pt := Vector3.ZERO       # PICKUP_ITEM: where the hands grab, in our own frame
+var _pick_lunge := 0.0             # PICKUP_ITEM: how far the pelvis lunges in to reach it
+var _swing_kind := "chair"         # SWING / THROW_ITEM: the prop kind, kept if it breaks mid-swing
+var _bump_big := false             # DOWN: flattened by a weapon shot (stiff flat-back bump)
+var _bump_off := Vector3.ZERO      # DOWN: where we stood before the knockback shove (own frame)
+var _prev_item_flight := -1.0
+var anim_item_hit_clock := -10.0   # anim_clock when our thrown item reached its target
 
 # throw path (set in start_thrown, sampled in _thrown)
 var throw_origin := Vector3.ZERO   # thrower position
@@ -3102,6 +3503,9 @@ func _pose_reset() -> void:
 	r_body = 12.0
 	r_limb = 14.0
 	r_root = 12.0
+	pt_item_on = false
+	r_item = 22.0
+	pt_basis_off = Vector3.ZERO
 
 
 func _pose_state_changed() -> void:
@@ -3117,11 +3521,35 @@ func _pose_state_changed() -> void:
 	if state == S.DOWN:
 		_seen_health = health
 		_hit_clock = -10.0
+		_bump_big = _entry_root_x > -1.0 and _weapon_knockdown()
+		if _bump_big:
+			# receive_strike shoved us 0.6 m away from the attacker: start the fall from where
+			# we stood, so the bump carries us back instead of popping.
+			var away: Vector3 = position - opponent.position
+			away.y = 0.0
+			_bump_off = Vector3.ZERO
+			if away.length() > 0.01:
+				_bump_off = basis.inverse() * (-away.normalized() * 0.6)
+				_bump_off.y = 0.0
+
+
+## Did a weapon just knock us down (a swing in progress, or a thrown prop arriving)?
+func _weapon_knockdown() -> bool:
+	if opponent == null:
+		return false
+	if _opp_state() == S.SWING:
+		return true
+	var oc: float = opponent.anim_clock
+	var oa: float = opponent.anim_item_hit_clock
+	return oc - oa < 0.12
 
 
 func _update_pose(delta: float) -> void:
 	if _style < 0:
 		_style = absi(display_name.hash()) % 3
+	if _prev_item_flight > 0.0 and item_flight <= 0.0:
+		anim_item_hit_clock = anim_clock
+	_prev_item_flight = item_flight
 	if state != _pose_prev_state:
 		_pose_state_changed()
 	_pose_reset()
@@ -3174,7 +3602,7 @@ func _update_pose(delta: float) -> void:
 		S.LIFTED:
 			_pose_lifted(delta)
 		S.PICKUP_ITEM, S.SWING, S.THROW_ITEM, S.ON_TABLE, S.SET_TABLE:
-			_pose_weapons()  # weapons hook
+			_pose_weapons(delta)  # weapons hook
 		# high flying (see "# ---- high flying")
 		S.CLIMB:
 			_pose_hf_climb()
@@ -3187,8 +3615,9 @@ func _update_pose(delta: float) -> void:
 		S.CORNER_STUN:
 			_pose_hf_corner_stun()
 	if held_item != null:
-		_pose_hold_item()  # weapons hook: carry the item in the right hand
+		_pose_hold_item()  # weapons hook: carry / hoist the item with both hands
 	_apply_pose(delta)
+	_apply_item_wrist(delta)
 
 
 func _apply_pose(delta: float) -> void:
@@ -3218,7 +3647,7 @@ func _apply_pose(delta: float) -> void:
 		hips.rotation.y = lerp_angle(wrapf(hips.rotation.y, -PI, PI), pt_hip.y, kb)
 	if pt_use_basis:
 		pose_root.basis = Basis(throw_pose_q)
-		pose_root.position = Vector3(0.0, throw_pose_y, 0.0)
+		pose_root.position = Vector3(0.0, throw_pose_y, 0.0) + pt_basis_off
 	elif pt_root_direct:
 		pose_root.rotation = pt_root_rot
 		pose_root.position = pt_root_pos
@@ -3988,7 +4417,10 @@ func _pose_down() -> void:
 	r_body = 9.0
 	_down_relaxed()
 	var from_up := _entry_root_x > -1.0
-	var fall_t := 0.34
+	var fall_t := 0.42 if _bump_big else 0.34
+	if from_up and t < fall_t and _bump_big:
+		_pose_flat_bump(t / fall_t)
+		return
 	if from_up and t < fall_t:
 		# knocked off our feet: knees buckle, butt hits, then the back slaps the mat
 		var u := t / fall_t
@@ -4016,6 +4448,10 @@ func _pose_down() -> void:
 	var land := t - (fall_t if from_up else 0.0)
 	var bounce := 0.08 * _hump(land, 0.0, 0.2) + 0.02 * _hump(land, 0.2, 0.32)
 	var fling := _hump(land, 0.0, 0.25)
+	if _bump_big and from_up:
+		# flat-back bump: the whole back slaps down, everything bounces higher
+		bounce *= 1.6
+		fling *= 1.4
 	pt_root_pos.y += bounce
 	pt_root_rot.x += 0.15 * bounce / 0.08 * 0.5
 	pt_al.x -= 0.8 * fling
@@ -4042,6 +4478,38 @@ func _pose_down() -> void:
 		pt_root_pos.y += 0.05 * jolt
 		r_limb = 18.0
 		r_body = 18.0
+
+
+## Weapon knockdown: stiff from the shot, the body topples flat like a cut tree (pivoting on
+## the heels, which slide out), arms flung up then wide, chin tucked, and the whole back
+## slaps the mat at once. u = 0..1 over the fall; ends exactly in the lying DOWN pose.
+func _pose_flat_bump(u: float) -> void:
+	var recoil := _smooth(_seg(u, 0.0, 0.18))
+	var fall := _ease_in(_seg(u, 0.1, 1.0))
+	var th := lerpf(-0.18 * recoil, -PI / 2, fall)
+	var foot := _bump_off.lerp(Vector3(0.0, 0.0, 0.95), _smooth(_seg(u, 0.05, 1.0)))
+	var ct := cos(th)
+	var y := 0.95 * ct + LIE_Y * (1.0 - ct) + 0.07 * _hump(u, 0.0, 0.35)
+	pt_root_rot = Vector3(th, 0.0, 0.0)
+	pt_root_pos = Vector3(foot.x, y, foot.z + 0.95 * sin(th))
+	# legs locked straight: the fall is all one piece
+	pt_ll = Vector3(-0.05, 0.0, -0.08)
+	pt_lr = Vector3(0.0, 0.0, 0.08)
+	pt_kn_l = 0.08
+	pt_kn_r = 0.05
+	var wide := _smooth(_seg(u, 0.3, 0.7))
+	var slap := _smooth(_seg(u, 0.8, 1.0))
+	pt_al = Vector3(-0.6, 0.0, -0.3).lerp(Vector3(-2.5, 0.0, -0.6), recoil).lerp(Vector3(-1.3, 0.0, -1.35), wide) \
+		.lerp(Vector3(0.05, 0.0, -1.25), slap)
+	pt_ar = Vector3(-0.6, 0.0, 0.3).lerp(Vector3(-2.4, 0.0, 0.65), recoil).lerp(Vector3(-1.2, 0.0, 1.35), wide) \
+		.lerp(Vector3(0.05, 0.0, 1.2), slap)
+	pt_el_l = Vector3(-0.3, 0.0, 0.0)
+	pt_el_r = Vector3(-0.3, 0.0, 0.0)
+	var tuck := _smooth(_seg(u, 0.35, 0.75))
+	pt_tor = Vector3(lerpf(-0.3 * recoil, 0.08, tuck), 0.0, 0.0)
+	pt_hd = Vector3(lerpf(-0.6 * recoil, 0.45, tuck), 0.0, 0.0)
+	r_limb = 22.0
+	r_body = 24.0
 
 
 func _pose_lying_limp() -> void:
@@ -5044,52 +5512,76 @@ func _pose_hf_climb() -> void:
 		pt_el_l = Vector3(-0.4, 0.0, 0.0)
 		pt_el_r = Vector3(-0.4, 0.0, 0.0)
 		return
-	# Backing up the turnbuckle facing the ring: hands on the top ropes behind, one foot
-	# stepping up to the next rope at a time.
+	# Backing up the turnbuckle facing the ring: the feet step up the ropes behind (one rung
+	# per step, which matches the three rope heights), the hands go hand over hand along the
+	# two top ropes, and let go for the last step to come up into the crouch.
 	var s := p * 3.0
 	var k := int(minf(s, 2.999))
-	var lift := _hump(s - float(k), 0.0, 0.8)
-	var side := 1.0 if k % 2 == 0 else -1.0
-	_stance(0.35)
-	pt_ll.z = -0.22
-	pt_lr.z = 0.22
-	if k % 2 == 0:
-		pt_ll.x = -0.3 - 1.0 * lift
-		pt_kn_l = 0.5 + 1.5 * lift
+	var lift := _hump(s - float(k), 0.0, 0.7)
+	var left_steps := k % 2 == 0
+	var side := 1.0 if left_steps else -1.0
+	# standing leg's sole sits on the rope behind (local z -0.25), like the perch
+	pt_root_pos = Vector3(0.0, 0.8 - 0.05 * lift, -0.05)
+	pt_ll = Vector3(-0.15, 0.0, -0.2)
+	pt_lr = Vector3(-0.15, 0.0, 0.2)
+	pt_kn_l = 0.9
+	pt_kn_r = 0.9
+	if left_steps:
+		pt_ll.x -= 1.0 * lift
+		pt_kn_l += 1.2 * lift
 	else:
-		pt_lr.x = -0.3 - 1.0 * lift
-		pt_kn_r = 0.5 + 1.5 * lift
-	pt_tor = Vector3(0.12 + 0.06 * lift, 0.08 * side * lift, 0.0)
-	pt_hd = Vector3(-0.1, 0.0, 0.0)
-	pt_al = Vector3(0.55, 0.0, -0.95)
-	pt_ar = Vector3(0.55, 0.0, 0.95)
-	pt_el_l = Vector3(-0.7 - 0.3 * lift, 0.0, 0.0)
-	pt_el_r = Vector3(-0.7 - 0.3 * lift, 0.0, 0.0)
-	pt_root_pos.z = -0.06
+		pt_lr.x -= 1.0 * lift
+		pt_kn_r += 1.2 * lift
+	pt_tor = Vector3(0.18 + 0.12 * lift, 0.1 * side * lift, 0.04 * side * lift)
+	pt_hd = Vector3(-0.25, -0.05 * side * lift, 0.0)
+	# balance arms (used for the top step)
+	pt_al = Vector3(-0.7, 0.0, -0.95)
+	pt_ar = Vector3(-0.7, 0.0, 0.95)
+	pt_el_l = Vector3(-0.5, 0.0, 0.0)
+	pt_el_r = Vector3(-0.5, 0.0, 0.0)
+	var grip := 1.0 - _smooth(_seg(p, 0.6, 0.85))
+	if hf_mode == "down":
+		grip = _smooth(_seg(p, 0.1, 0.35))
+	var rr := get_parent() as Node3D
+	if grip > 0.0 and rr != null and hf_corner != Vector3.ZERO:
+		var c := hf_corner
+		var top := HF_PERCH_Y - 0.1  # top rope height (ring local)
+		var lift_a := 0.15 * lift if left_steps else 0.0
+		var lift_b := 0.0 if left_steps else 0.15 * lift
+		var pa := Vector3(c.x * HF_CORNER_POST, top + lift_a, clampf(position.z + c.z * 0.12, -HF_CORNER_POST, HF_CORNER_POST))
+		var pb := Vector3(clampf(position.x + c.x * 0.12, -HF_CORNER_POST, HF_CORNER_POST), top + lift_b, c.z * HF_CORNER_POST)
+		_reach_pair(rr.to_global(pa), rr.to_global(pb), grip)
 
 
 func _pose_hf_perched() -> void:
-	# Crouched on the top turnbuckle, arms out for balance, eyes on the target.
-	var b := sin(anim_clock * 2.6)
-	var sway := sin(anim_clock * 1.7)
+	# Crouched on the top turnbuckle with the balls of the feet on the two top ropes behind
+	# (local (+-0.28, -0.05, -0.25) when facing the ring), arms out for balance; every few
+	# seconds he rises up and throws both arms in the air to hype the crowd.
+	var ac := anim_clock
+	var b := sin(ac * 2.6)
+	var sway := sin(ac * 1.7)
+	var cyc := fmod(state_time, 2.6)
+	var hype := _smooth(_seg(cyc, 0.35, 0.6)) * (1.0 - _smooth(_seg(cyc, 1.7, 2.0)))
+	var pump := maxf(0.0, sin(ac * 9.0)) * hype
 	pt_breath = b
-	pt_ll = Vector3(-0.9, 0.0, -0.22)
-	pt_lr = Vector3(-0.75, 0.0, 0.22)
-	pt_kn_l = 1.7
-	pt_kn_r = 1.55
-	pt_auto_height = true
-	pt_tor = Vector3(0.55 + 0.03 * b, 0.0, 0.05 * sway)
-	pt_hd = Vector3(-0.45, 0.0, -0.04 * sway)
-	pt_al = Vector3(-0.5, 0.0, -0.9 - 0.1 * sway)
-	pt_ar = Vector3(-0.5, 0.0, 0.9 + 0.1 * sway)
-	pt_el_l = Vector3(-0.6, 0.0, 0.0)
-	pt_el_r = Vector3(-0.6, 0.0, 0.0)
-	pt_root_pos.z = -0.05
+	pt_root_pos = Vector3(0.0, lerpf(0.66, 0.8, hype) - 0.025 * pump, -0.05)
+	var lx := lerpf(-0.45, -0.15, hype)
+	var lz := lerpf(0.3, 0.2, hype)
+	pt_ll = Vector3(lx, 0.0, -lz)
+	pt_lr = Vector3(lx, 0.0, lz)
+	pt_kn_l = lerpf(1.5, 0.9, hype) + 0.07 * pump
+	pt_kn_r = pt_kn_l
+	pt_tor = Vector3(lerpf(0.55, 0.05, hype) + 0.03 * b, 0.0, 0.05 * sway)
+	pt_hd = Vector3(lerpf(-0.45, -0.3, hype), 0.45 * sin(ac * 0.9) * hype, -0.04 * sway)
+	pt_al = Vector3(-0.5, 0.0, -0.9 - 0.1 * sway).lerp(Vector3(-2.75 + 0.25 * pump, 0.0, -0.45), hype)
+	pt_ar = Vector3(-0.5, 0.0, 0.9 + 0.1 * sway).lerp(Vector3(-2.75 + 0.25 * pump, 0.0, 0.45), hype)
+	pt_el_l = Vector3(-0.6, 0.0, 0.0).lerp(Vector3(-0.15 - 0.45 * pump, 0.0, 0.0), hype)
+	pt_el_r = pt_el_l
 	if is_special_ready():
-		# SPECIAL lit: one arm thrown up to the crowd
-		pt_ar = Vector3(-2.8 + 0.15 * sin(anim_clock * 6.0), 0.0, 0.3)
+		# SPECIAL lit: one arm thrown up to the crowd the whole time
+		pt_ar = Vector3(-2.8 + 0.15 * sin(ac * 6.0), 0.0, 0.3)
 		pt_el_r = Vector3(-0.2, 0.0, 0.0)
-	r_limb = 12.0
+	r_limb = 12.0 + 6.0 * hype
 	r_root = 14.0
 
 
@@ -5097,17 +5589,22 @@ func _pose_hf_corner_stun() -> void:
 	# Slammed back into the turnbuckle, then slumped with the arms hooked over the ropes.
 	var t := state_time
 	var e := (t / 0.06) if t < 0.06 else exp(-(t - 0.06) * 6.0)
+	# Standing 0.85 m in from the post, the two top ropes run past the shoulders in a V
+	# behind: the upper arms are hooked back over them (elbows just outside, ~1.35 high) and
+	# the forearms hang down outside the ropes; back resting on the pad, knees sagging.
 	var ph := anim_clock * 2.8
-	_stance(0.35 + 0.1 * sin(ph * 0.7))
-	pt_ll.z = -0.22
-	pt_lr.z = 0.22
-	pt_tor = Vector3(lerpf(0.2, -0.45, e) + 0.05 * sin(ph * 0.5), 0.1 * sin(ph * 0.5), 0.1 * sin(ph))
-	pt_hd = Vector3(lerpf(0.4, -0.55, e) + 0.1 * sin(ph * 1.3), 0.15 * sin(ph * 0.6), 0.2 * sin(ph + 1.0))
-	pt_al = Vector3(0.35, 0.0, -1.3 - 0.2 * e)
-	pt_ar = Vector3(0.35, 0.0, 1.3 + 0.2 * e)
-	pt_el_l = Vector3(-0.4, 0.0, 0.0)
-	pt_el_r = Vector3(-0.4, 0.0, 0.0)
-	pt_root_pos.z = -0.12 - 0.08 * e
+	var sag := _smooth(_seg(t, 0.15, 0.6))
+	_stance(0.4 + 0.12 * sag + 0.06 * sin(ph * 0.7))
+	pt_ll.z = -0.24
+	pt_lr.z = 0.24
+	pt_tor = Vector3(lerpf(-0.3, -0.5, e) + 0.04 * sin(ph * 0.5), 0.08 * sin(ph * 0.5), 0.08 * sin(ph))
+	pt_hd = Vector3(lerpf(0.35 + 0.1 * sag, -0.55, e) + 0.12 * sin(ph * 1.3), 0.15 * sin(ph * 0.6),
+		0.22 * sin(ph + 1.0))
+	pt_al = Vector3(-0.33 + 0.35 * e, 0.0, -1.1 - 0.2 * e)
+	pt_ar = Vector3(-0.33 + 0.35 * e, 0.0, 1.1 + 0.2 * e)
+	pt_el_l = Vector3(0.6 * (1.0 - e), 0.0, 0.4 * (1.0 - e))
+	pt_el_r = Vector3(0.6 * (1.0 - e), 0.0, -0.4 * (1.0 - e))
+	pt_root_pos.z = -0.15 - 0.08 * e
 	r_body = 10.0 if t > 0.1 else 28.0
 	r_limb = 12.0 if t > 0.1 else 24.0
 
@@ -5142,23 +5639,36 @@ func _pose_hf_perch_fall() -> void:
 	var t := state_time
 	var ac := anim_clock
 	if hf_mode == "crotch" and t < 1.1:
-		# straddling the top rope: legs split, doubled over, hands down low
-		throw_pose_q = Quaternion.IDENTITY
-		throw_pose_y = lerpf(0.75, 0.88, _smooth(_seg(t, 0.0, 0.2)))
-		pt_ll = Vector3(-0.25, 0.0, -1.05)
-		pt_lr = Vector3(-0.25, 0.0, 1.05)
-		pt_kn_l = 0.35
-		pt_kn_r = 0.35
-		pt_tor = Vector3(0.6 + 0.08 * sin(ac * 9.0), 0.0, 0.06 * sin(ac * 7.0))
-		pt_hd = Vector3(0.4, 0.0, 0.1 * sin(ac * 5.0))
-		pt_al = Vector3(-0.35, 0.0, 0.25)
-		pt_ar = Vector3(-0.35, 0.0, -0.25)
-		pt_el_l = Vector3(-0.9, 0.0, 0.0)
-		pt_el_r = Vector3(-0.9, 0.0, 0.0)
+		# Dropped straddling the corner: the pelvis slides back into the V where the two top
+		# ropes meet and lands on them / the pad (crotch ~1.3 ring-local), thighs hooked over
+		# the ropes, shins dangling outside. Doubled over, hands at the belt, knees knocking.
+		var d := _smooth(_seg(t, 0.0, 0.2))
+		var jolt := _hump(t, 0.17, 0.45)
+		var sell := _smooth(_seg(t, 0.3, 0.6))
+		throw_pose_q = _qe(0.0, 0.12 * d)
+		throw_pose_y = lerpf(0.7, 1.13, d) - 0.06 * jolt
+		pt_basis_off = Vector3(0.0, 0.0, -0.35 * d)
+		var knock := 0.18 * maxf(0.0, sin(ac * 6.0)) * sell
+		pt_ll = Vector3(-0.35, 0.0, -1.2 + knock)
+		pt_lr = Vector3(-0.35, 0.0, 1.2 - knock)
+		pt_kn_l = 0.7 + 0.15 * sin(ac * 5.0) * sell
+		pt_kn_r = 0.7 + 0.15 * sin(ac * 5.0 + 1.5) * sell
+		pt_tor = Vector3(0.2 + 0.45 * jolt + 0.5 * sell + 0.06 * sin(ac * 9.0) * sell, 0.0, 0.06 * sin(ac * 7.0))
+		pt_hd = Vector3(-0.5 * jolt + 0.5 * sell, 0.0, 0.12 * sin(ac * 5.0))
+		pt_al = Vector3(-1.6, 0.0, -0.9).lerp(Vector3(-0.35, 0.0, 0.3), sell)
+		pt_ar = Vector3(-1.6, 0.0, 0.9).lerp(Vector3(-0.35, 0.0, -0.3), sell)
+		pt_el_l = Vector3(-0.3, 0.0, 0.0).lerp(Vector3(-1.0, 0.0, 0.0), sell)
+		pt_el_r = pt_el_l
+		r_body = 22.0 if t < 0.4 else 12.0
 		return
 	var u := _seg(t, 1.1, 1.6) if hf_mode == "crotch" else _seg(t, 0.0, 0.55)
 	throw_pose_q = _hf_fall_q(u)
-	throw_pose_y = lerpf(0.88, LIE_Y, _ease_in(u))
+	if hf_mode == "crotch":
+		# slumps off the corner forward into the ring
+		throw_pose_y = lerpf(1.13, LIE_Y, _ease_in(u))
+		pt_basis_off = Vector3(0.0, 0.0, -0.35 * (1.0 - _smooth(u)))
+	else:
+		throw_pose_y = lerpf(0.88, LIE_Y, _ease_in(u))
 	_pose_hf_flail()
 
 
@@ -5166,8 +5676,9 @@ func _pose_hf_perch_fall() -> void:
 func _hf_dive_keys(key: String) -> Array:
 	match key:
 		"backyard_splash":
-			return [[0.0, 0.72, _qe(0.0, 0.35)], [0.2, 0.95, _qe(0.0, -0.25)], [0.55, 0.85, _qe(0.0, 0.5)],
-				[0.85, 0.62, _qe(0.0, 1.3)], [1.0, 0.42, _qe(0.0, PI / 2)]]
+			# springs up arched, then lays out flat face-down for most of the flight
+			return [[0.0, 0.72, _qe(0.0, 0.35)], [0.2, 0.95, _qe(0.0, -0.2)], [0.45, 0.95, _qe(0.0, 1.05)],
+				[0.75, 0.75, _qe(0.0, 1.4)], [1.0, 0.42, _qe(0.0, PI / 2)]]
 		"moonsault", "springboard_moonsault":
 			# turn the back to the target, then a 3/4 backflip onto the chest
 			return [[0.0, 0.72, _qe(0.0, 0.3)], [0.12, 0.82, _qe(PI * 0.5, 0.15)], [0.25, 0.95, _qe(PI, -0.1)],
@@ -5177,8 +5688,10 @@ func _hf_dive_keys(key: String) -> Array:
 			return [[0.0, 0.72, _qe(0.0, 0.35)], [0.2, 0.95, _qe(0.0, -0.2)], [0.45, 0.95, _qe(0.0, -0.75 * PI)],
 				[0.7, 0.8, _qe(0.0, -1.25 * PI)], [1.0, 0.42, _qe(0.0, -1.5 * PI)]]
 		"flying_elbow":
-			return [[0.0, 0.72, _qe(0.0, 0.35)], [0.25, 0.95, _qe(0.0, -0.1)], [0.6, 0.85, _qe(0.3 * PI, -0.5)],
-				[1.0, 0.42, _qe(0.5 * PI, -PI / 2)]]
+			# rolls onto the left side in the air (head toward local -x), so the bent left arm's
+			# upper arm points straight down: elbow first. Settles onto the back on landing.
+			return [[0.0, 0.72, _qe(0.0, 0.35)], [0.25, 0.95, _qe(0.0, -0.1)], [0.6, 0.85, _qe(0.0, 0.1, 0.38 * PI)],
+				[1.0, 0.55, _qe(0.0, 0.0, PI / 2)]]
 		"missile_dropkick":
 			return [[0.0, 0.72, _qe(0.0, 0.35)], [0.25, 0.95, _qe(0.0, -0.3)], [0.55, 0.9, _qe(0.0, -1.35)],
 				[1.0, LIE_Y + 0.03, _qe(0.0, -PI / 2)]]
@@ -5272,18 +5785,19 @@ func _hf_dive_limbs(p: float) -> void:
 	pt_hd = Vector3(-0.3, 0.0, 0.0)
 	match hf_move:
 		"backyard_splash":
-			# frog: knees out, arms wide, then spread flat for the landing
-			var frog := _smooth(_seg(p, 0.45, 0.75))
-			var flat := _smooth(_seg(p, 0.85, 1.0))
-			pt_al = pt_al.lerp(Vector3(-1.4, 0.0, -1.1), frog).lerp(Vector3(-0.5, 0.0, -1.35), flat)
-			pt_ar = pt_ar.lerp(Vector3(-1.4, 0.0, 1.1), frog).lerp(Vector3(-0.5, 0.0, 1.35), flat)
-			pt_el_l.x = lerpf(lerpf(-0.2, -0.9, frog), -0.2, flat)
+			# spread-eagle: arms straight out to the sides, legs straight and apart, flat
+			var spread := _smooth(_seg(p, 0.25, 0.5))
+			var sz := 1.5 + 0.08 * sin(anim_clock * 14.0) * spread  # arms flutter in the wind
+			pt_al = pt_al.lerp(Vector3(-0.2, 0.0, -sz), spread)
+			pt_ar = pt_ar.lerp(Vector3(-0.2, 0.0, sz), spread)
+			pt_el_l.x = lerpf(-0.2, -0.05, spread)
 			pt_el_r.x = pt_el_l.x
-			pt_ll = pt_ll.lerp(Vector3(-1.0, 0.0, -0.6), frog).lerp(Vector3(0.0, 0.0, -0.25), flat)
-			pt_lr = pt_lr.lerp(Vector3(-1.0, 0.0, 0.6), frog).lerp(Vector3(0.0, 0.0, 0.25), flat)
-			pt_kn_l = lerpf(lerpf(pt_kn_l, 1.6, frog), 0.15, flat)
+			pt_ll = pt_ll.lerp(Vector3(0.05, 0.0, -0.42), spread)
+			pt_lr = pt_lr.lerp(Vector3(0.05, 0.0, 0.42), spread)
+			pt_kn_l = lerpf(pt_kn_l, 0.12, spread)
 			pt_kn_r = pt_kn_l
-			pt_hd.x = lerpf(-0.3, -0.6, frog)
+			pt_tor.x = lerpf(pt_tor.x, -0.1, spread)  # slight arch: chest leads
+			pt_hd.x = lerpf(-0.3, -0.65, spread)
 		"moonsault", "springboard_moonsault", "gutter_star":
 			var tuck := _hump(p, 0.3, 0.85)
 			var open := _smooth(_seg(p, 0.2, 0.4))
@@ -5296,10 +5810,14 @@ func _hf_dive_limbs(p: float) -> void:
 			pt_ar = pt_ar.lerp(Vector3(-1.6, 0.0, 1.2), open).lerp(Vector3(-0.6, 0.0, 1.3), flat2)
 			pt_hd.x = -0.4 * tuck
 		"flying_elbow":
+			# left upper arm out of the side (= straight down once rolled), forearm folded
+			# across: the point of the elbow leads; the right arm reaches for the sky
 			var cock := _smooth(_seg(p, 0.2, 0.5))
-			pt_al = pt_al.lerp(Vector3(0.0, 0.0, -1.45), cock)
-			pt_el_l = pt_el_l.lerp(Vector3(-1.9, 0.0, 0.0), cock)
-			pt_ar = pt_ar.lerp(Vector3(-2.4, 0.0, 0.5), cock)
+			var tuck := _smooth(_seg(p, 0.82, 1.0))  # folds in under the side as it drives in
+			pt_al = pt_al.lerp(Vector3(0.0, 0.0, -1.5), cock).lerp(Vector3(-0.2, 0.0, -0.5), tuck)
+			pt_el_l = pt_el_l.lerp(Vector3(-2.0, 0.0, 0.0), cock)
+			pt_ar = pt_ar.lerp(Vector3(-0.3, 0.0, 1.55), cock)
+			pt_el_r = pt_el_r.lerp(Vector3(-0.1, 0.0, 0.0), cock)
 			pt_ll = pt_ll.lerp(Vector3(-0.6, 0.0, -0.1), cock)
 			pt_lr = pt_lr.lerp(Vector3(-0.3, 0.0, 0.1), cock)
 			pt_kn_l = lerpf(pt_kn_l, 1.0, cock)
