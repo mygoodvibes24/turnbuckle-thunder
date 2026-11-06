@@ -228,6 +228,10 @@ func _process(delta: float) -> void:
 	clock += delta
 	if cols.is_empty():
 		return
+	var over: bool = main != null and main.get("match_over") == true
+	root.visible = not over  # the win banner owns the screen
+	if over:
+		return
 	var sr := _safe_rect()
 	for d in cols:
 		_update_col(d, sr, delta)
