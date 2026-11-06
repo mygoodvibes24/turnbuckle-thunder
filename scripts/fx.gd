@@ -1,10 +1,10 @@
 extends Node3D
-## Cheap pooled hit FX for phones: additive starburst sparks, mat dust puffs and a
+## Cheap pooled hit FX for phones: additive starburst sparks, ground dust puffs and a
 ## white screen flash. Everything is generated in code; no per-hit allocations.
 ##
 ## API (positions are world space):
 ##   spark(pos, strength)   # starburst that scale-pops and fades (~0.2 s)
-##   dust(pos, strength)    # ring of grey puffs drifting outward along the mat
+##   dust(pos, strength)    # ring of grey puffs drifting outward along the ground
 ##   flash(strength)        # full-screen white flash (finishers)
 ##   splinters(pos, strength)      # 10-20 brown wood shards fly out, spin, bounce once, fade
 ##   debris(pos, strength, color)  # chunkier generic bits (chairs: grey, trash cans, ...)
@@ -13,7 +13,7 @@ const SPARK_POOL := 12
 const SHARD_POOL := 48            # shared by splinters and debris (ring buffer)
 const SHARD_LIFE := 1.1
 const SHARD_GRAVITY := 14.0
-const MAT_Y := 1.0                # world y of the mat top
+const MAT_Y := 0.0                # world y of the ground (no ring: everything lands on the yard)
 const RING_EDGE := 4.4            # beyond this |x| or |z| there is no mat under a shard
 var _splinter_colors: Array[Color] = [Color(0.55, 0.38, 0.2), Color(0.68, 0.5, 0.3), Color(0.42, 0.28, 0.15)]
 const SPARK_LIFE := 0.2

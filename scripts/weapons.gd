@@ -1,7 +1,7 @@
 extends Node3D
-## ItemManager: the hardcore weapons lying around the backyard ring (steel folding chairs,
+## ItemManager: the hardcore weapons lying around the backyard (steel folding chairs,
 ## a metal trash can, a 2x4 and a folding table). Created by main.gd under ring_root, so
-## every position here is local to the ring (mat = local y 0). Built entirely in code with
+## every position here is local to it (ground = local y 0; no ring any more, see yard_contract.md). Built entirely in code with
 ## low-poly meshes and tiny generated textures. A rematch reloads the scene, so the items
 ## simply respawn in _ready.
 ##
@@ -13,10 +13,11 @@ extends Node3D
 ## where = world position) so main.gd can throw splinters / debris.
 signal broke(kind: String, where: Vector3)
 
-const ITEM_CLAMP := 3.5        # floor items stay inside this (ring clamp is 3.8)
-const TABLE_CLAMP := 2.7       # a set-up table (1.8 m long) stays fully inside the ropes
+const YARD_BOUNDS := Rect2(-7.0, -5.0, 14.0, 10.0)  # fighting area x, z, w, d (main.gd yard_bounds)
+const ITEM_MARGIN := 0.25      # floor items stay this far inside the yard bounds
+const TABLE_MARGIN := 0.95     # a set-up table (1.8 m long) stays fully inside the yard
 const TABLE_HEIGHT := 0.79     # top surface of a standing table (local y)
-const TABLE_LEAN := 0.38       # folded table leaning against the post (radians from vertical)
+const TABLE_LEAN := 0.38       # folded table leaning against the fence (radians from vertical)
 const FIST_ELBOW := Vector3(0.0, -0.33, 0.02)  # fist position in the elbow_r frame
 const FIST_HAND := Vector3(0.0, 0.0, 0.015)     # hand_r sits at the fist (child of elbow_r)
 
@@ -175,7 +176,7 @@ func throw_item(item: Node3D, from: Vector3, to: Vector3) -> void:
 		it.reparent(self, false)
 	it.held_by = null
 	it.mode = "flying"
-	var dest := Vector3(clampf(to.x, -ITEM_CLAMP, ITEM_CLAMP), 0.0, clampf(to.z, -ITEM_CLAMP, ITEM_CLAMP))
+	var dest := _clamp_floor(to, ITEM_MARGIN)
 	var dist := _flat_dist(from, dest)
 	it.fly_from = from
 	it.fly_to = dest
@@ -215,8 +216,7 @@ func set_up_table(table: Node3D, local_pos: Vector3, yaw: float) -> void:
 		return
 	it.mode = "standing"
 	it.yaw = yaw
-	it.position = Vector3(clampf(local_pos.x, -TABLE_CLAMP, TABLE_CLAMP), 0.0,
-		clampf(local_pos.z, -TABLE_CLAMP, TABLE_CLAMP))
+	it.position = _clamp_floor(local_pos, TABLE_MARGIN)   # on grass or concrete, both ground level
 	it.rotation = Vector3(0.0, yaw, 0.0)
 	it.legs.visible = true
 	it.folded_legs.visible = false
@@ -245,7 +245,7 @@ func break_table(table: Node3D) -> void:
 		debris_root.add_child(piece)
 		var u := (float(i) + 0.5) / float(n) - 0.5
 		var p := c + ax * (u * 1.6 + randf_range(-0.15, 0.15)) + across * randf_range(-0.45, 0.45)
-		piece.position = _clamp_floor(p, ITEM_CLAMP)
+		piece.position = _clamp_floor(p, ITEM_MARGIN)
 		piece.rotation = Vector3(randf_range(-0.35, 0.35), it.yaw + randf_range(-0.7, 0.7), randf_range(-0.35, 0.35))
 		var length := 1.8 / float(n) * randf_range(0.8, 1.2)
 		_box(piece, Vector3(length, 0.05, randf_range(0.3, 0.7)), Vector3(0.0, 0.06, 0.0), wood)
@@ -253,7 +253,7 @@ func break_table(table: Node3D) -> void:
 	for i in 2:
 		var leg := Node3D.new()
 		debris_root.add_child(leg)
-		leg.position = _clamp_floor(c + ax * (0.7 if i == 0 else -0.7) + across * randf_range(-0.3, 0.3), ITEM_CLAMP)
+		leg.position = _clamp_floor(c + ax * (0.7 if i == 0 else -0.7) + across * randf_range(-0.3, 0.3), ITEM_MARGIN)
 		leg.rotation = Vector3(PI / 2 + randf_range(-0.2, 0.2), randf() * TAU, 0.0)
 		_box(leg, Vector3(0.6, 0.03, 0.03), Vector3(0.0, 0.0, -0.03), metal)
 	it.mode = "broken"
@@ -296,8 +296,10 @@ func _flat_dist(a: Vector3, b: Vector3) -> float:
 	return Vector2(a.x - b.x, a.z - b.z).length()
 
 
-func _clamp_floor(p: Vector3, lim: float) -> Vector3:
-	return Vector3(clampf(p.x, -lim, lim), 0.0, clampf(p.z, -lim, lim))
+func _clamp_floor(p: Vector3, margin: float) -> Vector3:
+	# Onto the ground, inside the yard's fighting area (minus margin).
+	return Vector3(clampf(p.x, YARD_BOUNDS.position.x + margin, YARD_BOUNDS.end.x - margin), 0.0,
+		clampf(p.z, YARD_BOUNDS.position.y + margin, YARD_BOUNDS.end.y - margin))
 
 
 func _floor_basis(it: Item) -> Basis:
@@ -322,7 +324,7 @@ func _refresh_model(it: Item) -> void:
 func _lay_on_floor(it: Item, local_pos: Vector3, yaw: float) -> void:
 	it.mode = "floor"
 	it.yaw = yaw
-	it.transform = Transform3D(Basis(Vector3.UP, yaw), _clamp_floor(local_pos, ITEM_CLAMP))
+	it.transform = Transform3D(Basis(Vector3.UP, yaw), _clamp_floor(local_pos, ITEM_MARGIN))
 	var fb := _floor_basis(it)
 	if it.lies_flat:
 		_set_model(it, fb, -(fb * Vector3(0.0, it.center_y, 0.0)) + Vector3(0.0, it.half_thick, 0.0))
@@ -334,14 +336,14 @@ func _break_item(it: Item) -> void:
 	var where := it.model.global_position
 	var lp := to_local(where)
 	lp.y = 0.0
-	var at := _clamp_floor(lp, ITEM_CLAMP)
+	var at := _clamp_floor(lp, ITEM_MARGIN)
 	match it.kind:
 		"chair":
 			var metal: Material = _mat("metal")
 			for i in 4:
 				var bar := Node3D.new()
 				debris_root.add_child(bar)
-				bar.position = _clamp_floor(at + Vector3(randf_range(-0.5, 0.5), 0.0, randf_range(-0.5, 0.5)), ITEM_CLAMP)
+				bar.position = _clamp_floor(at + Vector3(randf_range(-0.5, 0.5), 0.0, randf_range(-0.5, 0.5)), ITEM_MARGIN)
 				bar.rotation = Vector3(0.0, randf() * TAU, randf_range(-0.15, 0.15))
 				if i < 2:
 					_box(bar, Vector3(0.4, 0.02, 0.3), Vector3(0.0, 0.02, 0.0), metal)   # bent panel
@@ -352,7 +354,7 @@ func _break_item(it: Item) -> void:
 			for i in 2:
 				var half := Node3D.new()
 				debris_root.add_child(half)
-				half.position = _clamp_floor(at + Vector3(randf_range(-0.4, 0.4), 0.0, randf_range(-0.4, 0.4)), ITEM_CLAMP)
+				half.position = _clamp_floor(at + Vector3(randf_range(-0.4, 0.4), 0.0, randf_range(-0.4, 0.4)), ITEM_MARGIN)
 				half.rotation = Vector3(0.0, randf() * TAU, 0.0)
 				_box(half, Vector3(0.09, 0.045, 0.6), Vector3(0.0, 0.025, 0.0), wood)
 		"trash_can":
@@ -364,7 +366,7 @@ func _break_item(it: Item) -> void:
 			_cyl(can, 0.26, 0.22, 0.6, Vector3(0.0, 0.0, -0.12), _mat("can"), 10, Vector3(1.0, 1.0, 0.45))
 			var lid := Node3D.new()
 			debris_root.add_child(lid)
-			lid.position = _clamp_floor(at + Vector3(randf_range(-0.8, 0.8), 0.0, randf_range(-0.8, 0.8)), ITEM_CLAMP)
+			lid.position = _clamp_floor(at + Vector3(randf_range(-0.8, 0.8), 0.0, randf_range(-0.8, 0.8)), ITEM_MARGIN)
 			lid.rotation = Vector3(randf_range(-0.2, 0.2), randf() * TAU, 0.0)
 			_cyl(lid, 0.265, 0.265, 0.04, Vector3(0.0, 0.02, 0.0), _mat("can"), 10)
 	it.mode = "broken"
@@ -377,23 +379,25 @@ func _break_item(it: Item) -> void:
 # ---------------------------------------------------------------- spawning
 
 func _spawn_all() -> void:
-	# Two chairs, the trash can and the 2x4 in the other corners / just inside the apron,
-	# the folded table leaning against the (+x, +z) ring post.
-	_place_floor(_make_chair(), Vector3(-3.3, 0.0, -3.3), PI * 0.25)
-	_place_floor(_make_chair(), Vector3(3.3, 0.0, -3.2), -PI * 0.2)
-	_place_floor(_make_trash_can(), Vector3(-3.3, 0.0, 3.3), 0.0)
-	_place_floor(_make_plank(), Vector3(0.6, 0.0, 3.45), PI / 2)
-	var table := _make_table()
-	var corner := Vector3(3.62, 0.0, 3.62)
-	var to_center := (-corner).normalized()
-	table.yaw = atan2(to_center.x, to_center.z)
-	table.position = corner
+	# Around the yard (yard_contract.md): two chairs near the patio, the trash can by the right
+	# fence, the 2x4 by the shed, the folded table leaning on the right fence.
+	_place_floor(_make_chair(), Vector3(-1.3, 0.0, -2.9), PI * 0.3)
+	_place_floor(_make_chair(), Vector3(-2.8, 0.0, -1.0), -PI * 0.2)
+	_place_floor(_make_trash_can(), Vector3(6.75, 0.0, -0.6), 0.0)
+	_place_floor(_make_plank(), Vector3(-6.3, 0.0, 1.9), 0.15)
+	_lean_table(_make_table(), Vector3(7.1, 0.0, 0.5), Vector3(-1.0, 0.0, 0.0))
+
+
+## Stands a folded table up on its end at `base`, top face toward `face`, leaning back by
+## TABLE_LEAN against whatever is behind it (a fence).
+func _lean_table(table: Item, base: Vector3, face: Vector3) -> void:
+	table.yaw = atan2(face.x, face.z)
+	table.position = base
 	table.rotation = Vector3(0.0, table.yaw, 0.0)
 	table.mode = "folded"
 	table.legs.visible = false
 	table.folded_legs.visible = true
-	# Long axis (model X) up, top face (model +Y) toward the ring centre, leaning back
-	# against the post by TABLE_LEAN.
+	# Long axis (model X) up, top face (model +Y) toward `face`, leaning back by TABLE_LEAN.
 	var upright := Basis(Vector3(0, 1, 0), Vector3(0, 0, 1), Vector3(1, 0, 0))
 	var lean := Basis(Vector3.RIGHT, -TABLE_LEAN) * upright
 	_set_model(table, lean, Vector3(0.0, 0.9 * cos(TABLE_LEAN) + 0.02, -0.9 * sin(TABLE_LEAN)))

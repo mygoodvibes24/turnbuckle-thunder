@@ -14,7 +14,7 @@ extends Node
 ## Sound names: "punch", "kick", "thud", "big_thud", "rope", "bell", "count",
 ##              "whoosh", "pop", "ooh", "boo",
 ##              backyard/hardcore: "chair", "metal", "wood", "crack", "whoa",
-##              "cheer_small", "climb", "dive_whoosh"
+##              "cheer_small", "climb", "dive_whoosh", "thud_concrete" (slam on the patio)
 ##              (plus "crowd_loop", used internally: a small backyard crowd + crickets).
 ##
 ## All clips are 16-bit mono 22050 Hz AudioStreamWAV, lightly bit-crushed for a
@@ -147,6 +147,7 @@ func _build_clips() -> void:
 	clips["climb"] = _to_wav(_synth_creak(0.45), false)
 	clips["dive_whoosh"] = _to_wav(_synth_dive_whoosh(0.7), false)
 	clips["crowd_loop"] = _to_wav(_synth_crowd_loop(3.0), true)
+	clips["thud_concrete"] = _to_wav(_synth_concrete_slam(0.45), false)
 	_cache = clips
 
 
@@ -224,6 +225,27 @@ func _synth_slam(dur: float, f0: float, f1: float, rattle_amt: float) -> PackedF
 		rattle = rattle * 0.12 * rattle_amt + rat_lp * 0.18 * rattle_amt * exp(-t * 25.0)
 		var atk: float = minf(1.0, float(i) / 40.0)
 		buf[i] = (body * 1.1 + thump + rattle) * atk * (1.0 - x * x * x)
+	return buf
+
+
+## Concrete slam: the mat slam's body with no springy rattle, plus a hard bright slap
+## (high-passed noise) and a short gritty scrape tail: harsher and louder than "thud".
+func _synth_concrete_slam(dur: float) -> PackedFloat32Array:
+	var buf: PackedFloat32Array = _synth_slam(dur, 95.0, 52.0, 0.0)
+	var slap: PackedFloat32Array = _synth_hit(minf(dur, 0.12), 240.0, 140.0, 0.35, 3800.0)
+	var n: int = buf.size()
+	var sr: float = float(MIX_RATE)
+	var lp: float = 0.0
+	var a_lp: float = _coef(2500.0)
+	for i in range(n):
+		var t: float = float(i) / sr
+		var s: float = buf[i] * 1.15
+		if i < slap.size():
+			s += slap[i] * 1.6
+		var nz: float = _noise()
+		lp += a_lp * (nz - lp)
+		s += (nz - lp) * 0.22 * exp(-t * 18.0)
+		buf[i] = clampf(s * 1.1, -1.0, 1.0)
 	return buf
 
 
