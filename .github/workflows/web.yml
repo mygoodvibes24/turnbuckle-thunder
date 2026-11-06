@@ -1,0 +1,83 @@
+# Builds a browser-playable version of the game on every push to main and
+# publishes it to GitHub Pages (gh-pages branch):
+#   https://mygoodvibes24.github.io/turnbuckle-thunder/
+# It also runs the game headless for a few seconds and fails the "check"
+# step if Godot reports script errors, so broken builds are easy to spot.
+name: Web build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: web-build
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.4.1
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: barichello/godot-ci:4.4.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install export templates
+        run: |
+          mkdir -v -p ~/.local/share/godot/export_templates/
+          mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
+
+      - name: Import project
+        run: godot --headless --import 2>&1 | tee import.log
+
+      - name: Smoke test (run the game headless for ~10 seconds)
+        run: timeout 120 godot --headless --quit-after 600 2>&1 | tee run.log || true
+
+      - name: Export for the web
+        run: |
+          mkdir -p build/web
+          godot --headless --export-release "Web" build/web/index.html 2>&1 | tee export.log
+          touch build/web/.nojekyll
+          ls -la build/web
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web
+          path: build/web
+          include-hidden-files: true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs
+          path: "*.log"
+
+      - name: Check for script errors
+        run: |
+          if grep -nE "SCRIPT ERROR|Parse Error|Compile Error|Invalid call|Invalid access|Invalid assignment|Invalid get index|Invalid set index|Nonexistent function|Identifier .* not declared|Cannot infer|Failed to load script|shader compilation failed|SHADER ERROR" import.log run.log export.log; then
+            echo "::error::Godot reported script errors (see lines above)"
+            exit 1
+          fi
+          echo "No script errors found."
+
+  deploy:
+    needs: build
+    if: ${{ always() && needs.build.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: web
+          path: web
+      - name: Publish to gh-pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: web
+          branch: gh-pages
+          clean: true
