@@ -744,7 +744,7 @@ func _make_flash_texture() -> ImageTexture:
 	return _soft_tex(img, 16, 16)
 
 
-# ---- lights, sky, camera
+# ---- lights, sky, camera, post (PS2-era night look)
 
 func _build_environment() -> void:
 	var sky_mat := ShaderMaterial.new()
@@ -757,35 +757,47 @@ func _build_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
-	# Night: a low cool ambient so everything off the ring sinks toward near-black,
-	# the floodlit ring is the brightest thing on screen.
+	# Night: a cool, slightly lifted ambient so the yard stays dark but readable;
+	# the floodlight pools on the ring are the brightest thing on screen.
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.30, 0.32, 0.55)
-	env.ambient_light_energy = 0.25
+	env.ambient_light_color = Color(0.36, 0.42, 0.66)
+	env.ambient_light_energy = 0.3
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
-	env.glow_enabled = false
+	env.glow_enabled = false  # bloom is done cheaply in the post shader instead
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.06, 0.06, 0.12)
+	env.fog_light_color = Color(0.07, 0.08, 0.15)
 	env.fog_light_energy = 1.0
-	env.fog_density = 0.02
+	env.fog_density = 0.011
 	env.fog_sky_affect = 0.0
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 
+	# Moonlight from behind the yard (where the moon sits in the sky): a weak cool
+	# directional that rims shoulders and heads so silhouettes read against the dark.
+	var moon := DirectionalLight3D.new()
+	moon.transform = Transform3D(Basis.looking_at(Vector3(-0.42, -0.62, 0.66)), Vector3(0, 10, 0))
+	moon.light_color = Color(0.58, 0.68, 1.0)
+	moon.light_energy = 0.42
+	moon.light_specular = 0.6
+	moon.shadow_enabled = false
+	add_child(moon)
+
 	# Two warm floodlights on poles at opposite corners, both aimed at the ring centre.
-	# No shadow maps (wrestlers keep their blob shadows); ring_spot is the front one.
+	# Strong key, tight cone, quick falloff: they read as hard pools of light on the
+	# canvas and grass. Only the front one (ring_spot) casts a real shadow map.
 	var floods: Array[SpotLight3D] = []
 	for corner: Vector3 in [Vector3(-5.0, 6.5, 5.0), Vector3(5.0, 6.5, -5.0)]:
 		var fl := SpotLight3D.new()
 		fl.transform = Transform3D(Basis.looking_at(Vector3(0, RING_TOP, 0) - corner), corner)
-		fl.spot_angle = 38.0
-		fl.spot_angle_attenuation = 0.8
-		fl.spot_range = 14.0
-		fl.spot_attenuation = 0.5
-		fl.light_energy = 3.5
-		fl.light_color = Color(1.0, 0.88, 0.7)
+		fl.spot_angle = 34.0
+		fl.spot_angle_attenuation = 0.55
+		fl.spot_range = 13.0
+		fl.spot_attenuation = 1.15
+		fl.light_energy = 6.0
+		fl.light_specular = 0.7
+		fl.light_color = Color(1.0, 0.84, 0.62)
 		fl.shadow_enabled = false
 		add_child(fl)
 		floods.append(fl)
@@ -797,13 +809,19 @@ func _build_environment() -> void:
 		var lens := _box(Vector3(0.6, 0.36, 0.04), Vector3.ZERO, Color(1.0, 0.92, 0.75), true)
 		lens.transform = fl.transform * Transform3D(Basis(), Vector3(0, 0, -0.17))
 	ring_spot = floods[0]
+	ring_spot.shadow_enabled = USE_KEY_SHADOW
+	ring_spot.shadow_bias = 0.06
+	ring_spot.shadow_normal_bias = 1.0
+	ring_spot.shadow_blur = 1.5
+	ring_spot.shadow_opacity = 0.75
 
-	# Dim cool light by the sliding door: the house reads at ~40% next to the ring.
+	# Warm incandescent porch light by the sliding door: a small, bright pool.
 	var porch := OmniLight3D.new()
 	porch.position = Vector3(-0.9, 2.4, -14.3)
-	porch.omni_range = 6.5
-	porch.light_energy = 0.9
-	porch.light_color = Color(0.72, 0.8, 1.0)
+	porch.omni_range = 5.5
+	porch.omni_attenuation = 1.4
+	porch.light_energy = 2.2
+	porch.light_color = Color(1.0, 0.74, 0.45)
 	add_child(porch)
 
 	# Faint warm glow from the string lights hanging over the ring.
@@ -822,71 +840,102 @@ func _build_environment() -> void:
 	camera.look_at(Vector3(0, RING_TOP + 0.9, 0))
 
 
-const N64_POST_SHADER := """
+# Real shadow map on the front floodlight (Compatibility renderer spot shadow, one light).
+const USE_KEY_SHADOW := true
+
+const GRADE_POST_SHADER := """
 shader_type canvas_item;
 
-// N64-style video output: bilinear upscale of a ~240p frame (container filter), a soft
-// 3-tap horizontal video blur, 5 bits per channel with a 4x4 ordered dither, slight desaturation.
-uniform float blur_px = 1.0;
-uniform float levels = 31.0;
-uniform float dither_amp = 0.03125;
-uniform float desat = 0.03;
+// Mid-2000s console look: smooth bilinear upscale of a ~540p frame (texture filter),
+// a touch of sharpening, cheap single-pass bloom on bright areas, then an "urban" grade:
+// contrast, saturation, warm highlights / cool shadows, and a soft vignette.
+uniform float contrast = 1.12;
+uniform float saturation = 1.15;
+uniform float sharpen = 0.22;
+uniform float bloom_threshold = 0.62;
+uniform float bloom_strength = 0.55;
+uniform float bloom_radius = 5.0;
+uniform vec3 shadow_tint = vec3(0.90, 0.97, 1.10);
+uniform vec3 highlight_tint = vec3(1.08, 1.01, 0.88);
+uniform float vignette = 0.25;
 
-const float BAYER[16] = float[16](
-	0.0, 8.0, 2.0, 10.0,
-	12.0, 4.0, 14.0, 6.0,
-	3.0, 11.0, 1.0, 9.0,
-	15.0, 7.0, 13.0, 5.0);
+vec3 bright(vec3 c) {
+	float l = max(c.r, max(c.g, c.b));
+	return c * smoothstep(bloom_threshold, 1.0, l);
+}
 
 void fragment() {
 	vec2 px = TEXTURE_PIXEL_SIZE;
-	vec2 o = vec2(px.x * blur_px, 0.0);
-	vec3 c = texture(TEXTURE, UV).rgb * 0.5
-		+ texture(TEXTURE, UV - o).rgb * 0.25
-		+ texture(TEXTURE, UV + o).rgb * 0.25;
-	float l = dot(c, vec3(0.299, 0.587, 0.114));
-	c = mix(c, vec3(l), desat);
-	ivec2 lp = ivec2(mod(floor(UV / px), 4.0));
-	float b = (BAYER[lp.y * 4 + lp.x] + 0.5) / 16.0 - 0.5;
-	c = clamp(c + b * dither_amp, 0.0, 1.0);
-	c = floor(c * levels + 0.5) / levels;
-	COLOR = vec4(c, 1.0);
+	vec3 c = texture(TEXTURE, UV).rgb;
+	// 4-tap cross unsharp mask to crisp up the upscale.
+	vec3 nb = texture(TEXTURE, UV + vec2(px.x, 0.0)).rgb
+		+ texture(TEXTURE, UV - vec2(px.x, 0.0)).rgb
+		+ texture(TEXTURE, UV + vec2(0.0, px.y)).rgb
+		+ texture(TEXTURE, UV - vec2(0.0, px.y)).rgb;
+	c = max(c + (c - nb * 0.25) * sharpen, vec3(0.0));
+	// Bloom: two rings of 6 taps (bilinear-filtered, so each tap averages 4 texels).
+	vec3 bl = vec3(0.0);
+	for (int i = 0; i < 6; i++) {
+		float a = float(i) * 1.0472;
+		vec2 d = vec2(cos(a), sin(a)) * px * bloom_radius;
+		vec2 d2 = vec2(cos(a + 0.5236), sin(a + 0.5236)) * px * bloom_radius * 2.3;
+		bl += bright(texture(TEXTURE, UV + d).rgb) * 0.6;
+		bl += bright(texture(TEXTURE, UV + d2).rgb) * 0.4;
+	}
+	c += bl / 6.0 * bloom_strength;
+	// Contrast around mid-grey, then saturation.
+	c = (c - 0.5) * contrast + 0.5;
+	float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+	c = mix(vec3(l), c, saturation);
+	// Split toning: cool shadows, warm highlights.
+	l = clamp(dot(c, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+	vec3 tint = mix(shadow_tint, highlight_tint, smoothstep(0.15, 0.75, l));
+	c *= mix(vec3(1.0), tint, 0.85);
+	// Vignette (~25% darker in the corners).
+	vec2 v = (UV - 0.5) * vec2(1.0, 0.85) * 1.414;
+	c *= 1.0 - vignette * smoothstep(0.35, 1.0, dot(v, v));
+	COLOR = vec4(clamp(c, 0.0, 1.0), 1.0);
 }
 """
 
-var low_res_container: SubViewportContainer
+var low_res_rect: TextureRect
 var low_res_view: SubViewport
 
 
 func _build_low_res_view() -> void:
-	# Render the 3D world at ~240 lines into a SubViewport that shares this World3D (so the
-	# WorldEnvironment still applies), then upscale it bilinearly through the N64 post shader.
-	# It sits on a canvas layer below the HUD and never eats input.
+	# Render the 3D world into a SubViewport that shares this World3D (so the
+	# WorldEnvironment still applies) at ~540 lines, then draw it full-screen with
+	# bilinear upscale through the grade/bloom post shader. A TextureRect (instead of a
+	# SubViewportContainer) allows non-integer scale factors. It sits on a canvas layer
+	# below the HUD and never eats input.
 	var layer := CanvasLayer.new()
 	layer.layer = -1
 	add_child(layer)
-	low_res_container = SubViewportContainer.new()
-	low_res_container.set_anchors_preset(Control.PRESET_FULL_RECT)
-	low_res_container.stretch = true
-	low_res_container.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
-	low_res_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	low_res_container.focus_mode = Control.FOCUS_NONE
-	var post := ShaderMaterial.new()
-	var psh := Shader.new()
-	psh.code = N64_POST_SHADER
-	post.shader = psh
-	low_res_container.material = post
-	layer.add_child(low_res_container)
 	low_res_view = SubViewport.new()
 	low_res_view.own_world_3d = false
-	low_res_view.msaa_3d = Viewport.MSAA_DISABLED
+	low_res_view.msaa_3d = Viewport.MSAA_2X  # light AA, cheap on tile GPUs
 	low_res_view.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
 	low_res_view.handle_input_locally = false
 	low_res_view.gui_disable_input = true
 	low_res_view.physics_object_picking = false
 	low_res_view.audio_listener_enable_3d = true
+	low_res_view.positional_shadow_atlas_size = 1024
 	low_res_view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	low_res_container.add_child(low_res_view)
+	layer.add_child(low_res_view)
+	low_res_rect = TextureRect.new()
+	low_res_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	low_res_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	low_res_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	low_res_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	low_res_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	low_res_rect.focus_mode = Control.FOCUS_NONE
+	var post := ShaderMaterial.new()
+	var psh := Shader.new()
+	psh.code = GRADE_POST_SHADER
+	post.shader = psh
+	low_res_rect.material = post
+	low_res_rect.texture = low_res_view.get_texture()
+	layer.add_child(low_res_rect)
 	var keep := camera.global_transform
 	camera.get_parent().remove_child(camera)
 	low_res_view.add_child(camera)
@@ -897,10 +946,18 @@ func _build_low_res_view() -> void:
 
 
 func _update_low_res_shrink() -> void:
-	if low_res_container == null:
+	if low_res_view == null:
 		return
-	var h := get_viewport().get_visible_rect().size.y
-	low_res_container.stretch_shrink = maxi(1, roundi(h / 240.0))
+	# Size from the real window pixels (canvas_items stretch hides them): full res up
+	# to ~600 lines (small phones), otherwise ~60% of the height, 540..720 lines.
+	var win := Vector2(DisplayServer.window_get_size())
+	if win.x < 1.0 or win.y < 1.0:
+		win = get_viewport().get_visible_rect().size
+	var h := win.y
+	if h > 600.0:
+		h = clampf(h * 0.6, 540.0, 720.0)
+	var w := h * win.x / maxf(win.y, 1.0)
+	low_res_view.size = Vector2i(maxi(16, roundi(w)), maxi(16, roundi(h)))
 
 
 # ---- the yard and the homemade ring
