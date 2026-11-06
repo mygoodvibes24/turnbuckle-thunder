@@ -102,9 +102,11 @@ func _ready() -> void:
 	p1.items = item_mgr
 	p2.items = item_mgr
 	item_mgr.broke.connect(func(kind: String, where: Vector3):
-		if kind == "table" or kind == "plank":
+		if kind == "table":
+			pass  # table splinters come from the "table_break" sfx in _on_sfx
+		elif kind == "plank":
 			if fx.has_method("splinters"):
-				fx.call("splinters", where, 1.0 if kind == "table" else 0.5)
+				fx.call("splinters", where, 0.5)
 		elif fx.has_method("debris"):
 			fx.call("debris", where, 0.7, Color(0.6, 0.62, 0.65)))
 
