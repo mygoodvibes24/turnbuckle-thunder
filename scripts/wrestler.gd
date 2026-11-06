@@ -1878,11 +1878,14 @@ func _down_time() -> float:
 
 func _clamp_ring() -> void:
 	if _hf_clamp():  # high flying hook: corners / height allowed while climbing, perched, diving
+		if state == S.CORNER_STUN:
+			_col_push_out()  # yard collision: slumped next to a prop, not inside it
 		return
 	var yr := _yard_rect()  # movement hook: the yard (arena.yard_bounds) replaces the ring
 	position.x = clampf(position.x, yr.position.x, yr.end.x)
 	position.z = clampf(position.z, yr.position.y, yr.end.y)
 	position.y = 0.0
+	_col_push_out()  # yard collision: out of the props' footprints
 
 
 func _separate() -> void:
@@ -2150,6 +2153,8 @@ func _run(delta: float) -> void:
 				run_dir = nd.normalized()
 	position += run_dir * (RUN_SPEED if whipped else _mv_run_speed(delta)) * delta
 	_set_facing_angle(atan2(run_dir.x, run_dir.z))
+	if _col_run_hit():  # yard collision: whipped / full steam into a prop = prop crash
+		return
 	if whipped and _hf_check_corner_crash():  # high flying hook: whipped into a corner
 		return
 
@@ -2523,7 +2528,7 @@ func start_thrown(land_pos: Vector3, m: Dictionary, key := "", chained := false)
 	current_move_key = key
 	last_hit_tier = m.get("tier", "weak")
 	throw_from = position
-	throw_to = _yard_clamp_pt(Vector3(land_pos.x, 0, land_pos.z), 0.5)  # movement hook: inside the yard
+	throw_to = _col_nudge_pt(_yard_clamp_pt(Vector3(land_pos.x, 0, land_pos.z), 0.5), 0.5)  # inside the yard, off the props
 	throw_time = float(m["time"]) + (CHAIN_YANK if chained else 0.0)
 	throw_height = m["height"]
 	throw_end_angle = -PI / 2 - (TAU if m["flip"] else 0.0)
@@ -6417,7 +6422,7 @@ func _hf_off_point(pr: Dictionary, dist: float) -> Vector3:
 		out = -Vector3(pp.x, 0.0, pp.z)
 	if out.length() < 0.05:
 		out = Vector3(0.0, 0.0, 1.0)
-	return _yard_clamp_pt(ap + out.normalized() * dist, 0.4)
+	return _col_nudge_pt(_yard_clamp_pt(ap + out.normalized() * dist, 0.4), 0.4)
 
 
 func _hf_face_opp_or_center() -> void:
@@ -6592,7 +6597,7 @@ func _hf_check_corner_crash() -> bool:
 	hf_corner_whip = false
 	hf_stun_time = 1.5
 	hf_fence_n = n
-	position = _yard_clamp_pt(position, 0.45)
+	position = _col_nudge_pt(_yard_clamp_pt(position, 0.45), COL_BODY_R)
 	_set_facing_angle(atan2(-n.x, -n.z))
 	var concrete := _surface_here() == "concrete"
 	take_damage(6.0 if concrete else 5.0)
@@ -6666,7 +6671,7 @@ func _hf_start_climb(mode: String) -> void:
 		_:
 			var d := _flat_to_opponent()
 			var dir := d.normalized() if d.length() > 0.05 else (_perch_approach(hf_perch) - Vector3(pp.x, 0.0, pp.z)).normalized()
-			hf_to = _yard_clamp_pt(Vector3(pp.x, 0.0, pp.z) + dir * 1.2, 0.4)
+			hf_to = _col_nudge_pt(_yard_clamp_pt(Vector3(pp.x, 0.0, pp.z) + dir * 1.2, 0.4), 0.4)
 			hf_time = 0.45 + 0.1 * h
 			sfx.emit("whoosh", 0.3, _chest())
 	_hf_face_opp_or_center()
@@ -6872,7 +6877,7 @@ func _hf_launch(key: String, target: Vector3) -> void:
 	current_move_key = key
 	hf_move = key
 	hf_from = position
-	hf_to = _yard_clamp_pt(Vector3(target.x, 0.0, target.z), 0.4)
+	hf_to = _col_nudge_pt(_yard_clamp_pt(Vector3(target.x, 0.0, target.z), 0.4), 0.4)  # not inside a prop
 	var d := Vector3(hf_to.x - position.x, 0.0, hf_to.z - position.z)
 	var span := clampf(d.length() / 3.0, 0.85, 1.25)
 	hf_super = brawl_mode and key != "corner_splash"
@@ -8292,3 +8297,170 @@ func _pose_mv_roll() -> void:
 	pt_hd = Vector3(0.6 * tk, 0.0, 0.0)
 	r_limb = 30.0
 	r_body = 26.0
+
+
+# ---- yard collision (prop footprints) ------------------------------------------------------
+# main.gd gives each perch a "footprint" and lists the other big props in `arena.obstacles`:
+# {"center": Vector2(x, z), "half": Vector2(hx, hz), "radius" (> 0 = round), "label", "trick",
+# "points", "sfx"}. Bodies on the ground are pushed out of them every tick (minimum translation);
+# climbing / perched / diving / falling-off-the-perch bodies are not (they stand on them).
+# Running into one head-on: whipped (or at full steam) = prop crash, slumped against it like the
+# fence crash (CORNER_STUN, hf_fence_n points into the prop); slower = bounce off it.
+# Throw landings, dive targets and hop-down points are nudged out of footprints.
+
+const COL_BODY_R := 0.28          # body radius against prop footprints
+const COL_CRASH_R := 0.32         # a runner this close to a footprint, heading into it, hits it
+const COL_FULL_STEAM := RUN_TOP_SPEED - 1.2  # non-whipped runs this fast crash instead of bouncing
+
+var col_fps: Array = []           # cached footprints (perches' + obstacles)
+var col_fps_ready := false
+
+
+func _col_footprints() -> Array:
+	if col_fps_ready or arena == null:
+		return col_fps
+	col_fps_ready = true
+	if "perches" in arena:
+		for pr in arena.perches:
+			if not (pr is Dictionary):
+				continue
+			var fp = pr.get("footprint", {})
+			if fp is Dictionary and fp.has("center") and fp.has("half"):
+				col_fps.append(fp)
+	if "obstacles" in arena:
+		for fp in arena.obstacles:
+			if fp is Dictionary and fp.has("center") and fp.has("half"):
+				col_fps.append(fp)
+	return col_fps
+
+
+## Minimum translation that moves point p (radius r) out of footprint fp; ZERO if not overlapping.
+func _col_pen(fp: Dictionary, p: Vector2, r: float) -> Vector2:
+	var c: Vector2 = fp["center"]
+	var rad: float = fp.get("radius", 0.0)
+	var d := p - c
+	if rad > 0.0:
+		var lim := rad + r
+		var l := d.length()
+		if l >= lim:
+			return Vector2.ZERO
+		var dir := d / l if l > 0.001 else -c.normalized()
+		if dir == Vector2.ZERO:
+			dir = Vector2(0.0, 1.0)
+		return dir * (lim - l)
+	var half: Vector2 = fp["half"]
+	var ex := half.x + r
+	var ez := half.y + r
+	if absf(d.x) >= ex or absf(d.y) >= ez:
+		return Vector2.ZERO
+	# the four ways out, shortest first; prefer one that stays inside the yard
+	var yr := _yard_rect()
+	var opts: Array[Vector2] = [Vector2(ex - d.x, 0.0), Vector2(-ex - d.x, 0.0), Vector2(0.0, ez - d.y), Vector2(0.0, -ez - d.y)]
+	opts.sort_custom(func(a: Vector2, b: Vector2) -> bool: return a.length() < b.length())
+	for o: Vector2 in opts:
+		var q: Vector2 = p + o
+		if q.x >= yr.position.x - 0.01 and q.x <= yr.end.x + 0.01 and q.y >= yr.position.y - 0.01 and q.y <= yr.end.y + 0.01:
+			return o
+	return opts[0]
+
+
+## Point p moved out of every footprint (keeping `r` clear), then back inside the yard.
+func _col_nudge_pt(p: Vector3, r := 0.5) -> Vector3:
+	var fps := _col_footprints()
+	if fps.is_empty():
+		return p
+	var q := Vector2(p.x, p.z)
+	for _it in 3:
+		var moved := false
+		for fp: Dictionary in fps:
+			var o := _col_pen(fp, q, r)
+			if o != Vector2.ZERO:
+				q += o
+				moved = true
+		if not moved:
+			break
+	var yr := _yard_rect()
+	q.x = clampf(q.x, yr.position.x + 0.3, yr.end.x - 0.3)
+	q.y = clampf(q.y, yr.position.y + 0.3, yr.end.y - 0.3)
+	return Vector3(q.x, p.y, q.y)
+
+
+## _clamp_ring: push a grounded body out of the prop footprints (not while it is up on / coming
+## off a perch, being carried, or locked up with the opponent).
+func _col_push_out() -> void:
+	if state in [S.CLIMB, S.PERCHED, S.DIVING, S.PERCH_FALL, S.THROWN, S.LIFTED, S.JUGGLED,
+			S.TIEUP_ATK, S.TIEUP_DEF, S.PINNING, S.PINNED, S.ON_TABLE]:
+		return
+	var fps := _col_footprints()
+	if fps.is_empty():
+		return
+	var q := Vector2(position.x, position.z)
+	for _it in 2:
+		var moved := false
+		for fp: Dictionary in fps:
+			var o := _col_pen(fp, q, COL_BODY_R)
+			if o != Vector2.ZERO:
+				q += o
+				moved = true
+		if not moved:
+			break
+	position.x = q.x
+	position.z = q.y
+
+
+## _run: heading into a footprint. Whipped / full steam = prop crash (true: the run ended);
+## slower = bounce off it and keep running.
+func _col_run_hit() -> bool:
+	var q := Vector2(position.x, position.z)
+	for fp: Dictionary in _col_footprints():
+		var o := _col_pen(fp, q, COL_CRASH_R)
+		if o == Vector2.ZERO:
+			continue
+		var n := Vector3(o.x, 0.0, o.y).normalized()  # out of the prop
+		if run_dir.dot(n) > -0.35:
+			continue  # glancing: the push-out slides us along it
+		if whipped or run_speed >= COL_FULL_STEAM:
+			_col_prop_crash(fp, n, whipped)
+			return true
+		# bump off it
+		run_dir = (run_dir - 2.0 * run_dir.dot(n) * n).normalized()
+		position += Vector3(o.x, 0.0, o.y)
+		run_speed = maxf(RUN_START_SPEED * 0.8, run_speed - 1.5)
+		_set_facing_angle(atan2(run_dir.x, run_dir.z))
+		impact.emit(0.12)
+		var snd: String = fp.get("sfx", "thud")
+		sfx.emit(snd, 0.3, global_position + Vector3(0, 1.0, 0) - n * 0.3)
+		return false
+	return false
+
+
+## Slammed into a prop: slump against it (CORNER_STUN, like the fence crash). by_whip = the
+## opponent whipped us into it and scores the trick.
+func _col_prop_crash(fp: Dictionary, n: Vector3, by_whip: bool) -> void:
+	var label: String = fp.get("label", "THE PROP")
+	var snd: String = fp.get("sfx", "thud")
+	set_state(S.CORNER_STUN)
+	hf_corner_whip = false
+	hf_stun_time = 1.5 if by_whip else 1.0
+	hf_fence_n = -n   # "outward" = into the prop: a knockdown / corner splash knocks us off it
+	var q := Vector2(position.x, position.z)
+	var o := _col_pen(fp, q, COL_BODY_R + 0.1)
+	position = Vector3(q.x + o.x, 0.0, q.y + o.y)
+	_set_facing_angle(atan2(n.x, n.z))   # back against the prop
+	var concrete := _surface_here() == "concrete"
+	if by_whip:
+		take_damage(6.0 if snd == "metal_hit" or concrete else 5.0)
+	else:
+		take_damage(3.0)
+	impact.emit(0.4 if by_whip else 0.25)
+	var hit_at := global_position + Vector3(0, 1.1, 0) - n * 0.35
+	sfx.emit(snd, 1.0 if by_whip else 0.6, hit_at)
+	sfx.emit("big_thud", 0.5 if by_whip else 0.3, hit_at)
+	if by_whip:
+		announce.emit("%s CRASHES INTO %s!" % [display_name, label])
+		var tn: String = fp.get("trick", "Prop Crash")
+		var pts: int = fp.get("points", 200)
+		if opponent != null:
+			opponent.emit_signal("trick", tn, pts, "grapple")  # style hook: the whipper scores it
+	else:
+		announce.emit("%s runs right into %s!" % [display_name, label.to_lower()])
