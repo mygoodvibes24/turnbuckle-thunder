@@ -15,8 +15,8 @@ extends Control
 
 signal layout_changed
 
-const JOY_RADIUS := 78.0
-const KNOB_RADIUS := 33.0
+const JOY_RADIUS := 70.0
+const KNOB_RADIUS := 30.0
 const BTN_MAIN_R := 54.0
 const BTN_R := 45.0
 const ARC_R := 126.0
@@ -230,14 +230,14 @@ func _draw() -> void:
 
 
 func _draw_stick() -> void:
+	# Flat, console-era stick: translucent housing disc with a 2 px rim, an octagonal gate
+	# and a plain grey knob. No shadows or highlights.
 	var active := _joy_index != -1
 	var c := _joy_center if active else _joy_home()
-	var a := 0.95 if active else 0.6
-	var housing := JOY_RADIUS + 12.0
-	# Housing: drop shadow, grey plastic body, rim highlight.
-	draw_circle(c + Vector2(0, 6), housing, Color(0, 0, 0, 0.35 * a))
-	draw_circle(c, housing, Color(0.2, 0.2, 0.24, 0.8 * a))
-	draw_arc(c, housing, 0.0, TAU, 56, Color(1, 1, 1, 0.22 * a), 2.5, true)
+	var a := 1.0 if active else 0.75
+	var housing := JOY_RADIUS + 11.0
+	draw_circle(c, housing, Color(0.12, 0.12, 0.15, 0.45 * a))
+	draw_arc(c, housing, 0.0, TAU, 56, Color(0.03, 0.03, 0.05, 0.8 * a), 2.0, true)
 	# Octagonal gate, like the N64 controller.
 	var gate := PackedVector2Array()
 	for k in 9:
@@ -245,24 +245,18 @@ func _draw_stick() -> void:
 		gate.append(c + Vector2(cos(ang), sin(ang)) * JOY_RADIUS)
 	var gate_fill := gate.duplicate()
 	gate_fill.remove_at(8)
-	draw_colored_polygon(gate_fill, Color(0.06, 0.06, 0.08, 0.85 * a))
-	draw_polyline(gate, Color(0.62, 0.62, 0.68, 0.75 * a), 2.5, true)
-	for k in 8:
-		var ang := TAU * float(k) / 8.0
-		draw_circle(c + Vector2(cos(ang), sin(ang)) * (JOY_RADIUS - 9.0), 2.5, Color(1, 1, 1, 0.25 * a))
-	# Stick shaft + knob.
+	draw_colored_polygon(gate_fill, Color(0.04, 0.04, 0.06, 0.45 * a))
+	draw_polyline(gate, Color(0.6, 0.6, 0.65, 0.6 * a), 2.0, true)
+	# Knob.
 	var kp := c + joy_vector * (JOY_RADIUS - KNOB_RADIUS * 0.45)
-	draw_line(c, kp, Color(0.32, 0.32, 0.36, a), 20.0, true)
-	draw_circle(c, 10.0, Color(0.32, 0.32, 0.36, a))
-	draw_circle(kp + Vector2(0, 6), KNOB_RADIUS, Color(0, 0, 0, 0.4 * a))
-	draw_circle(kp, KNOB_RADIUS, Color(0.42, 0.42, 0.46, a))
-	draw_circle(kp + Vector2(0, -2), KNOB_RADIUS - 5.0, Color(0.7, 0.7, 0.74, a))
-	draw_arc(kp + Vector2(0, -2), KNOB_RADIUS * 0.55, 0.0, TAU, 32, Color(0.52, 0.52, 0.56, a), 2.0, true)
-	draw_arc(kp + Vector2(0, -2), KNOB_RADIUS * 0.3, 0.0, TAU, 24, Color(0.52, 0.52, 0.56, a), 2.0, true)
-	draw_circle(kp + Vector2(-KNOB_RADIUS * 0.32, -KNOB_RADIUS * 0.42), KNOB_RADIUS * 0.2, Color(1, 1, 1, 0.4 * a))
+	draw_line(c, kp, Color(0.3, 0.3, 0.34, 0.8 * a), 14.0, true)
+	draw_circle(kp, KNOB_RADIUS, Color(0.55, 0.55, 0.6, 0.8 * a))
+	draw_arc(kp, KNOB_RADIUS, 0.0, TAU, 40, Color(0.03, 0.03, 0.05, 0.85 * a), 2.0, true)
+	draw_arc(kp, KNOB_RADIUS * 0.5, 0.0, TAU, 28, Color(0.38, 0.38, 0.42, 0.8 * a), 2.0, true)
 
 
 func _draw_button(i: int) -> void:
+	# Flat translucent disc with a 2 px rim; caption at full opacity so it reads on a phone.
 	var b: Dictionary = BUTTONS[i]
 	var col: Color = b["color"]
 	var is_main: bool = b["main"]
@@ -274,35 +268,28 @@ func _draw_button(i: int) -> void:
 	var idle := text == ""
 	var glow := (_highlight == action or _highlight == "all") and not idle
 	var pulse := 0.5 + 0.5 * sin(_clock * 9.0)
-	var a := 0.45 if idle else 0.92
-	var rr := r * (0.9 if down else 1.0)
-	var lift := 0.0 if down else 3.0
+	var a := 0.22 if idle else 0.45
+	var press := maxf(_press_flash[i], 1.0 if down else 0.0)
+	var rr := r * (0.94 if down else 1.0)
 
 	if glow:
-		var gc := col.lightened(0.55)
-		draw_circle(p, rr + 9.0 + 6.0 * pulse, Color(gc.r, gc.g, gc.b, 0.25 + 0.3 * pulse))
-	# Drop shadow, dark bevel ring, face, specular highlight, rim.
-	draw_circle(p + Vector2(0, 5), rr + 3.0, Color(0, 0, 0, 0.45 * a))
-	var ring := col.darkened(0.6)
-	draw_circle(p, rr + 3.0, Color(ring.r, ring.g, ring.b, a))
-	var lower := col.darkened(0.3)
-	draw_circle(p, rr - 1.0, Color(lower.r, lower.g, lower.b, a))
-	var face := col
-	if down or _press_flash[i] > 0.0:
-		face = col.lightened(0.3 * maxf(_press_flash[i], 1.0 if down else 0.0))
-	draw_circle(p + Vector2(0, -lift), rr - 6.0, Color(face.r, face.g, face.b, a))
-	draw_circle(p + Vector2(-rr * 0.3, -rr * 0.38 - lift), rr * 0.26, Color(1, 1, 1, 0.38 * a))
-	draw_arc(p, rr + 3.0, 0.0, TAU, 48, Color(1, 1, 1, 0.5 * a), 2.0, true)
+		# Highlight: a flat pulsing ring just outside the rim.
+		var gc := col.lightened(0.5)
+		draw_arc(p, rr + 6.0 + 2.0 * pulse, 0.0, TAU, 48, Color(gc.r, gc.g, gc.b, 0.45 + 0.4 * pulse), 3.0, true)
+	var face := col.lightened(0.25 * press)
+	draw_circle(p, rr, Color(face.r, face.g, face.b, a + 0.25 * press))
+	var rim := col.darkened(0.55)
+	draw_arc(p, rr, 0.0, TAU, 48, Color(rim.r, rim.g, rim.b, 0.5 if idle else 0.9), 2.0, true)
 
 	if idle:
 		return
 	# Bold caption, shrunk to fit inside the button.
-	var fs := 24 if is_main else 20
+	var fs := 22 if is_main else 19
 	var max_w := rr * 1.7
 	while fs > 12 and _font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x > max_w:
 		fs -= 1
 	var box_w := rr * 2.0
-	var base_y := p.y - lift + (_font.get_ascent(fs) - _font.get_descent(fs)) * 0.5
+	var base_y := p.y + (_font.get_ascent(fs) - _font.get_descent(fs)) * 0.5
 	var pos := Vector2(p.x - rr, base_y)
-	draw_string_outline(_font, pos, text, HORIZONTAL_ALIGNMENT_CENTER, box_w, fs, 6, Color(0, 0, 0, 0.85))
+	draw_string_outline(_font, pos, text, HORIZONTAL_ALIGNMENT_CENTER, box_w, fs, 5, Color(0.03, 0.03, 0.05, 0.95))
 	draw_string(_font, pos, text, HORIZONTAL_ALIGNMENT_CENTER, box_w, fs, Color.WHITE)

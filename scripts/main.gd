@@ -178,7 +178,7 @@ const CROWD_SHADER := """
 shader_type spatial;
 render_mode unshaded, cull_disabled;
 
-uniform sampler2D tex : source_color, filter_linear;
+uniform sampler2D tex : source_color, filter_linear_mipmap;
 uniform float hype = 0.0;
 uniform float brightness = 1.0;
 
@@ -213,7 +213,9 @@ void fragment() {
 	float m = smoothstep(0.8, 0.97, min(t.r, min(t.g, t.b)));
 	float scr = step(0.85, t.g) * step(0.85, t.b) * step(t.r, 0.2);
 	vec3 c = mix(t.rgb, t.rgb * shirt, m) * (lit + hype * 0.25) * brightness;
-	ALBEDO = mix(c, vec3(0.75, 0.92, 1.0) * 1.5, scr);
+	c *= mix(1.08, 0.72, UV.y);  // soft top-lit gradient down each friend
+	c = mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, 0.8);  // ~20% desaturated
+	ALBEDO = mix(c, vec3(0.6, 0.72, 0.8), scr);
 	ALPHA = t.a;
 	ALPHA_SCISSOR_THRESHOLD = 0.5;
 }
@@ -274,22 +276,17 @@ func _plane(size: Vector2, pos: Vector3, m: Material) -> MeshInstance3D:
 	return mi
 
 
-func _tex_mat(tex: Texture2D, scissor := false) -> StandardMaterial3D:
+func _tex_mat(tex: Texture2D, scissor := false, blend := false) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_texture = tex
-	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	m.roughness = 0.9
 	if scissor:
 		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 		m.alpha_scissor_threshold = 0.5
+	elif blend:
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	return m
-
-
-func _px_rect(img: Image, x0: int, y0: int, w: int, h: int, c: Color) -> void:
-	for y in range(y0, y0 + h):
-		for x in range(x0, x0 + w):
-			if x >= 0 and y >= 0 and x < img.get_width() and y < img.get_height():
-				img.set_pixel(x, y, c)
 
 
 # ---- merged-geometry helpers (all scenery goes through these)
@@ -304,8 +301,11 @@ func _st(key: String) -> SurfaceTool:
 
 func _tri(st: SurfaceTool, p0: Vector3, p1: Vector3, p2: Vector3, n: Vector3, a: Vector3, b: Vector3, col: Color, uvs: float) -> void:
 	# Godot front faces wind clockwise; callers pass corners in that order.
+	# All scenery is pulled ~15% toward grey (AKI palette: slightly desaturated surroundings).
+	var lum := col.r * 0.299 + col.g * 0.587 + col.b * 0.114
+	var dc := Color(lum, lum, lum, col.a).lerp(col, 0.85)
 	for p: Vector3 in [p0, p1, p2]:
-		st.set_color(col)
+		st.set_color(dc)
 		st.set_normal(n)
 		st.set_uv(Vector2(p.dot(a), -p.dot(b)) * uvs)
 		st.add_vertex(p)
@@ -379,7 +379,7 @@ func _batch_mat(key: String) -> Material:
 	m.vertex_color_use_as_albedo = true
 	m.vertex_color_is_srgb = true
 	m.roughness = 0.9
-	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	match key:
 		"glow":
 			m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -406,116 +406,164 @@ func _flush_batches() -> void:
 	_batches.clear()
 
 
-# ---- generated textures (tiny, blurry, N64-style)
+# ---- generated textures (tiny, soft, painted: AKI-era N64 look)
+# Every texture is painted at 2x with gradients and grain, bilinear-downsampled, and mipmapped.
+
+func _soft_tex(img: Image, w: int, h: int) -> ImageTexture:
+	img.resize(w, h, Image.INTERPOLATE_BILINEAR)
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+
+func _noise_img(w: int, h: int, freq: float, octaves := 3, seamless := true) -> Image:
+	# Greyscale fractal noise (r = 0..1), tileable unless seamless is false.
+	var fn := FastNoiseLite.new()
+	fn.seed = randi()
+	fn.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	fn.frequency = freq
+	fn.fractal_octaves = octaves
+	if seamless:
+		return fn.get_seamless_image(w, h)
+	return fn.get_image(w, h)
+
+
+func _blend_px(img: Image, x: int, y: int, col: Color, k: float) -> void:
+	# Paint col over the pixel with coverage k (proper "over" compositing, so transparent canvases work).
+	if k <= 0.0 or x < 0 or y < 0 or x >= img.get_width() or y >= img.get_height():
+		return
+	var o := img.get_pixel(x, y)
+	var a := k + o.a * (1.0 - k)
+	if a <= 0.0001:
+		return
+	var wo := o.a * (1.0 - k)
+	img.set_pixel(x, y, Color((col.r * k + o.r * wo) / a, (col.g * k + o.g * wo) / a, (col.b * k + o.b * wo) / a, a))
+
+
+func _soft_rect(img: Image, x0: float, y0: float, w: float, h: float, col: Color, a := 1.0, feather := 1.0) -> void:
+	for y in range(int(floorf(y0 - feather)), int(ceilf(y0 + h + feather))):
+		for x in range(int(floorf(x0 - feather)), int(ceilf(x0 + w + feather))):
+			var dx := minf(x + 0.5 - x0, x0 + w - (x + 0.5))
+			var dy := minf(y + 0.5 - y0, y0 + h - (y + 0.5))
+			_blend_px(img, x, y, col, clampf(minf(dx, dy) / feather + 0.5, 0.0, 1.0) * a)
+
+
+func _soft_dot(img: Image, cx: float, cy: float, rx: float, ry: float, col: Color, a := 1.0, feather := 1.0) -> void:
+	# Filled ellipse with a soft rim (feather in pixels).
+	for y in range(int(floorf(cy - ry - feather)), int(ceilf(cy + ry + feather))):
+		for x in range(int(floorf(cx - rx - feather)), int(ceilf(cx + rx + feather))):
+			var d := Vector2((x + 0.5 - cx) / rx, (y + 0.5 - cy) / ry).length()
+			var edge := (1.0 - d) * minf(rx, ry)
+			_blend_px(img, x, y, col, clampf(edge / feather + 0.5, 0.0, 1.0) * a)
+
 
 func _make_grass_texture() -> ImageTexture:
-	var n := 32
+	# Dark night lawn: green-black with soft clumps and a few dry patches.
+	var n := 64
+	var big := _noise_img(n, n, 0.05, 3)
+	var fine := _noise_img(n, n, 0.3, 2)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	var dark := Color(0.045, 0.07, 0.035)
+	var mid := Color(0.1, 0.15, 0.065)
+	var dry := Color(0.15, 0.15, 0.08)
 	for y in n:
 		for x in n:
-			var j := randf_range(-0.05, 0.05)
-			var c := Color(0.17 + j, 0.33 + j * 1.6, 0.12 + j)
-			if randf() < 0.12:
-				c = Color(0.25, 0.45, 0.16)  # bright blade
-			elif randf() < 0.08:
-				c = Color(0.11, 0.22, 0.08)  # dark clump
+			var b := big.get_pixel(x, y).r
+			var f := fine.get_pixel(x, y).r
+			var c := dark.lerp(mid, clampf(b * 0.7 + f * 0.45 - 0.1, 0.0, 1.0))
+			c = c.lerp(dry, smoothstep(0.72, 0.95, b) * 0.45)
 			img.set_pixel(x, y, c)
-	for i in 3:  # dry patches
-		var cx := randi() % n
-		var cy := randi() % n
-		for y in range(-2, 3):
-			for x in range(-3, 4):
-				if randf() < 0.6:
-					img.set_pixel((cx + x + n) % n, (cy + y + n) % n, Color(0.32, 0.36, 0.16))
-	return ImageTexture.create_from_image(img)
+	return _soft_tex(img, 32, 32)
 
 
 func _make_wood_texture() -> ImageTexture:
-	# Greyscale-ish grain (tinted per vertex): stripes along u with a wobble and a knot or two.
-	var n := 32
+	# Greyscale-ish weathered grain (tinted per vertex): soft wavy stripes, a board seam, grime.
+	var n := 64
+	var nz := _noise_img(n, n, 0.07, 2)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
 	for y in n:
 		for x in n:
-			var g := 0.84 + 0.09 * sin(y * 1.7 + sin(x * 0.35) * 1.6) + randf_range(-0.04, 0.04)
-			if (y + int(sin(x * 0.2) * 2.0)) % 11 == 0:
-				g -= 0.18
-			img.set_pixel(x, y, Color(g, g * 0.97, g * 0.92))
-	for k in 2:
-		var kx := randi() % n
-		var ky := randi() % n
-		for y in range(-1, 2):
-			for x in range(-2, 3):
-				img.set_pixel((kx + x + n) % n, (ky + y + n) % n, Color(0.5, 0.45, 0.4))
-	return ImageTexture.create_from_image(img)
+			var w := nz.get_pixel(x, y).r
+			var g := 0.8 + 0.05 * sin(y * TAU * 9.0 / n + sin(x * TAU / n) * 1.5 + w * 4.0) + (w - 0.5) * 0.1
+			var d := fposmod(float(y) + sin(x * TAU * 2.0 / n) * 1.5, 32.0)
+			if d < 2.5:
+				g -= 0.12 * (1.0 - d / 2.5)
+			img.set_pixel(x, y, Color(g, g * 0.97, g * 0.93))
+	_soft_dot(img, 18.0, 40.0, 3.0, 2.0, Color(0.55, 0.5, 0.45), 0.5, 2.0)  # knot
+	return _soft_tex(img, 32, 32)
 
 
 func _make_siding_texture() -> ImageTexture:
-	# Horizontal lap siding: a dark shadow line every 4 px.
-	var n := 32
+	# Horizontal lap siding: each board shades from its overlap shadow to its lit lower edge.
+	var n := 64
+	var streak := _noise_img(n, n, 0.06, 2)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
 	for y in n:
+		var r := float(y % 8) / 7.0
 		for x in n:
-			var r := y % 4
-			var g := [0.55, 0.98, 0.93, 0.88][r] as float
-			g += randf_range(-0.025, 0.025)
+			var g := 0.74 + 0.2 * sqrt(r)
+			g *= 0.92 + 0.08 * streak.get_pixel(x, (y / 4) % n).r
 			img.set_pixel(x, y, Color(g, g, g))
-	return ImageTexture.create_from_image(img)
+	return _soft_tex(img, 32, 32)
 
 
 func _make_shingle_texture() -> ImageTexture:
-	var n := 32
+	var n := 64
+	var grain := _noise_img(n, n, 0.25, 2)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
 	for y in n:
-		var row := y / 4
+		var row := y / 8
 		for x in n:
-			var tab := (x + (row % 2) * 3) / 6
-			var g := 0.7 + 0.25 * fposmod(sin(float(tab * 7 + row * 13)) * 43.7, 1.0)
-			if y % 4 == 3 or (x + (row % 2) * 3) % 6 == 0:
-				g *= 0.55
-			g += randf_range(-0.04, 0.04)
+			var sx := (x + (row % 2) * 8) % n
+			var tab := sx / 16
+			var g := 0.72 + 0.14 * fposmod(sin(float(tab * 7 + row * 13)) * 43.7, 1.0)
+			var ry := float(y % 8) / 7.0
+			g *= 1.0 - 0.25 * smoothstep(0.6, 1.0, ry)
+			var ex := absf(float(sx % 16) - 7.5) / 7.5
+			g *= 1.0 - 0.15 * smoothstep(0.75, 1.0, ex)
+			g += (grain.get_pixel(x, y).r - 0.5) * 0.08
 			img.set_pixel(x, y, Color(g, g, g))
-	return ImageTexture.create_from_image(img)
+	return _soft_tex(img, 32, 32)
 
 
 func _make_tarp_texture() -> ImageTexture:
-	# Stained blue tarp: hemmed edge with grommets, fold creases, dirt blotches, duct-tape patches.
-	var n := 64
+	# Faded blue tarp: soft blotchy stains, sun-bleached patches, faint fold creases, hem, grommets, tape.
+	var n := 128
+	var blot := _noise_img(n, n, 0.022, 3, false)
+	var grain := _noise_img(n, n, 0.35, 1, false)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	var base := Color(0.28, 0.39, 0.62)  # ~Color(0.30, 0.40, 0.58), nudged bluer to survive the N64 post desaturation
+	var dirt := Color(0.25, 0.26, 0.29)
 	for y in n:
 		for x in n:
-			var w := 0.04 * sin(x * 0.21 + y * 0.07) + 0.03 * sin(y * 0.33 - x * 0.12)
-			var c := Color(0.13 + w, 0.32 + w, 0.7 + w * 1.5)
-			if x == 21 or x == 42 or y == 32:
-				c = c.lightened(0.12)  # fold creases
-			var edge: int = mini(mini(x, y), mini(n - 1 - x, n - 1 - y))
-			if edge < 2:
-				c = c.darkened(0.25)
-			var j := randf_range(-0.03, 0.03)
+			var b := blot.get_pixel(x, y).r
+			var c := base.lerp(dirt, smoothstep(0.55, 0.92, b) * 0.5)
+			c = c.lightened((1.0 - smoothstep(0.08, 0.35, b)) * 0.06)
+			var crease := 0.0
+			for cx: float in [43.0, 85.0]:
+				crease = maxf(crease, exp(-pow((x + 0.5 - cx) / 1.6, 2.0)))
+			crease = maxf(crease, exp(-pow((y + 0.5 - 64.0) / 1.6, 2.0)))
+			c = c.lightened(crease * 0.06)
+			var rad := maxf(absf(x + 0.5 - n * 0.5), absf(y + 0.5 - n * 0.5)) / (n * 0.5)
+			c = c.darkened(smoothstep(0.7, 1.0, rad) * 0.12)
+			var e := float(mini(mini(x, y), mini(n - 1 - x, n - 1 - y)))
+			if e < 5.0:
+				c = c.darkened(0.22 * (1.0 - e / 5.0))
+			var j := (grain.get_pixel(x, y).r - 0.5) * 0.035
 			img.set_pixel(x, y, Color(c.r + j, c.g + j, c.b + j))
-	for i in range(4, n - 2, 8):  # grommets
-		for p: Vector2i in [Vector2i(i, 0), Vector2i(i, n - 1), Vector2i(0, i), Vector2i(n - 1, i)]:
-			img.set_pixel(p.x, p.y, Color(0.8, 0.8, 0.75))
-	var stains: Array[Vector3] = [Vector3(12, 14, 4), Vector3(50, 20, 3), Vector3(16, 50, 5), Vector3(44, 46, 3), Vector3(34, 9, 2), Vector3(7, 34, 3)]
+	var grommet := Color(0.62, 0.62, 0.58)
+	for i in range(8, n - 4, 16):
+		for p: Vector2 in [Vector2(i, 2.5), Vector2(i, n - 2.5), Vector2(2.5, i), Vector2(n - 2.5, i)]:
+			_soft_dot(img, p.x, p.y, 1.6, 1.6, grommet, 0.8, 1.0)
+	var stains: Array[Vector3] = [Vector3(24, 28, 9), Vector3(100, 40, 6), Vector3(32, 100, 10), Vector3(88, 92, 7), Vector3(68, 18, 5), Vector3(14, 68, 6)]
 	for s in stains:
-		for y in range(int(s.y - s.z) - 1, int(s.y + s.z) + 2):
-			for x in range(int(s.x - s.z) - 1, int(s.x + s.z) + 2):
-				if x < 0 or y < 0 or x >= n or y >= n:
-					continue
-				if Vector2(x, y).distance_to(Vector2(s.x, s.y)) < s.z + randf_range(-1.0, 1.0):
-					var o := img.get_pixel(x, y)
-					img.set_pixel(x, y, Color(o.r * 0.75 + 0.06, o.g * 0.72 + 0.03, o.b * 0.6))
-	var tape := Color(0.66, 0.66, 0.63)
-	_px_rect(img, 6, 6, 9, 3, tape)
-	_px_rect(img, 49, 52, 3, 8, tape)
-	_px_rect(img, 46, 55, 9, 3, tape)
-	_px_rect(img, 52, 8, 7, 2, tape)
-	_px_rect(img, 8, 55, 10, 3, tape)
-	for k in 7:  # an X patch
-		img.set_pixel(54 + k - 3, 30 + k - 3, tape)
-		img.set_pixel(54 + k - 3, 30 - k + 3, tape)
-		img.set_pixel(54 + k - 2, 30 + k - 3, tape)
-		img.set_pixel(54 + k - 2, 30 - k + 3, tape)
-	return ImageTexture.create_from_image(img)
+		_soft_dot(img, s.x, s.y, s.z * randf_range(0.8, 1.2), s.z * randf_range(0.7, 1.1), Color(0.2, 0.2, 0.18), 0.28, s.z * 0.6)
+	var tape := Color(0.55, 0.55, 0.52)
+	_soft_rect(img, 12, 12, 18, 6, tape, 0.75, 1.2)
+	_soft_rect(img, 98, 104, 6, 16, tape, 0.75, 1.2)
+	_soft_rect(img, 92, 110, 18, 6, tape, 0.75, 1.2)
+	_soft_rect(img, 104, 16, 14, 4, tape, 0.7, 1.2)
+	_soft_rect(img, 16, 110, 20, 6, tape, 0.7, 1.2)
+	return _soft_tex(img, 64, 64)
 
 
 const PIXEL_FONT := {
@@ -528,7 +576,8 @@ const PIXEL_FONT := {
 }
 
 
-func _px_text(img: Image, text: String, x0: int, y0: int, sc: int, col: Color) -> void:
+func _soft_text(img: Image, text: String, x0: float, y0: float, sc: float, col: Color, a := 1.0) -> void:
+	# Glyph cells painted as overlapping feathered blobs, so strokes come out rounded and anti-aliased.
 	var x := x0
 	for ch in text:
 		if PIXEL_FONT.has(ch):
@@ -537,84 +586,68 @@ func _px_text(img: Image, text: String, x0: int, y0: int, sc: int, col: Color) -
 				var row: String = rows[ry]
 				for rx in 3:
 					if row[rx] == "1":
-						_px_rect(img, x + rx * sc, y0 + ry * sc, sc, sc, col)
-		x += 4 * sc
+						_soft_rect(img, x + rx * sc - sc * 0.08, y0 + ry * sc - sc * 0.08, sc * 1.16, sc * 1.16, col, a, maxf(1.0, sc * 0.18))
+		x += 4.0 * sc
 
 
-func _px_text_w(text: String, sc: int) -> int:
-	return text.length() * 4 * sc - sc
+func _text_w(text: String, sc: float) -> float:
+	return text.length() * 4.0 * sc - sc
 
 
 func _make_logo_texture() -> ImageTexture:
-	# Spray-painted "C2C / CITY 2 CITY / WRESTLING" with lightning bolts, a black outline and drips.
-	var n := 96
-	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))
-	var yellow := Color(1.0, 0.86, 0.12)
-	var red := Color(0.92, 0.14, 0.1)
-	for side: float in [-1.0, 1.0]:  # little bolts flanking the big letters
-		var cx := 48.0 + side * 40.0
-		var bolt := PackedVector2Array([Vector2(cx + 1, 8), Vector2(cx - 5, 21), Vector2(cx - 1, 21), Vector2(cx - 4, 33),
-			Vector2(cx + 5, 17), Vector2(cx + 1, 17), Vector2(cx + 4, 8)])
-		for y in range(6, 36):
-			for x in range(int(cx) - 7, int(cx) + 8):
-				if Geometry2D.is_point_in_polygon(Vector2(x + 0.5, y + 0.5), bolt):
-					img.set_pixel(x, y, yellow)
-	_px_text(img, "C2C", (n - _px_text_w("C2C", 5)) / 2, 8, 5, red)
-	_px_text(img, "CITY 2 CITY", (n - _px_text_w("CITY 2 CITY", 2)) / 2, 44, 2, Color(0.95, 0.95, 0.9))
-	_px_text(img, "WRESTLING", (n - _px_text_w("WRESTLING", 2)) / 2, 60, 2, yellow)
-	# drips: pull paint down below the bottom of random letter columns
-	for i in 14:
-		var dx := randi_range(4, n - 5)
-		for y0: int in [32, 53, 69]:
-			if img.get_pixel(dx, y0).a > 0.5 and randf() < 0.6:
-				for k in randi_range(1, 5):
-					if y0 + k < n:
-						img.set_pixel(dx, y0 + k, img.get_pixel(dx, y0))
-	# black outline / overspray
-	var src := img.duplicate() as Image
-	for y in n:
-		for x in n:
-			if src.get_pixel(x, y).a > 0.5:
-				continue
-			var near := false
-			for oy in range(-1, 2):
-				for ox in range(-1, 2):
-					var xx := x + ox
-					var yy := y + oy
-					if xx >= 0 and yy >= 0 and xx < n and yy < n and src.get_pixel(xx, yy).a > 0.5:
-						near = true
-			if near:
-				img.set_pixel(x, y, Color(0.06, 0.05, 0.08))
-			elif randf() < 0.008:
-				img.set_pixel(x, y, Color(0.9, 0.2, 0.15))  # stray speckle
-	return ImageTexture.create_from_image(img)
+	# Worn painted decal: dark oval badge, faded "C2C" and "WRESTLING", painted 256x128 -> 128x64.
+	var w := 256
+	var h := 128
+	var img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.13, 0.17, 0.27, 0.0))
+	var badge := Color(0.13, 0.17, 0.27)
+	var letters := Color(0.44, 0.2, 0.18)
+	var cream := Color(0.42, 0.42, 0.4)
+	_soft_dot(img, w * 0.5, h * 0.5, 124.0, 60.0, badge, 1.0, 3.0)
+	_soft_dot(img, w * 0.5, h * 0.5, 116.0, 53.0, badge.lightened(0.08), 1.0, 2.0)
+	var sc := 12.0
+	_soft_text(img, "C2C", (w - _text_w("C2C", sc)) * 0.5, 18.0, sc, letters)
+	_soft_text(img, "WRESTLING", (w - _text_w("WRESTLING", 3.0)) * 0.5, 88.0, 3.0, cream)
+	# Scuffed, sprayed-on: break up the alpha with noise and cap it at ~0.85.
+	var nz := _noise_img(w, h, 0.05, 3, false)
+	for y in h:
+		for x in w:
+			var c := img.get_pixel(x, y)
+			if c.a > 0.0:
+				c.a *= 0.85 * (0.8 + 0.2 * nz.get_pixel(x, y).r)
+				img.set_pixel(x, y, c)
+	return _soft_tex(img, 128, 64)
+
+
+func _fr(img: Image, x: float, y: float, w: float, h: float, c: Color) -> void:
+	# A crowd-atlas rect in 1x cell coordinates, painted soft at 2x.
+	_soft_rect(img, x * 2.0, y * 2.0, w * 2.0, h * 2.0, c, 1.0, 0.8)
 
 
 func _fan_head(img: Image, ox: int, y: int, skin: Color, hair: Color) -> void:
-	_px_rect(img, ox + 5, y, 6, 7, skin)
-	_px_rect(img, ox + 5, y - 1, 6, 2, hair)
-	_px_rect(img, ox + 5, y + 1, 1, 2, hair)
-	_px_rect(img, ox + 10, y + 1, 1, 2, hair)
-	img.set_pixel(ox + 6, y + 3, Color(0.08, 0.05, 0.05))
-	img.set_pixel(ox + 9, y + 3, Color(0.08, 0.05, 0.05))
-	_px_rect(img, ox + 7, y + 5, 2, 1, skin.darkened(0.45))
+	_soft_dot(img, (ox + 8) * 2.0, (y + 3.5) * 2.0, 6.2, 7.2, skin, 1.0, 1.0)
+	_soft_dot(img, (ox + 8) * 2.0, (y + 0.6) * 2.0, 6.4, 3.6, hair, 1.0, 1.0)
+	_fr(img, ox + 5, y + 1, 1, 2, hair)
+	_fr(img, ox + 10, y + 1, 1, 2, hair)
+	_soft_dot(img, (ox + 6.5) * 2.0, (y + 3.5) * 2.0, 0.9, 0.9, skin.darkened(0.6), 1.0, 0.8)
+	_soft_dot(img, (ox + 9.5) * 2.0, (y + 3.5) * 2.0, 0.9, 0.9, skin.darkened(0.6), 1.0, 0.8)
+	_fr(img, ox + 7, y + 5, 2, 1, skin.darkened(0.3))
 
 
 func _make_crowd_texture() -> ImageTexture:
-	# 128x32 atlas: eight 16x32 friends. Pure-white pixels are the shirt/hoodie (tinted per instance),
-	# pure cyan is a glowing phone screen.
-	var img := Image.create_empty(128, 32, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0.5, 0.5, 0.5, 0))
+	# 128x32 atlas (painted at 256x64): eight 16x32 friends. Pure-white areas are the shirt/hoodie
+	# (tinted per instance), pure cyan is a glowing phone screen.
+	var img := Image.create_empty(256, 64, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.08, 0.08, 0.09, 0))
 	var white := Color(1, 1, 1)
 	var screen := Color(0, 1, 1)
-	var skins: Array[Color] = [Color(0.93, 0.74, 0.58), Color(0.55, 0.36, 0.24), Color(0.8, 0.6, 0.45), Color(0.38, 0.25, 0.17),
-		Color(0.85, 0.66, 0.5), Color(0.62, 0.42, 0.3), Color(0.92, 0.72, 0.56), Color(0.45, 0.3, 0.2)]
-	var hairs: Array[Color] = [Color(0.25, 0.16, 0.08), Color(0.05, 0.05, 0.05), Color(0.75, 0.6, 0.2), Color(0.1, 0.07, 0.05),
-		Color(0.4, 0.22, 0.1), Color(0.08, 0.06, 0.05), Color(0.6, 0.3, 0.12), Color(0.1, 0.08, 0.06)]
-	var jeans := Color(0.2, 0.27, 0.48)
-	var dark := Color(0.13, 0.13, 0.15)
-	var cup := Color(0.85, 0.1, 0.12)
+	var skins: Array[Color] = [Color(0.86, 0.68, 0.54), Color(0.52, 0.36, 0.25), Color(0.76, 0.58, 0.45), Color(0.38, 0.26, 0.18),
+		Color(0.8, 0.63, 0.5), Color(0.6, 0.42, 0.31), Color(0.84, 0.66, 0.53), Color(0.45, 0.31, 0.22)]
+	var hairs: Array[Color] = [Color(0.24, 0.16, 0.09), Color(0.06, 0.06, 0.06), Color(0.6, 0.5, 0.25), Color(0.1, 0.07, 0.05),
+		Color(0.36, 0.22, 0.12), Color(0.08, 0.06, 0.05), Color(0.5, 0.3, 0.15), Color(0.1, 0.08, 0.06)]
+	var jeans := Color(0.2, 0.25, 0.38)
+	var dark := Color(0.12, 0.12, 0.13)
+	var cup := Color(0.65, 0.18, 0.16)
 	for v in 8:
 		var ox := v * 16
 		var skin: Color = skins[v]
@@ -622,92 +655,93 @@ func _make_crowd_texture() -> ImageTexture:
 		var pants: Color = jeans if v % 2 == 0 else dark
 		if v == FAN_SIT or v == FAN_SIT_CUP:
 			# Sitting: lower head, short torso, knees toward the viewer, shins down.
-			_fan_head(img, ox, 10, skin, hair)
-			_px_rect(img, ox + 7, 17, 2, 1, skin)
-			_px_rect(img, ox + 4, 18, 8, 6, white)
-			_px_rect(img, ox + 3, 24, 10, 3, pants)
-			_px_rect(img, ox + 4, 27, 3, 4, pants)
-			_px_rect(img, ox + 9, 27, 3, 4, pants)
-			_px_rect(img, ox + 4, 31, 3, 1, dark)
-			_px_rect(img, ox + 9, 31, 3, 1, dark)
-			_px_rect(img, ox + 2, 18, 2, 3, white)
-			_px_rect(img, ox + 12, 18, 2, 3, white)
-			_px_rect(img, ox + 2, 21, 2, 3, skin)
-			_px_rect(img, ox + 12, 21, 2, 3, skin)
+			_fr(img, ox + 7, 17, 2, 1, skin)
+			_fr(img, ox + 4, 18, 8, 6, white)
+			_fr(img, ox + 3, 24, 10, 3, pants)
+			_fr(img, ox + 4, 27, 3, 4, pants)
+			_fr(img, ox + 9, 27, 3, 4, pants)
+			_fr(img, ox + 4, 31, 3, 1, dark)
+			_fr(img, ox + 9, 31, 3, 1, dark)
+			_fr(img, ox + 2, 18, 2, 3, white)
+			_fr(img, ox + 12, 18, 2, 3, white)
+			_fr(img, ox + 2, 21, 2, 3, skin)
+			_fr(img, ox + 12, 21, 2, 3, skin)
 			if v == FAN_SIT:
-				_px_rect(img, ox + 5, 9, 6, 2, white)  # hood
-				_px_rect(img, ox + 4, 10, 1, 6, white)
-				_px_rect(img, ox + 11, 10, 1, 6, white)
+				_fr(img, ox + 4, 10, 1, 6, white)
+				_fr(img, ox + 11, 10, 1, 6, white)
+				_fan_head(img, ox, 10, skin, hair)
+				_fr(img, ox + 5, 9, 6, 2, white)  # hood
 			else:
-				_px_rect(img, ox + 12, 19, 2, 3, cup)
-				_px_rect(img, ox + 4, 8, 8, 2, Color(0.15, 0.2, 0.55))  # beanie
+				_fan_head(img, ox, 10, skin, hair)
+				_fr(img, ox + 12, 19, 2, 3, cup)
+				_fr(img, ox + 4, 8, 8, 2, Color(0.2, 0.24, 0.42))  # beanie
 			continue
 		# Standing body
+		_fr(img, ox + 7, 10, 2, 1, skin)
+		_fr(img, ox + 4, 11, 8, 10, white)
+		_fr(img, ox + 4, 21, 8, 2, pants)
+		_fr(img, ox + 4, 23, 3, 8, pants)
+		_fr(img, ox + 9, 23, 3, 8, pants)
+		_fr(img, ox + 4, 31, 3, 1, dark)
+		_fr(img, ox + 9, 31, 3, 1, dark)
 		_fan_head(img, ox, 3, skin, hair)
-		_px_rect(img, ox + 7, 10, 2, 1, skin)
-		_px_rect(img, ox + 4, 11, 8, 10, white)
-		_px_rect(img, ox + 4, 21, 8, 2, pants)
-		_px_rect(img, ox + 4, 23, 3, 8, pants)
-		_px_rect(img, ox + 9, 23, 3, 8, pants)
-		_px_rect(img, ox + 4, 31, 3, 1, dark)
-		_px_rect(img, ox + 9, 31, 3, 1, dark)
 		var left_down := true
 		var right_down := true
 		match v:
 			FAN_HOODIE:
-				_px_rect(img, ox + 5, 1, 6, 2, white)
-				_px_rect(img, ox + 4, 2, 1, 8, white)
-				_px_rect(img, ox + 11, 2, 1, 8, white)
-				_px_rect(img, ox + 6, 13, 4, 3, Color(0.85, 0.85, 0.85))  # pocket
-				_px_rect(img, ox + 7, 11, 1, 3, dark)  # drawstrings
-				_px_rect(img, ox + 9, 11, 1, 3, dark)
+				_fr(img, ox + 5, 1, 6, 2, white)
+				_fr(img, ox + 4, 2, 1, 8, white)
+				_fr(img, ox + 11, 2, 1, 8, white)
+				_fr(img, ox + 6, 13, 4, 3, Color(0.88, 0.88, 0.88))  # pocket
+				_fr(img, ox + 7, 11, 1, 3, dark)  # drawstrings
+				_fr(img, ox + 9, 11, 1, 3, dark)
 			FAN_CAP:
-				_px_rect(img, ox + 4, 1, 8, 2, Color(0.12, 0.12, 0.14))
-				_px_rect(img, ox + 2, 2, 3, 1, Color(0.12, 0.12, 0.14))  # backwards brim
-				_px_rect(img, ox + 6, 14, 4, 3, Color(0.85, 0.2, 0.2))  # tee print
+				_fr(img, ox + 4, 1, 8, 2, Color(0.12, 0.12, 0.14))
+				_fr(img, ox + 2, 2, 3, 1, Color(0.12, 0.12, 0.14))  # backwards brim
+				_fr(img, ox + 6, 14, 4, 3, Color(0.6, 0.25, 0.22))  # tee print
 			FAN_CHEER:
-				_px_rect(img, ox + 2, 1, 2, 9, skin)
-				_px_rect(img, ox + 12, 1, 2, 9, skin)
-				_px_rect(img, ox + 2, 10, 2, 2, white)
-				_px_rect(img, ox + 12, 10, 2, 2, white)
-				_px_rect(img, ox + 7, 8, 2, 2, Color(0.25, 0.05, 0.05))  # yelling
+				_fr(img, ox + 2, 1, 2, 9, skin)
+				_fr(img, ox + 12, 1, 2, 9, skin)
+				_fr(img, ox + 2, 10, 2, 2, white)
+				_fr(img, ox + 12, 10, 2, 2, white)
+				_fr(img, ox + 7, 8, 2, 1.5, Color(0.25, 0.08, 0.07))  # yelling
 				left_down = false
 				right_down = false
 			FAN_PHONE:
-				_px_rect(img, ox + 2, 5, 2, 6, skin)
-				_px_rect(img, ox + 2, 11, 2, 2, white)
-				_px_rect(img, ox + 1, 0, 4, 6, dark)
-				_px_rect(img, ox + 2, 1, 2, 4, screen)
+				_fr(img, ox + 2, 5, 2, 6, skin)
+				_fr(img, ox + 2, 11, 2, 2, white)
+				_fr(img, ox + 1, 0, 4, 6, dark)
+				_fr(img, ox + 2, 1, 2, 4, screen)
 				left_down = false
 			FAN_CUP:
-				_px_rect(img, ox + 4, 1, 8, 3, Color(0.85, 0.5, 0.1))  # beanie
-				_px_rect(img, ox + 12, 11, 2, 3, white)
-				_px_rect(img, ox + 12, 14, 2, 3, skin)
-				_px_rect(img, ox + 12, 15, 3, 4, cup)
+				_fr(img, ox + 4, 1, 8, 3, Color(0.55, 0.38, 0.16))  # beanie
+				_fr(img, ox + 12, 11, 2, 3, white)
+				_fr(img, ox + 12, 14, 2, 3, skin)
+				_fr(img, ox + 12, 15, 3, 4, cup)
 				right_down = false
 			_:  # long hair, flannel-ish stripes
-				_px_rect(img, ox + 4, 2, 1, 9, hair)
-				_px_rect(img, ox + 11, 2, 1, 9, hair)
+				_fr(img, ox + 4, 2, 1, 9, hair)
+				_fr(img, ox + 11, 2, 1, 9, hair)
 				for yy in range(12, 21, 3):
-					_px_rect(img, ox + 4, yy, 8, 1, Color(0.8, 0.8, 0.8))
+					_fr(img, ox + 4, yy, 8, 1, Color(0.8, 0.8, 0.8))
 		if left_down:
-			_px_rect(img, ox + 2, 11, 2, 3, white)
-			_px_rect(img, ox + 2, 14, 2, 6, skin)
+			_fr(img, ox + 2, 11, 2, 3, white)
+			_fr(img, ox + 2, 14, 2, 6, skin)
 		if right_down:
-			_px_rect(img, ox + 12, 11, 2, 3, white)
-			_px_rect(img, ox + 12, 14, 2, 6, skin)
-	return ImageTexture.create_from_image(img)
+			_fr(img, ox + 12, 11, 2, 3, white)
+			_fr(img, ox + 12, 14, 2, 6, skin)
+	return _soft_tex(img, 128, 32)
 
 
 func _make_flash_texture() -> ImageTexture:
-	var img := Image.create_empty(16, 16, false, Image.FORMAT_RGBA8)
-	for y in 16:
-		for x in 16:
-			var d := Vector2(x, y).distance_to(Vector2(7.5, 7.5)) / 7.5
+	var img := Image.create_empty(32, 32, false, Image.FORMAT_RGBA8)
+	for y in 32:
+		for x in 32:
+			var d := Vector2(x + 0.5, y + 0.5).distance_to(Vector2(16, 16)) / 16.0
 			var a := clampf(1.0 - d, 0.0, 1.0)
 			a = a * a
 			img.set_pixel(x, y, Color(1, 1, 1, a))
-	return ImageTexture.create_from_image(img)
+	return _soft_tex(img, 16, 16)
 
 
 # ---- lights, sky, camera
@@ -890,8 +924,8 @@ func _grass_mat() -> StandardMaterial3D:
 
 func _build_ring() -> void:
 	var gap := Color(0.03, 0.025, 0.02)
-	var cinder := Color(0.5, 0.5, 0.48)
-	var ply := Color(0.8, 0.64, 0.42)
+	var cinder := Color(0.38, 0.38, 0.37)
+	var ply := Color(0.5, 0.42, 0.32)
 	var h := 4.15
 	# Shadowy underside, cinder blocks at the corners + side midpoints, plywood skirt and apron.
 	_bx("flat", Vector3(8.2, 0.4, 8.2), Vector3(0, 0.2, 0), gap)
@@ -908,33 +942,34 @@ func _build_ring() -> void:
 					_bx("flat", Vector3(0.12, 0.11, 0.205), bp + Vector3(0, 0.1 + k * 0.2, 0) + along, gap, yaw)
 	_bx("wood", Vector3(8.8, 0.56, 8.8), Vector3(0, 0.66, 0), ply)                   # plywood skirt
 	_bx("wood", Vector3(8.7, 0.1, 8.7), Vector3(0, 0.94, 0), ply.lightened(0.08))   # apron edge, top 0.99
-	_bx("flat", Vector3(8.84, 0.06, 0.04), Vector3(0, 0.55, 4.41), Color(0.62, 0.62, 0.6))  # duct tape seam
-	# Tarp canvas + spray-painted logo
+	_bx("flat", Vector3(8.84, 0.06, 0.04), Vector3(0, 0.55, 4.41), Color(0.42, 0.42, 0.41))  # duct tape seam
+	# Faded tarp canvas + a worn painted decal in the middle (alpha-blended, soft edges)
 	_plane(Vector2(8.3, 8.3), Vector3(0, RING_TOP, 0), _tex_mat(_make_tarp_texture()))
-	_plane(Vector2(4.0, 4.0), Vector3(0, RING_TOP + 0.01, 0), _tex_mat(_make_logo_texture(), true))
+	_plane(Vector2(3.5, 1.75), Vector3(0, RING_TOP + 0.01, 0), _tex_mat(_make_logo_texture(), false, true))
 
 	# Wooden 4x4 posts with taped-pillow turnbuckle pads
 	var corners: Array[Vector2] = [Vector2(-h, -h), Vector2(h, -h), Vector2(-h, h), Vector2(h, h)]
-	var pillow_cols: Array[Color] = [Color(0.86, 0.82, 0.74), Color(0.9, 0.62, 0.68), Color(0.55, 0.7, 0.9), Color(0.75, 0.25, 0.22)]
-	var tape := Color(0.6, 0.6, 0.58)
+	# Turnbuckle pads: dark red, wrapped in black tape.
+	var pillow_cols: Array[Color] = [Color(0.4, 0.09, 0.08), Color(0.36, 0.08, 0.08), Color(0.42, 0.1, 0.09), Color(0.38, 0.09, 0.08)]
+	var tape := Color(0.06, 0.06, 0.065)
 	for ci in corners.size():
 		var cpos: Vector2 = corners[ci]
-		_bx("wood", Vector3(0.2, 2.1, 0.2), Vector3(cpos.x, 1.45, cpos.y), Color(0.62, 0.48, 0.32), 0.0, 2.0)
+		_bx("wood", Vector3(0.2, 2.1, 0.2), Vector3(cpos.x, 1.45, cpos.y), Color(0.4, 0.33, 0.25), 0.0, 2.0)
 		var inward := Vector3(-signf(cpos.x), 0, -signf(cpos.y)).normalized()
 		var b := Basis.looking_at(inward)
 		var pc := Vector3(cpos.x, RING_TOP + 1.05, cpos.y) + inward * 0.16
 		_sbox("flat", Vector3(0.44, 0.6, 0.2), Transform3D(b, pc), pillow_cols[ci])
 		for s: float in [-0.17, 0.17]:
 			_sbox("flat", Vector3(0.46, 0.06, 0.22), Transform3D(b, pc + Vector3(0, s, 0)), tape)
-		_sbox("flat", Vector3(0.3, 0.22, 0.22), Transform3D(b, Vector3(cpos.x, RING_TOP + 0.45, cpos.y) + inward * 0.14), Color(0.95, 0.85, 0.3))
+		_sbox("flat", Vector3(0.3, 0.22, 0.22), Transform3D(b, Vector3(cpos.x, RING_TOP + 0.45, cpos.y) + inward * 0.14), Color(0.3, 0.08, 0.07))
 		_sbox("flat", Vector3(0.32, 0.05, 0.24), Transform3D(b, Vector3(cpos.x, RING_TOP + 0.45, cpos.y) + inward * 0.14), tape)
 
-	# Ropes: garden hose (bottom), yellow rope (middle), orange extension cord (top).
+	# Ropes: sober faded blue (bottom), off-white (middle), red (top); 6-sided cylinders.
 	var heights: Array[float] = [0.45, 0.85, 1.25]
-	var rope_cols: Array[Color] = [Color(0.12, 0.55, 0.2), Color(0.95, 0.8, 0.18), Color(1.0, 0.45, 0.06)]
+	var rope_cols: Array[Color] = [Color(0.3, 0.39, 0.72), Color(0.75, 0.73, 0.68), Color(0.75, 0.3, 0.28)]
 	var rope_mesh := CylinderMesh.new()
-	rope_mesh.top_radius = 0.04
-	rope_mesh.bottom_radius = 0.04
+	rope_mesh.top_radius = 0.035
+	rope_mesh.bottom_radius = 0.035
 	rope_mesh.height = 2 * h
 	rope_mesh.radial_segments = 6
 	rope_mesh.rings = 1
@@ -942,7 +977,7 @@ func _build_ring() -> void:
 	for i in 3:
 		var y: float = RING_TOP + heights[i]
 		var rm := _mat(rope_cols[i])
-		rm.roughness = 0.5
+		rm.roughness = 0.8
 		var spots: Array[Vector3] = [Vector3(0, y, h), Vector3(0, y, -h), Vector3(h, y, 0), Vector3(-h, y, 0)]
 		for si in 4:
 			var r := MeshInstance3D.new()
@@ -965,12 +1000,12 @@ func _build_house() -> void:
 	var w := 9.0
 	var top := 6.2
 	var ridge := 8.4
-	var siding := Color(0.72, 0.78, 0.86)
-	var trim := Color(0.92, 0.92, 0.9)
+	var siding := Color(0.4, 0.42, 0.45)
+	var trim := Color(0.52, 0.52, 0.5)
 	_bx("siding", Vector3(2 * w, top, 0.3), Vector3(0, top * 0.5, wall_z - 0.15), siding, 0.0, 0.6)
 	_bx("siding", Vector3(0.3, top, depth), Vector3(-w, top * 0.5, wall_z - depth * 0.5), siding, 0.0, 0.6)
 	_bx("siding", Vector3(0.3, top, depth), Vector3(w, top * 0.5, wall_z - depth * 0.5), siding, 0.0, 0.6)
-	_bx("flat", Vector3(2 * w + 0.3, 0.5, 0.35), Vector3(0, 0.25, wall_z - 0.12), Color(0.45, 0.42, 0.4))  # foundation
+	_bx("flat", Vector3(2 * w + 0.3, 0.5, 0.35), Vector3(0, 0.25, wall_z - 0.12), Color(0.26, 0.25, 0.24))  # foundation
 	# Gable ends (triangles) on both sides
 	var st := _st("siding")
 	for s: float in [-1.0, 1.0]:
@@ -988,39 +1023,39 @@ func _build_house() -> void:
 	var rise := (ridge - top) * run / (depth * 0.5)
 	var slope := atan2(rise, run)
 	var slab_len := sqrt(run * run + rise * rise)
-	var roof_col := Color(0.38, 0.33, 0.34)
+	var roof_col := Color(0.22, 0.2, 0.21)
 	for s: float in [1.0, -1.0]:
 		var zc := wall_z - depth * 0.5 + s * run * 0.5
 		var yc := ridge + 0.1 - rise * 0.5
 		var b := Basis(Vector3.RIGHT, slope * s)
 		_sbox("shingle", Vector3(2 * w + 1.0, 0.16, slab_len), Transform3D(b, Vector3(0, yc, zc)), roof_col, 0.7)
 	_bx("flat", Vector3(2 * w + 1.0, 0.14, 0.14), Vector3(0, top - 0.32, wall_z + 0.62), trim)  # gutter
-	_bx("flat", Vector3(1.0, 2.6, 1.0), Vector3(5.5, ridge + 0.4, wall_z - 2.8), Color(0.5, 0.25, 0.2))  # chimney
+	_bx("flat", Vector3(1.0, 2.6, 1.0), Vector3(5.5, ridge + 0.4, wall_z - 2.8), Color(0.3, 0.18, 0.15))  # chimney
 
 	# Windows: upstairs (some lit warm, one TV-blue, one dark), kitchen window downstairs.
 	var wf := wall_z + 0.02
 	var ups: Array[float] = [-6.5, -2.4, 2.0, 6.2]
-	var up_cols: Array[Color] = [Color(1.0, 0.82, 0.45), Color(0.08, 0.08, 0.12), Color(0.45, 0.6, 1.0), Color(1.0, 0.75, 0.4)]
+	var up_cols: Array[Color] = [Color(0.8, 0.62, 0.36), Color(0.05, 0.05, 0.07), Color(0.34, 0.42, 0.62), Color(0.75, 0.56, 0.32)]
 	for i in ups.size():
 		_bx("flat", Vector3(1.5, 1.4, 0.06), Vector3(ups[i], 4.55, wf), trim)
 		_bx("glow", Vector3(1.3, 1.2, 0.06), Vector3(ups[i], 4.55, wf + 0.03), up_cols[i])
 		_bx("flat", Vector3(0.06, 1.2, 0.07), Vector3(ups[i], 4.55, wf + 0.04), trim)
 		_bx("flat", Vector3(1.3, 0.06, 0.07), Vector3(ups[i], 4.55, wf + 0.04), trim)
-		_bx("flat", Vector3(0.3, 1.4, 0.06), Vector3(ups[i] - 0.92, 4.55, wf), Color(0.2, 0.28, 0.35))  # shutters
+		_bx("flat", Vector3(0.3, 1.4, 0.06), Vector3(ups[i] - 0.92, 4.55, wf), Color(0.14, 0.17, 0.2))  # shutters
 		_bx("flat", Vector3(0.3, 1.4, 0.06), Vector3(ups[i] + 0.92, 4.55, wf), Color(0.2, 0.28, 0.35))
 	_bx("flat", Vector3(1.6, 1.2, 0.06), Vector3(4.2, 1.9, wf), trim)
-	_bx("glow", Vector3(1.4, 1.0, 0.06), Vector3(4.2, 1.9, wf + 0.03), Color(1.0, 0.9, 0.62))
-	_bx("flat", Vector3(1.4, 0.3, 0.07), Vector3(4.2, 2.25, wf + 0.04), Color(0.75, 0.3, 0.25))  # valance
+	_bx("glow", Vector3(1.4, 1.0, 0.06), Vector3(4.2, 1.9, wf + 0.03), Color(0.8, 0.68, 0.46))
+	_bx("flat", Vector3(1.4, 0.3, 0.07), Vector3(4.2, 2.25, wf + 0.04), Color(0.45, 0.22, 0.19))  # valance
 	# Sliding glass door + porch light
-	_bx("flat", Vector3(2.6, 2.3, 0.06), Vector3(-2.6, 1.6, wf), Color(0.75, 0.75, 0.78))
-	_bx("glow", Vector3(2.4, 2.1, 0.06), Vector3(-2.6, 1.6, wf + 0.03), Color(0.62, 0.5, 0.34))
-	_bx("flat", Vector3(0.08, 2.1, 0.08), Vector3(-2.6, 1.6, wf + 0.05), Color(0.75, 0.75, 0.78))
-	_bx("flat", Vector3(0.7, 2.0, 0.07), Vector3(-3.45, 1.6, wf + 0.05), Color(0.55, 0.45, 0.3))  # half-drawn curtain
-	_bx("glow", Vector3(0.2, 0.3, 0.16), Vector3(-0.9, 2.45, wf + 0.08), Color(1.0, 0.8, 0.45))
+	_bx("flat", Vector3(2.6, 2.3, 0.06), Vector3(-2.6, 1.6, wf), Color(0.42, 0.42, 0.44))
+	_bx("glow", Vector3(2.4, 2.1, 0.06), Vector3(-2.6, 1.6, wf + 0.03), Color(0.42, 0.34, 0.24))
+	_bx("flat", Vector3(0.08, 2.1, 0.08), Vector3(-2.6, 1.6, wf + 0.05), Color(0.42, 0.42, 0.44))
+	_bx("flat", Vector3(0.7, 2.0, 0.07), Vector3(-3.45, 1.6, wf + 0.05), Color(0.32, 0.27, 0.2))  # half-drawn curtain
+	_bx("glow", Vector3(0.2, 0.3, 0.16), Vector3(-0.9, 2.45, wf + 0.08), Color(0.95, 0.75, 0.45))
 
 	# Back porch: wooden deck, steps, posts, railing and a low flat roof friends climb onto.
 	var deck_y := 0.45
-	var wood := Color(0.6, 0.45, 0.3)
+	var wood := Color(0.38, 0.31, 0.24)
 	_bx("wood", Vector3(8.4, deck_y, 3.2), Vector3(-3.0, deck_y * 0.5, wall_z + 1.6), wood)
 	_bx("wood", Vector3(1.6, 0.22, 0.4), Vector3(0.0, 0.11, wall_z + 3.4), wood.darkened(0.1))
 	var roof_y := 3.05
@@ -1030,14 +1065,14 @@ func _build_house() -> void:
 	_bx("wood", Vector3(0.08, 0.08, 3.0), Vector3(-7.0, deck_y + 0.85, wall_z + 1.55), wood.lightened(0.15))
 	for k in 9:
 		_bx("wood", Vector3(0.05, 0.85, 0.05), Vector3(-6.6 + k * 0.42, deck_y + 0.42, wall_z + 3.05), wood.lightened(0.15))
-	_bx("shingle", Vector3(8.8, 0.18, 3.6), Vector3(-3.0, roof_y + 0.09, wall_z + 1.75), Color(0.42, 0.38, 0.38), 0.0, 0.7)
+	_bx("shingle", Vector3(8.8, 0.18, 3.6), Vector3(-3.0, roof_y + 0.09, wall_z + 1.75), Color(0.24, 0.22, 0.22), 0.0, 0.7)
 	_bx("flat", Vector3(8.8, 0.22, 0.06), Vector3(-3.0, roof_y + 0.05, wall_z + 3.57), trim)
 	# Hand-painted bedsheet banner hanging off the porch roof
 	var sheet_z := wall_z + 3.62
-	_bx("flat", Vector3(5.4, 0.9, 0.03), Vector3(-3.4, roof_y - 0.42, sheet_z), Color(0.9, 0.88, 0.8))
-	_bx("flat", Vector3(5.4, 0.04, 0.035), Vector3(-3.4, roof_y - 0.1, sheet_z), Color(0.75, 0.72, 0.65))
+	_bx("flat", Vector3(5.4, 0.9, 0.03), Vector3(-3.4, roof_y - 0.42, sheet_z), Color(0.62, 0.6, 0.55))
+	_bx("flat", Vector3(5.4, 0.04, 0.035), Vector3(-3.4, roof_y - 0.1, sheet_z), Color(0.5, 0.48, 0.44))
 	var lines: Array[String] = ["CITY 2 CITY WRESTLING", "BACKYARD BRAWL"]
-	var line_cols: Array[Color] = [Color(0.75, 0.08, 0.08), Color(0.08, 0.12, 0.45)]
+	var line_cols: Array[Color] = [Color(0.5, 0.12, 0.1), Color(0.12, 0.15, 0.32)]
 	for li in 2:
 		var lab := Label3D.new()
 		lab.text = lines[li]
@@ -1052,24 +1087,24 @@ func _build_house() -> void:
 	var lb := Vector3(1.6, 0, wall_z + 3.9)
 	var lt := Vector3(1.6, roof_y + 0.6, wall_z + 3.3)
 	for s: float in [-0.25, 0.25]:
-		_beam("wood", lb + Vector3(s, 0, 0), lt + Vector3(s, 0, 0), 0.07, Color(0.75, 0.6, 0.35))
+		_beam("wood", lb + Vector3(s, 0, 0), lt + Vector3(s, 0, 0), 0.07, Color(0.48, 0.4, 0.28))
 	for k in 8:
 		var t := (k + 0.6) / 8.6
-		_bx("wood", Vector3(0.5, 0.05, 0.05), lb.lerp(lt, t), Color(0.75, 0.6, 0.35))
+		_bx("wood", Vector3(0.5, 0.05, 0.05), lb.lerp(lt, t), Color(0.48, 0.4, 0.28))
 
 	# Neighbour's house beyond the left fence + a dark tree line.
 	var nb := Vector3(-23.0, 0, -15.0)
-	_bx("siding", Vector3(9.0, 5.6, 7.0), nb + Vector3(0, 2.8, 0), Color(0.82, 0.72, 0.55), PI * 0.5, 0.6)
+	_bx("siding", Vector3(9.0, 5.6, 7.0), nb + Vector3(0, 2.8, 0), Color(0.36, 0.33, 0.27), PI * 0.5, 0.6)
 	for s: float in [-1.0, 1.0]:
-		_sbox("shingle", Vector3(4.2, 0.2, 9.6), Transform3D(Basis(Vector3.BACK, -0.5 * s), nb + Vector3(1.85 * s, 6.6, 0)), Color(0.3, 0.26, 0.26), 0.7)
-	_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(3.52, 3.8, 1.8), Color(1.0, 0.85, 0.5))
-	_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(3.52, 1.6, -2.0), Color(0.5, 0.65, 1.0))
+		_sbox("shingle", Vector3(4.2, 0.2, 9.6), Transform3D(Basis(Vector3.BACK, -0.5 * s), nb + Vector3(1.85 * s, 6.6, 0)), Color(0.18, 0.16, 0.16), 0.7)
+	_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(3.52, 3.8, 1.8), Color(0.72, 0.58, 0.36))
+	_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(3.52, 1.6, -2.0), Color(0.3, 0.38, 0.55))
 	var trees: Array[Vector3] = [Vector3(-14.0, 0, -21.0), Vector3(-17.5, 0, -6.0), Vector3(13.0, 0, -21.0), Vector3(17.0, 0, -16.0), Vector3(19.0, 0, -6.0), Vector3(-11.5, 0, -24.0)]
 	for t in trees:
 		var th := randf_range(6.0, 9.0)
-		_cy("flat", 0.25, 0.2, 1.6, t + Vector3(0, 0.8, 0), Color(0.15, 0.1, 0.07), 6)
-		_cy("flat", 2.4, 0.0, th * 0.6, t + Vector3(0, 1.4 + th * 0.3, 0), Color(0.05, 0.11, 0.08), 7)
-		_cy("flat", 1.8, 0.0, th * 0.5, t + Vector3(0, 1.4 + th * 0.65, 0), Color(0.06, 0.13, 0.09), 7)
+		_cy("flat", 0.25, 0.2, 1.6, t + Vector3(0, 0.8, 0), Color(0.09, 0.07, 0.05), 6)
+		_cy("flat", 2.4, 0.0, th * 0.6, t + Vector3(0, 1.4 + th * 0.3, 0), Color(0.03, 0.06, 0.045), 7)
+		_cy("flat", 1.8, 0.0, th * 0.5, t + Vector3(0, 1.4 + th * 0.65, 0), Color(0.035, 0.07, 0.05), 7)
 
 
 func _build_fence() -> void:
@@ -1091,19 +1126,19 @@ func _build_fence() -> void:
 		var count := int(run_len / 0.32)
 		for k in count:
 			var p := a + dir * ((k + 0.5) * run_len / count)
-			var tint := randf_range(-0.06, 0.06)
+			var tint := randf_range(-0.04, 0.04)
 			var bh := fh + (0.08 if k % 2 == 0 else 0.0)
-			_bx("wood", Vector3(run_len / count - 0.02, bh, 0.04), p + Vector3(0, bh * 0.5, 0), Color(0.52 + tint, 0.4 + tint, 0.28 + tint), yaw)
+			_bx("wood", Vector3(run_len / count - 0.02, bh, 0.04), p + Vector3(0, bh * 0.5, 0), Color(0.33 + tint, 0.29 + tint, 0.24 + tint), yaw)
 		var posts := int(run_len / 2.4)
 		for k in posts + 1:
 			var pp := a + dir * (k * run_len / posts)
-			_bx("wood", Vector3(0.12, fh + 0.1, 0.12), pp + Vector3(0, (fh + 0.1) * 0.5, 0), Color(0.42, 0.32, 0.22), yaw)
-		_bx("wood", Vector3(run_len, 0.08, 0.1), (a + b) * 0.5 + Vector3(0, fh - 0.25, 0), Color(0.45, 0.34, 0.23), yaw)
+			_bx("wood", Vector3(0.12, fh + 0.1, 0.12), pp + Vector3(0, (fh + 0.1) * 0.5, 0), Color(0.26, 0.22, 0.18), yaw)
+		_bx("wood", Vector3(run_len, 0.08, 0.1), (a + b) * 0.5 + Vector3(0, fh - 0.25, 0), Color(0.28, 0.24, 0.19), yaw)
 
 
 func _lawn_chair(pos: Vector3, face: Vector3, col: Color) -> void:
 	var b := Basis.looking_at(face)
-	var frame := Color(0.75, 0.76, 0.8)
+	var frame := Color(0.51, 0.52, 0.54)
 	var xf := Transform3D(b, pos)
 	_sbox("flat", Vector3(0.52, 0.04, 0.46), xf * Transform3D(Basis(), Vector3(0, 0.42, 0)), col)
 	_sbox("flat", Vector3(0.52, 0.55, 0.04), xf * Transform3D(Basis(Vector3.RIGHT, 0.25), Vector3(0, 0.72, 0.25)), col)
@@ -1114,86 +1149,76 @@ func _lawn_chair(pos: Vector3, face: Vector3, col: Color) -> void:
 
 
 func _build_props() -> void:
-	# Work light tripod (ring_spot sits in its lamp head)
-	var wl := Vector3(-6.4, 0, 2.6)
 	var black := Color(0.08, 0.08, 0.09)
-	for k in 3:
-		var a := TAU * k / 3.0
-		_beam("flat", wl + Vector3(cos(a) * 0.7, 0, sin(a) * 0.7), wl + Vector3(0, 1.4, 0), 0.05, black)
-	_beam("flat", wl + Vector3(0, 1.3, 0), wl + Vector3(0, 5.8, 0), 0.06, Color(0.85, 0.7, 0.1))
-	var head_xf := Transform3D(Basis.looking_at(Vector3(0.6, 1.0, -0.6) - Vector3(-6.4, 6.0, 2.6)), Vector3(-6.4, 6.0, 2.6))
-	_sbox("flat", Vector3(0.6, 0.45, 0.25), head_xf, Color(0.95, 0.75, 0.1))
-	_sbox("glow", Vector3(0.5, 0.36, 0.05), head_xf * Transform3D(Basis(), Vector3(0, 0, -0.14)), Color(1.0, 0.97, 0.85))
-	_beam("flat", wl + Vector3(0, 0.05, 0), Vector3(-5.2, 0.03, 4.8), 0.03, Color(1.0, 0.45, 0.06))  # extension cord
 
 	# Trampoline (left)
 	var tp := Vector3(-9.6, 0, -8.0)
-	_cy("flat", 2.0, 2.0, 0.1, tp + Vector3(0, 0.88, 0), Color(0.15, 0.35, 0.8), 12)
-	_cy("flat", 1.75, 1.75, 0.04, tp + Vector3(0, 0.94, 0), Color(0.04, 0.04, 0.05), 12)
+	_cy("flat", 2.0, 2.0, 0.1, tp + Vector3(0, 0.88, 0), Color(0.14, 0.24, 0.46), 12)
+	_cy("flat", 1.75, 1.75, 0.04, tp + Vector3(0, 0.94, 0), Color(0.03, 0.03, 0.03), 12)
 	for k in 6:
 		var a2 := TAU * k / 6.0
 		var lp := tp + Vector3(cos(a2) * 1.9, 0, sin(a2) * 1.9)
-		_beam("metal", lp, lp + Vector3(0, 0.86, 0), 0.06, Color(0.6, 0.62, 0.65))
+		_beam("metal", lp, lp + Vector3(0, 0.86, 0), 0.06, Color(0.41, 0.42, 0.44))
 
 	# Kiddie pool (right)
 	var kp := Vector3(7.4, 0, -7.2)
-	_cy("flat", 1.15, 1.2, 0.3, kp + Vector3(0, 0.15, 0), Color(0.3, 0.6, 0.95), 12)
-	_cy("glow", 1.02, 1.02, 0.02, kp + Vector3(0, 0.25, 0), Color(0.22, 0.42, 0.55), 12)
-	_bx("flat", Vector3(0.5, 0.06, 0.25), kp + Vector3(0.3, 0.27, 0.2), Color(1.0, 0.85, 0.2), 0.6)  # floatie
+	_cy("flat", 1.15, 1.2, 0.3, kp + Vector3(0, 0.15, 0), Color(0.25, 0.4, 0.57), 12)
+	_cy("glow", 1.02, 1.02, 0.02, kp + Vector3(0, 0.25, 0), Color(0.13, 0.23, 0.3), 12)
+	_bx("flat", Vector3(0.5, 0.06, 0.25), kp + Vector3(0.3, 0.27, 0.2), Color(0.65, 0.57, 0.25), 0.6)  # floatie
 	# Grill by the porch, coals glowing
 	var gp := Vector3(3.3, 0, -11.8)
 	_cy("flat", 0.32, 0.42, 0.35, gp + Vector3(0, 0.95, 0), black, 8)
-	_cy("flat", 0.42, 0.25, 0.25, gp + Vector3(0, 1.25, 0), Color(0.12, 0.12, 0.13), 8)
+	_cy("flat", 0.42, 0.25, 0.25, gp + Vector3(0, 1.25, 0), Color(0.08, 0.08, 0.09), 8)
 	_cy("glow", 0.33, 0.33, 0.02, gp + Vector3(0, 1.12, 0), Color(1.0, 0.35, 0.08), 8)
 	for k in 3:
 		var a3 := TAU * k / 3.0 + 0.3
 		_beam("flat", gp + Vector3(cos(a3) * 0.35, 0, sin(a3) * 0.35), gp + Vector3(0, 0.85, 0), 0.04, black)
 	# Beat-up couch on the porch
 	var cp := Vector3(-4.6, 0.45, -13.9)
-	var couch := Color(0.42, 0.38, 0.2)
+	var couch := Color(0.28, 0.26, 0.17)
 	_bx("flat", Vector3(2.4, 0.45, 0.95), cp + Vector3(0, 0.22, 0), couch)
 	_bx("flat", Vector3(2.4, 0.6, 0.28), cp + Vector3(0, 0.6, -0.36), couch.darkened(0.1))
 	for s: float in [-1.0, 1.0]:
 		_bx("flat", Vector3(0.26, 0.62, 0.95), cp + Vector3(s * 1.2, 0.31, 0), couch.darkened(0.15))
-	_bx("flat", Vector3(0.7, 0.12, 0.6), cp + Vector3(-0.4, 0.5, 0.05), Color(0.55, 0.5, 0.3))  # mismatched cushion
-	_bx("flat", Vector3(0.3, 0.06, 0.2), cp + Vector3(0.65, 0.48, 0.1), Color(0.6, 0.6, 0.58), 0.4)  # tape patch
+	_bx("flat", Vector3(0.7, 0.12, 0.6), cp + Vector3(-0.4, 0.5, 0.05), Color(0.36, 0.34, 0.24))  # mismatched cushion
+	_bx("flat", Vector3(0.3, 0.06, 0.2), cp + Vector3(0.65, 0.48, 0.1), Color(0.41, 0.41, 0.4), 0.4)  # tape patch
 	# Shed (right) with a flat-ish roof people sit on, and a ladder
 	var sp := Vector3(10.6, 0, -11.0)
-	var shed := Color(0.46, 0.55, 0.45)
+	var shed := Color(0.32, 0.37, 0.32)
 	_bx("wood", Vector3(3.2, 2.5, 2.6), sp + Vector3(0, 1.25, 0), shed)
-	_bx("shingle", Vector3(3.6, 0.15, 3.0), sp + Vector3(0, 2.58, 0), Color(0.32, 0.3, 0.3), 0.0, 0.7)
+	_bx("shingle", Vector3(3.6, 0.15, 3.0), sp + Vector3(0, 2.58, 0), Color(0.21, 0.21, 0.21), 0.0, 0.7)
 	_bx("wood", Vector3(1.2, 2.0, 0.05), sp + Vector3(-0.5, 1.0, 1.32), shed.darkened(0.25))
-	_bx("flat", Vector3(0.6, 0.5, 0.05), sp + Vector3(0.9, 1.6, 1.32), Color(0.1, 0.12, 0.16))  # window
+	_bx("flat", Vector3(0.6, 0.5, 0.05), sp + Vector3(0.9, 1.6, 1.32), Color(0.07, 0.08, 0.1))  # window
 	var slb := sp + Vector3(-1.9, 0, 1.0)
 	var slt := sp + Vector3(-1.65, 2.9, 0.6)
 	for s: float in [-0.22, 0.22]:
-		_beam("metal", slb + Vector3(0, 0, s), slt + Vector3(0, 0, s), 0.06, Color(0.7, 0.72, 0.75))
+		_beam("metal", slb + Vector3(0, 0, s), slt + Vector3(0, 0, s), 0.06, Color(0.48, 0.49, 0.5))
 	for k in 7:
-		_bx("metal", Vector3(0.05, 0.04, 0.44), slb.lerp(slt, (k + 0.7) / 7.6), Color(0.7, 0.72, 0.75))
+		_bx("metal", Vector3(0.05, 0.04, 0.44), slb.lerp(slt, (k + 0.7) / 7.6), Color(0.48, 0.49, 0.5))
 	# Trash cans by the house corner
 	for tc: Vector3 in [Vector3(7.6, 0, -14.4), Vector3(8.4, 0, -14.2)]:
-		_cy("metal", 0.3, 0.33, 0.85, tc + Vector3(0, 0.425, 0), Color(0.6, 0.62, 0.62), 8)
-		_cy("metal", 0.36, 0.3, 0.08, tc + Vector3(0, 0.89, 0), Color(0.65, 0.67, 0.67), 8)
-	_bx("flat", Vector3(0.6, 1.0, 0.65), Vector3(6.7, 0.5, -14.4), Color(0.15, 0.3, 0.7))  # recycling bin
+		_cy("metal", 0.3, 0.33, 0.85, tc + Vector3(0, 0.425, 0), Color(0.41, 0.42, 0.42), 8)
+		_cy("metal", 0.36, 0.3, 0.08, tc + Vector3(0, 0.89, 0), Color(0.44, 0.45, 0.45), 8)
+	_bx("flat", Vector3(0.6, 1.0, 0.65), Vector3(6.7, 0.5, -14.4), Color(0.13, 0.2, 0.4))  # recycling bin
 	# Garden gnomes
 	var gnomes: Array[Vector3] = [Vector3(-12.8, 0, -3.0), Vector3(-8.0, 0, -12.6), Vector3(6.0, 0, -8.3), Vector3(12.6, 0, -6.0), Vector3(-12.4, 0, -10.5), Vector3(0.9, 0, -12.5)]
-	var gnome_cols: Array[Color] = [Color(0.2, 0.35, 0.8), Color(0.2, 0.6, 0.3)]
+	var gnome_cols: Array[Color] = [Color(0.17, 0.24, 0.46), Color(0.18, 0.38, 0.23)]
 	for i in gnomes.size():
 		var g: Vector3 = gnomes[i]
 		_cy("flat", 0.13, 0.09, 0.22, g + Vector3(0, 0.11, 0), gnome_cols[i % 2], 6)
-		_bx("flat", Vector3(0.13, 0.12, 0.13), g + Vector3(0, 0.28, 0), Color(0.9, 0.72, 0.6))
-		_bx("flat", Vector3(0.14, 0.1, 0.06), g + Vector3(0, 0.22, 0.07), Color(0.95, 0.95, 0.95))
-		_cy("flat", 0.09, 0.0, 0.22, g + Vector3(0, 0.45, 0), Color(0.85, 0.12, 0.1), 6)
+		_bx("flat", Vector3(0.13, 0.12, 0.13), g + Vector3(0, 0.28, 0), Color(0.59, 0.5, 0.44))
+		_bx("flat", Vector3(0.14, 0.1, 0.06), g + Vector3(0, 0.22, 0.07), Color(0.65, 0.65, 0.65))
+		_cy("flat", 0.09, 0.0, 0.22, g + Vector3(0, 0.45, 0), Color(0.48, 0.12, 0.11), 6)
 	# Lawn chairs
-	_lawn_chair(Vector3(-6.9, 0, -1.4), Vector3(1, 0, 0.1), Color(0.2, 0.55, 0.35))
-	_lawn_chair(Vector3(-7.1, 0, 0.9), Vector3(1, 0, -0.1), Color(0.85, 0.3, 0.25))
-	_lawn_chair(Vector3(6.9, 0, -0.9), Vector3(-1, 0, 0.1), Color(0.25, 0.4, 0.85))
-	_lawn_chair(Vector3(6.7, 0, 1.4), Vector3(-1, 0, -0.1), Color(0.9, 0.75, 0.2))
-	_lawn_chair(Vector3(-2.6, 0, -7.9), Vector3(0.2, 0, 1), Color(0.2, 0.55, 0.35))
-	_lawn_chair(Vector3(2.5, 0, -8.1), Vector3(-0.2, 0, 1), Color(0.85, 0.3, 0.25))
+	_lawn_chair(Vector3(-6.9, 0, -1.4), Vector3(1, 0, 0.1), Color(0.18, 0.35, 0.25))
+	_lawn_chair(Vector3(-7.1, 0, 0.9), Vector3(1, 0, -0.1), Color(0.5, 0.23, 0.21))
+	_lawn_chair(Vector3(6.9, 0, -0.9), Vector3(-1, 0, 0.1), Color(0.2, 0.27, 0.49))
+	_lawn_chair(Vector3(6.7, 0, 1.4), Vector3(-1, 0, -0.1), Color(0.58, 0.51, 0.24))
+	_lawn_chair(Vector3(-2.6, 0, -7.9), Vector3(0.2, 0, 1), Color(0.18, 0.35, 0.25))
+	_lawn_chair(Vector3(2.5, 0, -8.1), Vector3(-0.2, 0, 1), Color(0.5, 0.23, 0.21))
 	# A cooler
-	_bx("flat", Vector3(0.7, 0.42, 0.42), Vector3(-5.8, 0.21, -6.6), Color(0.85, 0.2, 0.15), 0.3)
-	_bx("flat", Vector3(0.72, 0.08, 0.44), Vector3(-5.8, 0.44, -6.6), Color(0.95, 0.95, 0.95), 0.3)
+	_bx("flat", Vector3(0.7, 0.42, 0.42), Vector3(-5.8, 0.21, -6.6), Color(0.49, 0.17, 0.15), 0.3)
+	_bx("flat", Vector3(0.72, 0.08, 0.44), Vector3(-5.8, 0.44, -6.6), Color(0.65, 0.65, 0.65), 0.3)
 
 
 func _build_car() -> void:
@@ -1201,20 +1226,20 @@ func _build_car() -> void:
 	var pos := Vector3(9.0, 0, 6.4)
 	var face := Vector3(-pos.x, 0, -pos.z).normalized()
 	var xf := Transform3D(Basis.looking_at(face), pos)
-	var body := Color(0.45, 0.12, 0.12)
-	var glass := Color(0.07, 0.09, 0.13)
+	var body := Color(0.26, 0.1, 0.1)
+	var glass := Color(0.05, 0.06, 0.08)
 	_sbox("flat", Vector3(1.8, 0.65, 4.4), xf * Transform3D(Basis(), Vector3(0, 0.62, 0)), body)
 	_sbox("flat", Vector3(1.6, 0.55, 2.2), xf * Transform3D(Basis(), Vector3(0, 1.2, 0.3)), body.darkened(0.1))
 	_sbox("flat", Vector3(1.64, 0.4, 2.0), xf * Transform3D(Basis(), Vector3(0, 1.2, 0.3)), glass)
 	_sbox("flat", Vector3(1.4, 0.42, 2.24), xf * Transform3D(Basis(), Vector3(0, 1.2, 0.3)), glass)
-	_sbox("flat", Vector3(1.0, 0.3, 0.9), xf * Transform3D(Basis(), Vector3(0.2, 0.95, -1.5)), Color(0.55, 0.55, 0.5))  # primer hood patch
-	_sbox("flat", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, -2.22)), Color(0.6, 0.6, 0.62))  # bumper
-	_sbox("flat", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, 2.22)), Color(0.6, 0.6, 0.62))
+	_sbox("flat", Vector3(1.0, 0.3, 0.9), xf * Transform3D(Basis(), Vector3(0.2, 0.95, -1.5)), Color(0.37, 0.37, 0.35))  # primer hood patch
+	_sbox("flat", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, -2.22)), Color(0.41, 0.41, 0.42))  # bumper
+	_sbox("flat", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, 2.22)), Color(0.41, 0.41, 0.42))
 	for sx: float in [-0.65, 0.65]:
 		_sbox("glow", Vector3(0.36, 0.2, 0.06), xf * Transform3D(Basis(), Vector3(sx, 0.72, -2.21)), Color(1.0, 0.97, 0.85))
 		_sbox("glow", Vector3(0.3, 0.16, 0.06), xf * Transform3D(Basis(), Vector3(sx, 0.75, 2.21)), Color(0.8, 0.08, 0.06))
 		for sz: float in [-1.35, 1.35]:
-			_scyl("flat", 0.33, 0.33, 0.24, xf * Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx * 1.38, 0.33, sz)), Color(0.05, 0.05, 0.05), 8)
+			_scyl("flat", 0.33, 0.33, 0.24, xf * Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx * 1.38, 0.33, sz)), Color(0.03, 0.03, 0.03), 8)
 	# One spot for both headlamps (cheaper than two)
 	var hp := xf * Vector3(0, 0.8, -2.3)
 	var head := SpotLight3D.new()
@@ -1237,10 +1262,12 @@ func _build_string_lights() -> void:
 	var poles: Array[Vector3] = [Vector3(-7.4, 0, -9.5), Vector3(7.4, 0, -9.5), Vector3(-7.4, 0, -4.0), Vector3(7.4, 0, -4.0),
 		Vector3(-7.6, 0, 1.6), Vector3(7.6, 0, 1.6), Vector3(-7.6, 0, 4.4), Vector3(7.6, 0, 4.4)]
 	for p in poles:
-		_bx("wood", Vector3(0.12, 5.0, 0.12), p + Vector3(0, 2.5, 0), Color(0.55, 0.42, 0.3), 0.0, 2.0)
+		_bx("wood", Vector3(0.12, 5.0, 0.12), p + Vector3(0, 2.5, 0), Color(0.3, 0.25, 0.2), 0.0, 2.0)
 	var strand_a: Array[Vector3] = [Vector3(-7.0, 5.9, -14.9), Vector3(7.4, 4.95, -9.5), Vector3(-7.4, 4.95, -4.0), Vector3(7.6, 4.95, 1.6), Vector3(-7.6, 4.95, 4.4)]
 	var strand_b: Array[Vector3] = [Vector3(7.0, 5.9, -14.9), Vector3(-7.4, 4.95, -9.5), Vector3(7.4, 4.95, -4.0), Vector3(-7.6, 4.95, 1.6), Vector3(7.6, 4.95, 4.4)]
-	var cols: Array[Color] = [Color(1.0, 0.85, 0.5), Color(1.0, 0.85, 0.5), Color(1.0, 0.3, 0.2), Color(0.3, 1.0, 0.4), Color(0.35, 0.55, 1.0), Color(1.0, 0.65, 0.15)]
+	# Mostly warm incandescent bulbs, a few muted old coloured ones.
+	var cols: Array[Color] = [Color(0.95, 0.72, 0.42), Color(0.9, 0.66, 0.38), Color(0.95, 0.72, 0.42), Color(0.85, 0.6, 0.3),
+		Color(0.75, 0.32, 0.22), Color(0.45, 0.62, 0.38), Color(0.42, 0.5, 0.72), Color(0.9, 0.55, 0.22)]
 	var wire := Color(0.05, 0.05, 0.05)
 	for strand: Array in [strand_a, strand_b]:
 		for i in strand.size() - 1:
@@ -1259,8 +1286,8 @@ func _build_string_lights() -> void:
 				_bulb_xforms.append(Transform3D(Basis(), bp))
 				_bulb_cols.append(cols[randi() % cols.size()])
 	var sm := SphereMesh.new()
-	sm.radius = 0.065
-	sm.height = 0.13
+	sm.radius = 0.045
+	sm.height = 0.09
 	sm.radial_segments = 6
 	sm.rings = 3
 	var mm := MultiMesh.new()
@@ -1286,7 +1313,7 @@ func _build_string_lights() -> void:
 
 func _add_fan(p: Vector3, variant: int, lit := 0.5, bob := 1.0) -> void:
 	# p = feet position. The quad's +Z (its front) faces the broadcast camera side.
-	var s := randf_range(0.92, 1.06)
+	var s := randf_range(0.92, 1.06) * 0.85
 	var c := p + Vector3(0, 0.85 * s, 0)
 	var focus := Vector3(0, c.y, 9.0)
 	var away := c - focus
@@ -1315,7 +1342,7 @@ func _build_crowd() -> void:
 	var x := -7.2
 	while x < 7.2:
 		if absf(x) > 1.2 or randf() < 0.3:
-			_add_fan(Vector3(x, 0, randf_range(-6.0, -7.4)), _stand_variant(), 0.55)
+			_add_fan(Vector3(x, 0, randf_range(-6.5, -7.9)), _stand_variant(), 0.55)
 		x += randf_range(0.75, 1.1)
 	# Along the side fences
 	for z: float in [-2.5, -4.0, -5.6, -10.5, -12.2]:
@@ -1343,8 +1370,8 @@ func _build_crowd() -> void:
 	# Grill master + a friend at the pool + two by the camera-side corners
 	_add_fan(Vector3(3.3, 0, -11.1), FAN_CUP, 0.6)
 	_add_fan(Vector3(8.6, 0, -6.6), FAN_CUP, 0.45)
-	_add_fan(Vector3(-5.6, 0, 4.4), FAN_PHONE, 0.6)
-	_add_fan(Vector3(5.8, 0, 4.0), FAN_HOODIE, 0.55)
+	_add_fan(Vector3(-6.0, 0, 4.7), FAN_PHONE, 0.6)
+	_add_fan(Vector3(6.2, 0, 4.3), FAN_HOODIE, 0.55)
 
 	var quad := QuadMesh.new()
 	quad.size = Vector2(0.85, 1.7)
@@ -1354,6 +1381,7 @@ func _build_crowd() -> void:
 	crowd_mat.shader = sh
 	crowd_mat.set_shader_parameter("tex", _make_crowd_texture())
 	crowd_mat.set_shader_parameter("hype", 0.0)
+	crowd_mat.set_shader_parameter("brightness", 0.6)  # lit ~0.5 -> ~0.3: the yard stays dark, the ring reads brightest
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -1361,9 +1389,9 @@ func _build_crowd() -> void:
 	mm.use_custom_data = true
 	mm.mesh = quad
 	mm.instance_count = _fan_xforms.size()
-	var palette: Array[Color] = [Color(0.95, 0.2, 0.2), Color(0.2, 0.45, 1.0), Color(1.0, 0.9, 0.2), Color(0.95, 0.95, 0.95),
-		Color(0.2, 0.8, 0.35), Color(0.55, 0.3, 0.85), Color(0.25, 0.25, 0.28), Color(1.0, 0.55, 0.15), Color(0.5, 0.5, 0.55),
-		Color(0.35, 0.25, 0.18), Color(0.15, 0.3, 0.2)]
+	var palette: Array[Color] = [Color(0.7, 0.24, 0.22), Color(0.26, 0.36, 0.66), Color(0.75, 0.66, 0.3), Color(0.78, 0.78, 0.75),
+		Color(0.28, 0.52, 0.32), Color(0.45, 0.3, 0.6), Color(0.22, 0.22, 0.24), Color(0.72, 0.45, 0.2), Color(0.45, 0.45, 0.48),
+		Color(0.33, 0.25, 0.19), Color(0.16, 0.26, 0.2)]
 	for i in _fan_xforms.size():
 		mm.set_instance_transform(i, _fan_xforms[i])
 		mm.set_instance_color(i, palette[randi() % palette.size()])
@@ -1381,7 +1409,7 @@ func _build_crowd() -> void:
 	fm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	fm.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
 	fm.albedo_texture = _make_flash_texture()
-	fm.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	fm.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 	fm.albedo_color = Color(1.0, 1.0, 0.95)
 	var fq := QuadMesh.new()
 	fq.size = Vector2(0.5, 0.5)
@@ -1732,12 +1760,19 @@ func _update_feel(delta: float) -> void:
 
 # ---------------------------------------------------------------- HUD
 
-const HUD_GOLD := Color(1.0, 0.82, 0.18)
-const HUD_HP_HIGH := Color(0.25, 0.9, 0.3)
-const HUD_HP_MID := Color(1.0, 0.75, 0.1)
-const HUD_HP_LOW := Color(0.95, 0.18, 0.12)
-const HUD_SLANT := 12.0
-const HUD_BADGE := 62.0
+# AKI-era palette: flat, slightly muted console colors.
+const HUD_GOLD := Color(1.0, 0.84, 0.25)
+const HUD_INK := Color(0.04, 0.03, 0.06, 0.95)   # outlines and strokes
+const HUD_HP_HIGH := Color(0.36, 0.82, 0.32)
+const HUD_HP_MID := Color(0.95, 0.74, 0.18)
+const HUD_HP_LOW := Color(0.9, 0.22, 0.16)
+const HUD_SPIRIT := Color(0.32, 0.62, 0.95)
+const HUD_PLATE_W := 300.0       # max width of one name plate
+const HUD_NAME_FONT := 18
+const HUD_HP_H := 9.0
+const HUD_SP_H := 7.0
+const HUD_ANNOUNCE_FONT := 34
+const HUD_ANNOUNCE_SECS := 0.9
 
 var hud_font: FontVariation
 var hud_font_italic: FontVariation
@@ -1745,7 +1780,7 @@ var bar_canvas: Control
 var hint_panel: PanelContainer
 var hint_style: StyleBoxFlat
 var hint_max_w := 760.0  # widest the hint text may get (set by _layout_hud)
-const HINT_FONT := 24
+const HINT_FONT := 21
 const REVERSE_MIN_WINDOW := 0.25  # shorter reversal windows get no "REVERSE!" prompt
 var help_button: Button
 var help_panel: PanelContainer
@@ -1786,8 +1821,8 @@ func _big_label(size: int) -> Label:
 	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	l.add_theme_font_override("font", hud_font)
 	l.add_theme_font_size_override("font_size", size)
-	l.add_theme_color_override("font_outline_color", Color.BLACK)
-	l.add_theme_constant_override("outline_size", 12)
+	l.add_theme_color_override("font_outline_color", HUD_INK)
+	l.add_theme_constant_override("outline_size", 8)
 	l.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	l.grow_vertical = Control.GROW_DIRECTION_BOTH
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1800,7 +1835,7 @@ func _hud_box(bg: Color, border: Color, radius: int, border_w: int) -> StyleBoxF
 	sb.border_color = border
 	sb.set_border_width_all(border_w)
 	sb.set_corner_radius_all(radius)
-	sb.anti_aliasing = true
+	sb.anti_aliasing = radius > 0
 	return sb
 
 
@@ -1812,13 +1847,11 @@ func _hud_button(text: String, font_size: int, color: Color, radius: int) -> But
 	btn.add_theme_color_override("font_color", Color.WHITE)
 	btn.add_theme_color_override("font_pressed_color", Color(1, 1, 0.8))
 	btn.add_theme_color_override("font_hover_color", Color.WHITE)
-	btn.add_theme_color_override("font_outline_color", Color.BLACK)
-	btn.add_theme_constant_override("outline_size", 6)
-	var normal := _hud_box(color, Color(1, 1, 1, 0.9), radius, 4)
-	normal.shadow_color = Color(0, 0, 0, 0.5)
-	normal.shadow_size = 6
-	normal.shadow_offset = Vector2(0, 4)
-	var pressed := _hud_box(color.darkened(0.3), HUD_GOLD, radius, 4)
+	btn.add_theme_color_override("font_outline_color", HUD_INK)
+	btn.add_theme_constant_override("outline_size", 4)
+	# Flat console button: solid face, 2 px dark outline, no shadow or gloss.
+	var normal := _hud_box(color, HUD_INK, radius, 2)
+	var pressed := _hud_box(color.lightened(0.2), HUD_INK, radius, 2)
 	btn.add_theme_stylebox_override("normal", normal)
 	btn.add_theme_stylebox_override("hover", normal)
 	btn.add_theme_stylebox_override("pressed", pressed)
@@ -1864,26 +1897,28 @@ func _build_hud() -> void:
 	bar_canvas.draw.connect(_draw_hud_bars)
 	hud.add_child(bar_canvas)
 
-	announce_label = _big_label(66)
+	# Move-name callouts: bold italic console text with a 4 px dark outline.
+	announce_label = _big_label(HUD_ANNOUNCE_FONT)
 	announce_label.add_theme_font_override("font", hud_font_italic)
 	announce_label.add_theme_color_override("font_color", HUD_GOLD)
-	announce_label.add_theme_color_override("font_outline_color", Color(0.45, 0.02, 0.05))
-	announce_label.add_theme_constant_override("outline_size", 16)
+	announce_label.add_theme_color_override("font_outline_color", HUD_INK)
+	announce_label.add_theme_constant_override("outline_size", 8)
 	hud.add_child(announce_label)
 
-	count_label = _big_label(200)
+	# Pin count: big, flat white numeral with a dark outline.
+	count_label = _big_label(150)
 	count_label.add_theme_font_override("font", hud_font_italic)
-	count_label.add_theme_constant_override("outline_size", 22)
-	_place(count_label, 0.5, 0.5, Rect2(-260, -200, 520, 290))
+	count_label.add_theme_constant_override("outline_size", 14)
+	_place(count_label, 0.5, 0.5, Rect2(-220, -170, 440, 230))
 	hud.add_child(count_label)
 
-	# Context hint: dark rounded panel at the bottom center, between stick and buttons.
+	# Context hint: flat translucent strip at the bottom center, between stick and buttons.
 	hint_panel = PanelContainer.new()
-	hint_style = _hud_box(Color(0.03, 0.03, 0.08, 0.8), Color(HUD_GOLD.r, HUD_GOLD.g, HUD_GOLD.b, 0.9), 16, 3)
-	hint_style.content_margin_left = 22
-	hint_style.content_margin_right = 22
-	hint_style.content_margin_top = 8
-	hint_style.content_margin_bottom = 10
+	hint_style = _hud_box(Color(0.0, 0.0, 0.0, 0.5), HUD_INK, 0, 0)
+	hint_style.content_margin_left = 16
+	hint_style.content_margin_right = 16
+	hint_style.content_margin_top = 3
+	hint_style.content_margin_bottom = 5
 	hint_panel.add_theme_stylebox_override("panel", hint_style)
 	hint_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hint_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -1892,12 +1927,12 @@ func _build_hud() -> void:
 	hud.add_child(hint_panel)
 	hint_label = _big_label(HINT_FONT)
 	hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint_label.add_theme_constant_override("outline_size", 5)
-	hint_label.add_theme_constant_override("line_spacing", 2)
+	hint_label.add_theme_constant_override("outline_size", 4)
+	hint_label.add_theme_constant_override("line_spacing", 0)
 	hint_panel.add_child(hint_label)
 
 	# "?" button toggles the HOW TO PLAY panel (the match keeps running).
-	help_button = _hud_button("?", 34, Color(0.1, 0.1, 0.18, 0.85), 30)
+	help_button = _hud_button("?", 26, Color(0.12, 0.12, 0.16, 0.6), 4)
 	help_button.pressed.connect(_toggle_help)
 	hud.add_child(help_button)
 	help_panel = _build_help_panel()
@@ -1911,7 +1946,7 @@ func _build_hud() -> void:
 
 func _build_help_panel() -> PanelContainer:
 	var panel := PanelContainer.new()
-	var sb := _hud_box(Color(0.02, 0.02, 0.06, 0.92), HUD_GOLD, 20, 3)
+	var sb := _hud_box(Color(0.03, 0.03, 0.06, 0.9), Color(0.55, 0.55, 0.6), 2, 2)
 	sb.content_margin_left = 24
 	sb.content_margin_right = 24
 	sb.content_margin_top = 10
@@ -1927,11 +1962,11 @@ func _build_help_panel() -> PanelContainer:
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_theme_constant_override("separation", 4)
 	panel.add_child(col)
-	var title := _big_label(32)
+	var title := _big_label(28)
 	title.text = "CITY 2 CITY WRESTLING — HOW TO PLAY"
 	title.add_theme_font_override("font", hud_font_italic)
 	title.add_theme_color_override("font_color", HUD_GOLD)
-	title.add_theme_constant_override("outline_size", 8)
+	title.add_theme_constant_override("outline_size", 6)
 	col.add_child(title)
 
 	# Three columns of sections: [header, rows, first_row_is_column_header].
@@ -2022,7 +2057,7 @@ func _build_help_panel() -> PanelContainer:
 			head.text = header_text
 			head.add_theme_font_override("font", hud_font_italic)
 			head.add_theme_font_size_override("font_size", 22)
-			head.add_theme_color_override("font_color", Color(0.45, 0.8, 1.0))
+			head.add_theme_color_override("font_color", Color(0.55, 0.78, 0.95))
 			head.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			vbox.add_child(head)
 			var first: Array = rows[0]
@@ -2076,47 +2111,47 @@ func _build_win_panel() -> void:
 	win_panel.visible = false
 	hud.add_child(win_panel)
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.5)
+	dim.color = Color(0, 0, 0, 0.4)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	win_panel.add_child(dim)
 
-	# Full-width slanted banner across the middle of the screen.
+	# Classic flat banner: a straight full-width strip with thin rules top and bottom.
 	win_banner = Panel.new()
 	win_banner.anchor_left = 0.0
 	win_banner.anchor_right = 1.0
 	win_banner.anchor_top = 0.5
 	win_banner.anchor_bottom = 0.5
-	win_banner.offset_left = -80
-	win_banner.offset_right = 80
-	win_banner.offset_top = -190
-	win_banner.offset_bottom = 10
+	win_banner.offset_left = 0
+	win_banner.offset_right = 0
+	win_banner.offset_top = -150
+	win_banner.offset_bottom = -10
 	win_banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var sb := _hud_box(Color(0.5, 0.05, 0.08, 0.95), HUD_GOLD, 0, 0)
-	sb.border_width_top = 7
-	sb.border_width_bottom = 7
-	sb.skew = Vector2(0.25, 0.0)
+	var sb := _hud_box(Color(0.06, 0.06, 0.1, 0.88), Color(0.85, 0.85, 0.9, 0.9), 0, 0)
+	sb.border_width_top = 2
+	sb.border_width_bottom = 2
 	win_banner.add_theme_stylebox_override("panel", sb)
 	win_panel.add_child(win_banner)
 
-	win_header = _big_label(36)
+	win_header = _big_label(26)
+	win_header.add_theme_font_override("font", hud_font_italic)
 	win_header.set_anchors_preset(Control.PRESET_FULL_RECT)
-	win_header.offset_top = 10
-	win_header.offset_bottom = -120
-	win_header.add_theme_color_override("font_color", Color.WHITE)
-	win_header.add_theme_constant_override("outline_size", 8)
+	win_header.offset_top = 12
+	win_header.offset_bottom = -94
+	win_header.add_theme_color_override("font_color", Color(0.85, 0.85, 0.9))
+	win_header.add_theme_constant_override("outline_size", 6)
 	win_banner.add_child(win_header)
 
-	win_label = _big_label(84)
+	win_label = _big_label(64)
 	win_label.add_theme_font_override("font", hud_font_italic)
 	win_label.set_anchors_preset(Control.PRESET_FULL_RECT)
-	win_label.offset_top = 50
-	win_label.offset_bottom = -6
-	win_label.add_theme_constant_override("outline_size", 16)
+	win_label.offset_top = 40
+	win_label.offset_bottom = -8
+	win_label.add_theme_constant_override("outline_size", 10)
 	win_banner.add_child(win_label)
 
-	win_button = _hud_button("REMATCH", 46, Color(0.85, 0.12, 0.14), 22)
-	_place(win_button, 0.5, 0.5, Rect2(-180, 50, 360, 104))
+	win_button = _hud_button("REMATCH", 36, Color(0.72, 0.14, 0.14), 4)
+	_place(win_button, 0.5, 0.5, Rect2(-150, 40, 300, 80))
 	win_button.pressed.connect(_restart)
 	win_panel.add_child(win_button)
 
@@ -2125,17 +2160,19 @@ func _layout_hud() -> void:
 	var sr := _hud_safe_rect()
 	# Announcer sits just below the bars; hint panel at the bottom center above the
 	# safe-area bottom; "?" button at the top center between the two bars.
-	_place(announce_label, 0.5, 0.0, Rect2(-520, sr.position.y + 108, 1040, 120))
+	# Move names pop up at ~22% of the screen height, well clear of the name plates.
+	var ann_y := maxf(sr.position.y + 80.0, get_viewport().get_visible_rect().size.y * 0.22)
+	_place(announce_label, 0.5, 0.0, Rect2(-520, ann_y - 30.0, 1040, 60))
 	# The hint is centered in the free band between the stick and the button cluster
 	# and wraps (see _fit_hint) so it never sits under either.
 	var band := Vector2(sr.position.x + 220.0, sr.end.x - 260.0)
 	if touch != null:
 		band = touch.free_band()
 	hint_max_w = maxf(320.0, band.y - band.x) - hint_style.content_margin_left - hint_style.content_margin_right
-	var hint_y := -(get_viewport().get_visible_rect().size.y - sr.end.y) - 14
+	var hint_y := -(get_viewport().get_visible_rect().size.y - sr.end.y) - 12
 	_place(hint_panel, 0.0, 1.0, Rect2((band.x + band.y) * 0.5, hint_y, 0, 0))
 	_fit_hint()
-	_place(help_button, 0.5, 0.0, Rect2(-30, sr.position.y + 12, 60, 60))
+	_place(help_button, 0.5, 0.0, Rect2(-22, sr.position.y + 12, 44, 44))
 	if bar_canvas != null:
 		bar_canvas.queue_redraw()
 
@@ -2171,8 +2208,9 @@ func _pop(c: Control, from_scale: float, from_rot: float, secs: float) -> Tween:
 	c.rotation = from_rot
 	var tw := create_tween()
 	tw.set_parallel(true)
-	tw.tween_property(c, "scale", Vector2.ONE, secs).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(c, "rotation", from_rot * 0.25, secs).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	# Simple console-style pop: a quick ease-out, no overshoot.
+	tw.tween_property(c, "scale", Vector2.ONE, secs).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(c, "rotation", 0.0, secs).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	return tw
 
 
@@ -2180,45 +2218,37 @@ func _announce(text: String, secs: float) -> void:
 	if match_over and text != "":
 		return
 	announce_label.text = text
-	announce_timer = secs
+	# Move names flash by quickly; longer calls (e.g. "FIGHT!") keep their own time.
+	announce_timer = secs if secs > 1.3 else HUD_ANNOUNCE_SECS
 	if text == "":
 		return
 	var up := text.to_upper()
-	var col := HUD_GOLD
-	var outline := Color(0.45, 0.02, 0.05)
+	var col := Color(1.0, 0.92, 0.45)
 	if up.contains("REVERSAL") or up.contains("KICK"):
-		col = Color(0.45, 0.95, 1.0)
-		outline = Color(0.02, 0.1, 0.4)
+		col = Color(0.6, 0.9, 1.0)
 	elif up.contains("!!") or up.contains("FIGHT"):
-		col = Color(1.0, 0.55, 0.15)
-		outline = Color(0.3, 0.0, 0.0)
+		col = Color(1.0, 0.62, 0.25)
 	announce_label.add_theme_color_override("font_color", col)
-	announce_label.add_theme_color_override("font_outline_color", outline)
+	announce_label.add_theme_color_override("font_outline_color", HUD_INK)
 	announce_label.modulate.a = 1.0
 	if announce_tween != null and announce_tween.is_valid():
 		announce_tween.kill()
-	var tilt := -0.12 if randf() < 0.5 else 0.12
-	announce_tween = _pop(announce_label, 1.6, tilt, 0.28)
+	announce_tween = _pop(announce_label, 1.25, 0.0, 0.12)
 
 
 func _on_pin_count(c: int) -> void:
 	count_label.text = str(c) + ("!" if c >= 3 else "")
-	count_label.add_theme_color_override("font_color", Color(1, 0.25, 0.15) if c >= 3 else Color.WHITE)
-	count_label.add_theme_color_override("font_outline_color", Color(0.35, 0.0, 0.0) if c >= 3 else Color(0.05, 0.1, 0.45))
+	# Flat white numeral with a dark outline (the winning "3!" in gold).
+	count_label.add_theme_color_override("font_color", HUD_GOLD if c >= 3 else Color.WHITE)
+	count_label.add_theme_color_override("font_outline_color", HUD_INK)
 	count_label.modulate.a = 1.0
 	count_timer = 0.7 if c < 3 else 2.5
 	cam_shake = max(cam_shake, 0.25)
-	# Slam in: drop from huge to slightly small, then settle.
+	# Quick, simple scale-in.
 	if count_tween != null and count_tween.is_valid():
 		count_tween.kill()
-	count_label.pivot_offset = count_label.size * 0.5
-	count_label.scale = Vector2(3.0, 3.0)
-	count_label.rotation = randf_range(-0.2, 0.2)
-	count_tween = create_tween()
-	count_tween.set_parallel(true)
-	count_tween.tween_property(count_label, "scale", Vector2(0.88, 0.88), 0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	count_tween.tween_property(count_label, "rotation", 0.0, 0.12)
-	count_tween.chain().tween_property(count_label, "scale", Vector2.ONE, 0.1).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	count_label.rotation = 0.0
+	count_tween = _pop(count_label, 1.5, 0.0, 0.1)
 
 
 func _on_win(w: Node3D) -> void:
@@ -2228,12 +2258,12 @@ func _on_win(w: Node3D) -> void:
 	var cpu: bool = w.is_cpu
 	var gear: Color = w.gear_color
 	win_label.text = "%s WINS!" % nm
-	win_label.add_theme_color_override("font_color", gear.lightened(0.45))
-	win_header.text = "DEFEAT..." if cpu else "WINNER!"
+	win_label.add_theme_color_override("font_color", gear.lightened(0.5))
+	win_header.text = "DEFEAT..." if cpu else "WINNER"
 	var sb := win_banner.get_theme_stylebox("panel") as StyleBoxFlat
 	if sb != null:
-		var bg := gear.darkened(0.55)
-		sb.bg_color = Color(bg.r, bg.g, bg.b, 0.95)
+		var bg := gear.darkened(0.7).lerp(Color(0.06, 0.06, 0.08), 0.5)
+		sb.bg_color = Color(bg.r, bg.g, bg.b, 0.9)
 	help_panel.visible = false
 	get_tree().create_timer(1.2).timeout.connect(_show_win)
 
@@ -2246,32 +2276,22 @@ func _show_win() -> void:
 	win_banner.pivot_offset = win_banner.size * 0.5
 	win_banner.scale = Vector2(1.0, 0.0)
 	var tw := create_tween()
-	tw.tween_property(win_banner, "scale", Vector2.ONE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	_pop(win_label, 1.8, -0.1, 0.4)
-	win_button.pivot_offset = win_button.size * 0.5
-	win_button.scale = Vector2.ZERO
+	tw.tween_property(win_banner, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_pop(win_label, 1.3, 0.0, 0.2)
+	win_button.modulate.a = 0.0
 	var tb := create_tween()
 	tb.tween_interval(0.35)
-	tb.tween_property(win_button, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tb.tween_property(win_button, "modulate:a", 1.0, 0.2)
 
 
-# ---- console-style bars (drawn on bar_canvas)
+# ---- AKI-era name plates (drawn on bar_canvas): small italic name, thin flat meters
 
-func _para(x0: float, dir: float, u0: float, u1: float, y: float, h: float, s_top: float, s_bot: float) -> PackedVector2Array:
-	# Slanted quad measured along "u" from the outer screen edge x0 (dir = +1 left side, -1 right).
-	var pts := PackedVector2Array()
-	pts.append(Vector2(x0 + dir * (u0 + s_top), y))
-	pts.append(Vector2(x0 + dir * (u1 + s_top), y))
-	pts.append(Vector2(x0 + dir * (u1 + s_bot), y + h))
-	pts.append(Vector2(x0 + dir * (u0 + s_bot), y + h))
-	return pts
-
-
-func _fill_para(x0: float, dir: float, u0: float, u1: float, y: float, h: float, slant: float, top: Color, bottom: Color) -> void:
-	if u1 - u0 < 1.0:
+func _flat_strip(x0: float, dir: float, u0: float, u1: float, y: float, h: float, col: Color) -> void:
+	# Flat rectangle measured along "u" from the outer screen edge x0 (dir = +1 left side, -1 right).
+	if u1 - u0 < 0.5:
 		return
-	var pts := _para(x0, dir, u0, u1, y, h, slant, 0.0)
-	bar_canvas.draw_polygon(pts, PackedColorArray([top, top, bottom, bottom]))
+	var x := (x0 + u0) if dir > 0.0 else (x0 - u1)
+	bar_canvas.draw_rect(Rect2(x, y, u1 - u0, h), col)
 
 
 func _text_u(x0: float, dir: float, u: float, width: float, y: float, text: String, size: int, col: Color, font: Font, outline: int) -> void:
@@ -2279,35 +2299,22 @@ func _text_u(x0: float, dir: float, u: float, width: float, y: float, text: Stri
 	var pos := Vector2(x0 + u, y) if dir > 0.0 else Vector2(x0 - u - width, y)
 	var align := HORIZONTAL_ALIGNMENT_LEFT if dir > 0.0 else HORIZONTAL_ALIGNMENT_RIGHT
 	if outline > 0:
-		bar_canvas.draw_string_outline(font, pos, text, align, width, size, outline, Color(0, 0, 0, 0.9))
+		bar_canvas.draw_string_outline(font, pos, text, align, width, size, outline, HUD_INK)
 	bar_canvas.draw_string(font, pos, text, align, width, size, col)
 
 
-## Largest font size <= size (down to 14) at which text fits in width.
+## Largest font size <= size (down to 12) at which text fits in width.
 func _fit_font_size(font: Font, text: String, size: int, width: float) -> int:
 	var w: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
 	if w <= width or w <= 0.0:
 		return size
-	return maxi(14, int(floor(float(size) * width / w)))
-
-
-func _initials(n: String) -> String:
-	var out := ""
-	for part in n.split(" ", false):
-		if part == "THE" or out.length() >= 2:
-			continue
-		out += part.substr(0, 1)
-	if out.length() < 2:
-		var words := n.split(" ", false)
-		var last: String = words[words.size() - 1] if words.size() > 0 else n
-		out = last.substr(0, 2)
-	return out
+	return maxi(12, int(floor(float(size) * width / w)))
 
 
 func _draw_hud_bars() -> void:
 	var sr := _hud_safe_rect()
-	var gap := 110.0  # room for the "?" button
-	var side_w: float = clampf((sr.size.x - gap) * 0.5 - 10.0, 300.0, 540.0)
+	var gap := 90.0  # room for the "?" button
+	var side_w: float = clampf((sr.size.x - gap) * 0.5 - 20.0, 180.0, HUD_PLATE_W)
 	for w in [p1, p2]:
 		var d: Dictionary = bars[w]
 		_draw_player_bar(w, d, sr, side_w)
@@ -2316,8 +2323,8 @@ func _draw_hud_bars() -> void:
 func _draw_player_bar(w: Node3D, d: Dictionary, sr: Rect2, side_w: float) -> void:
 	var right: bool = d["right"]
 	var dir := -1.0 if right else 1.0
-	var x0 := (sr.end.x - 8.0) if right else (sr.position.x + 8.0)
-	var top := sr.position.y + 10.0
+	var x0 := (sr.end.x - 16.0) if right else (sr.position.x + 16.0)
+	var top := sr.position.y + 12.0
 	var gear: Color = w.gear_color
 	var nm: String = w.display_name
 	var cpu: bool = w.is_cpu
@@ -2326,82 +2333,48 @@ func _draw_player_bar(w: Node3D, d: Dictionary, sr: Rect2, side_w: float) -> voi
 	var sp: float = d["sp"]
 	var flash: float = d["flash"]
 	var special: bool = w.is_special_ready()
-	var blink := int(hud_clock * 7.0) % 2 == 0
+	var blink := int(hud_clock * 4.0) % 2 == 0
 
-	# Portrait badge with initials.
-	var bx := x0 if not right else x0 - HUD_BADGE
-	var badge := _hud_box(gear.darkened(0.25), Color.WHITE if flash < 0.5 else HUD_HP_LOW, 10, 4)
-	badge.shadow_color = Color(0, 0, 0, 0.5)
-	badge.shadow_size = 4
-	bar_canvas.draw_style_box(badge, Rect2(bx, top, HUD_BADGE, HUD_BADGE))
-	var shine := gear.lightened(0.35)
-	bar_canvas.draw_rect(Rect2(bx + 6, top + 6, HUD_BADGE - 12, 10), Color(shine.r, shine.g, shine.b, 0.5))
-	bar_canvas.draw_string_outline(hud_font_italic, Vector2(bx, top + 44), _initials(nm), HORIZONTAL_ALIGNMENT_CENTER, HUD_BADGE, 30, 6, Color.BLACK)
-	bar_canvas.draw_string(hud_font_italic, Vector2(bx, top + 44), _initials(nm), HORIZONTAL_ALIGNMENT_CENTER, HUD_BADGE, 30, Color.WHITE)
-
-	var u0 := HUD_BADGE + 8.0
-	var u1 := side_w
-	var plate_w := u1 - u0
-	# Name plate.
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1 - 30.0, top, 26.0, HUD_SLANT, 0.0), Color(0, 0, 0, 0.7))
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1 - 30.0, top + 23.0, 3.0, HUD_SLANT * 0.12, 0.0), gear.lightened(0.2))
-	var name_w := plate_w - 110.0
-	_text_u(x0, dir, u0 + 12.0, name_w, top + 21.0, nm, _fit_font_size(hud_font_italic, nm, 22, name_w), gear.lightened(0.5), hud_font_italic, 5)
+	# Name line: small italic name (gear tint), tiny 1P/CPU tag at the inner end.
 	var tag := "CPU" if cpu else "1P"
-	var tag_w := 50.0
-	var tag_u := u1 - 30.0 - tag_w - 6.0
-	var tag_x := (x0 + tag_u) if not right else (x0 - tag_u - tag_w)
-	bar_canvas.draw_style_box(_hud_box(gear if not cpu else Color(0.35, 0.35, 0.4), Color.WHITE, 6, 2), Rect2(tag_x, top + 3, tag_w, 20))
-	bar_canvas.draw_string(hud_font, Vector2(tag_x, top + 19), tag, HORIZONTAL_ALIGNMENT_CENTER, tag_w, 16, Color.WHITE)
+	var tag_w: float = hud_font_italic.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x + 4.0
+	var name_w := side_w - tag_w - 10.0
+	var name_col := gear.lightened(0.55)
+	_text_u(x0, dir, 0.0, name_w, top + 17.0, nm, _fit_font_size(hud_font_italic, nm, HUD_NAME_FONT, name_w), name_col, hud_font_italic, 4)
+	_text_u(x0, dir, side_w - tag_w, tag_w, top + 16.0, tag, 14, Color(0.82, 0.82, 0.86) if cpu else HUD_GOLD, hud_font_italic, 4)
 
-	# Health bar: black frame, dark well, white damage chip, gradient fill, gloss, ticks.
-	var hy := top + 30.0
-	var hh := 24.0
-	var blen := u1 - u0
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0 - 4.0, u1 + 4.0, hy - 4.0, hh + 8.0, HUD_SLANT + 1.0, -1.0), Color(0, 0, 0, 0.85))
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1, hy, hh, HUD_SLANT, 0.0), Color(0.16, 0.04, 0.05, 0.9))
-	var chip_col := Color(1, 1, 1) if blink else Color(1, 0.85, 0.5)
-	_fill_para(x0, dir, u0, u0 + blen * clampf(chip / 100.0, 0.0, 1.0), hy, hh, HUD_SLANT, chip_col, chip_col.darkened(0.2))
+	# Health strip: 2 px dark outline, flat dark well, subtle damage chip, flat fill.
+	var hy := top + 24.0
+	var hh := HUD_HP_H
+	_flat_strip(x0, dir, -2.0, side_w + 2.0, hy - 2.0, hh + 4.0, HUD_INK)
+	_flat_strip(x0, dir, 0.0, side_w, hy, hh, Color(0.13, 0.1, 0.12, 0.92))
+	var chip_u := side_w * clampf(chip / 100.0, 0.0, 1.0)
+	_flat_strip(x0, dir, 0.0, chip_u, hy, hh, Color(0.85, 0.72, 0.62, 0.55))
 	var hcol := HUD_HP_HIGH
 	if hp < 30.0:
 		hcol = HUD_HP_LOW
 		if hp < 20.0 and blink:
-			hcol = hcol.lightened(0.3)
+			hcol = hcol.lightened(0.25)
 	elif hp < 60.0:
 		hcol = HUD_HP_MID
-	var hp_u := u0 + blen * clampf(hp / 100.0, 0.0, 1.0)
-	_fill_para(x0, dir, u0, hp_u, hy, hh, HUD_SLANT, hcol.lightened(0.35), hcol.darkened(0.35))
-	if hp_u - u0 > 2.0:
-		var gloss := _para(x0, dir, u0, hp_u, hy + 2.0, hh * 0.3, HUD_SLANT * 0.92, HUD_SLANT * 0.62)
-		bar_canvas.draw_colored_polygon(gloss, Color(1, 1, 1, 0.35))
-	for k in range(1, 10):
-		var tu := u0 + blen * float(k) / 10.0
-		bar_canvas.draw_line(Vector2(x0 + dir * (tu + HUD_SLANT), hy), Vector2(x0 + dir * tu, hy + hh), Color(0, 0, 0, 0.3), 2.0)
+	var hp_u := side_w * clampf(hp / 100.0, 0.0, 1.0)
+	_flat_strip(x0, dir, 0.0, hp_u, hy, hh, hcol)
 	if flash > 0.0:
-		bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1, hy, hh, HUD_SLANT, 0.0), Color(1, 1, 1, 0.35 * flash))
+		_flat_strip(x0, dir, 0.0, side_w, hy, hh, Color(1, 1, 1, 0.22 * flash))
 
-	# Spirit bar + SPECIAL! badge.
-	var sy := hy + hh + 8.0
-	var sh := 12.0
-	var s_len := blen * 0.72
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0 - 3.0, u0 + s_len + 3.0, sy - 3.0, sh + 6.0, 7.0, -1.0), Color(0, 0, 0, 0.85))
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u0 + s_len, sy, sh, 6.0, 0.0), Color(0.1, 0.08, 0.2, 0.9))
-	var scol := Color(0.3, 0.75, 1.0)
+	# Spirit meter: same flat style, a touch thinner.
+	var sy := hy + hh + 4.0
+	var sh := HUD_SP_H
+	_flat_strip(x0, dir, -2.0, side_w + 2.0, sy - 2.0, sh + 4.0, HUD_INK)
+	_flat_strip(x0, dir, 0.0, side_w, sy, sh, Color(0.08, 0.09, 0.14, 0.92))
+	var scol := HUD_SPIRIT
 	if special:
-		scol = Color(1, 1, 1) if blink else HUD_GOLD
-	_fill_para(x0, dir, u0, u0 + s_len * clampf(sp / 100.0, 0.0, 1.0), sy, sh, 6.0, scol.lightened(0.3), scol.darkened(0.3))
-	if special:
-		var bw := 130.0
-		var bu := u0 + s_len + 14.0
-		var bxx := (x0 + bu) if not right else (x0 - bu - bw)
-		var pulse := 1.0 + 0.08 * sin(hud_clock * 12.0)
-		var rect := Rect2(bxx, sy - 9.0, bw, 30.0)
-		rect = rect.grow((pulse - 1.0) * 40.0)
-		var badge_sp := _hud_box(Color(0.85, 0.1, 0.1) if blink else Color(0.95, 0.5, 0.05), Color.WHITE, 8, 3)
-		badge_sp.skew = Vector2(-0.2 * dir, 0.0)
-		bar_canvas.draw_style_box(badge_sp, rect)
-		bar_canvas.draw_string_outline(hud_font_italic, Vector2(rect.position.x, rect.position.y + 23.0), "SPECIAL!", HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 22, 5, Color.BLACK)
-		bar_canvas.draw_string(hud_font_italic, Vector2(rect.position.x, rect.position.y + 23.0), "SPECIAL!", HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 22, Color(1, 1, 0.6))
+		scol = HUD_GOLD if blink else Color(1.0, 0.97, 0.85)
+	_flat_strip(x0, dir, 0.0, side_w * clampf(sp / 100.0, 0.0, 1.0), sy, sh, scol)
+
+	# Full meter: flashing "SPECIAL" tag under the meter.
+	if special and blink:
+		_text_u(x0, dir, 0.0, side_w, sy + sh + 18.0, "SPECIAL", 17, HUD_GOLD, hud_font_italic, 4)
 
 
 func _restart() -> void:
@@ -2784,7 +2757,7 @@ func _update_hud(delta: float) -> void:
 
 	if announce_timer > 0.0:
 		announce_timer -= delta
-		announce_label.modulate.a = clamp(announce_timer * 3.0, 0.0, 1.0)
+		announce_label.modulate.a = clamp(announce_timer * 6.0, 0.0, 1.0)
 	if count_timer > 0.0:
 		count_timer -= delta
 		count_label.modulate.a = clamp(count_timer * 3.0, 0.0, 1.0)
@@ -2796,15 +2769,15 @@ func _update_hud(delta: float) -> void:
 		hint_label.text = hint
 		_fit_hint()
 		hint_panel.visible = hint != ""
-		# The panel re-sizes around the text by itself (zero offsets + grow); give it a pop.
+		# The strip re-sizes around the text by itself (zero offsets + grow); a quick fade-in.
 		if hint != "":
-			hint_panel.pivot_offset = Vector2(hint_panel.size.x * 0.5, hint_panel.size.y)
-			hint_panel.scale = Vector2(1.12, 1.12)
-			create_tween().tween_property(hint_panel, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			hint_panel.modulate.a = 0.0
+			create_tween().tween_property(hint_panel, "modulate:a", 1.0, 0.12)
 	if hint_panel.visible:
+		# Flat strip; it flashes dark red while the player must mash / wait.
 		var st: int = p1.state
-		var bc := HUD_GOLD
-		if st == Wrestler.S.PINNED or st == Wrestler.S.TIEUP_DEF:
-			bc = HUD_HP_LOW if int(hud_clock * 8.0) % 2 == 0 else Color.WHITE
-		hint_style.border_color = bc
+		var bg := Color(0.0, 0.0, 0.0, 0.5)
+		if (st == Wrestler.S.PINNED or st == Wrestler.S.TIEUP_DEF) and int(hud_clock * 8.0) % 2 == 0:
+			bg = Color(0.45, 0.04, 0.04, 0.6)
+		hint_style.bg_color = bg
 	_update_touch_labels()

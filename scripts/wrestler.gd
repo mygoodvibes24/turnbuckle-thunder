@@ -10,8 +10,8 @@ signal won()
 ## "rope", "whoosh", "count", "kickout", "finisher", "reversal", "taunt", "grab".
 ## strength is 0..1+, where is the world-space contact point.
 signal sfx(kind: String, strength: float, where: Vector3)
-## Style points: a move / trick landed (kind "strike", "grapple", "aerial", "air_trick", "weapon",
-## "movement", "super"), or name "" + kind "break" when the combo breaks.
+## Style points: every landed move / trick (kind "strike", "grapple", "aerial", "air_trick",
+## "weapon", "movement", "super"); kind "break" (no name, 0 points) = we got hit or whiffed.
 signal trick(name: String, points: int, kind: String)
 
 enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THROWING, THROWN,
@@ -36,6 +36,8 @@ enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THRO
 	DIVING,       # airborne: dives off the top, springboards, corner splash
 	PERCH_FALL,   # knocked off the top: crotched on the turnbuckle or dumped to the mat
 	CORNER_STUN,  # whipped into the turnbuckle: slumped in the corner
+	# --- strike strings (appended; see "# ---- strike strings & grapple chains") ---
+	JUGGLED,      # popped up by a launcher: airborne, can be juggled, caught or lariated
 	# --- movement (appended; see "# ---- movement & air tricks") ---
 	ROLL }        # dodge roll (double-tap RUN): brief invulnerability
 
@@ -99,6 +101,29 @@ const MOVES := {
 	"springboard_moonsault": {"name": "SPRINGBOARD MOONSAULT!", "dmg": 14.0, "kind": "dive", "tier": "strike", "time": 0.8, "height": 1.3},
 	"corner_splash": {"name": "Corner Splash!", "dmg": 10.0, "kind": "dive", "tier": "strike", "time": 0.3, "height": 0.3},
 	"super_drop": {"name": "SUPER DROP!!", "dmg": 20.0, "kind": "throw", "tier": "strong", "time": 1.2, "height": 2.4, "land": -1.3, "flip": true},
+	# --- grapple chains (see "# ---- strike strings & grapple chains"). "anim" = the thrower /
+	# victim poses to reuse, "keys" = the victim path to reuse (defaults to anim), "pts" = style.
+	"suplex_2": {"name": "Double-Down Suplex!", "anim": "suplex", "dmg": 9.0, "kind": "throw", "tier": "weak", "time": 1.0, "height": 2.1, "land": -1.2, "flip": true, "pts": 400},
+	"triple_suplex": {"name": "TRIPLE THREAT SUPLEX!!!", "anim": "suplex", "keys": "triple_suplex", "dmg": 12.0, "kind": "throw", "tier": "strong", "time": 1.3, "height": 2.7, "land": -1.3, "flip": true, "pts": 900},
+	"slam_2": {"name": "Back-to-Back Slam!", "anim": "slam", "dmg": 8.0, "kind": "throw", "tier": "weak", "time": 0.95, "height": 1.7, "land": 1.3, "flip": false, "pts": 350},
+	"slam_bomb": {"name": "SLAM-BAM POWERBOMB!!", "anim": "powerbomb", "dmg": 14.0, "kind": "throw", "tier": "strong", "time": 1.25, "height": 2.4, "land": 1.1, "flip": false, "pts": 800},
+	"ddt_2": {"name": "Double-Tap DDT!", "anim": "ddt", "dmg": 10.0, "kind": "throw", "tier": "weak", "time": 0.7, "height": 0.5, "land": 0.7, "flip": false, "pts": 450},
+	"chain_neckbreaker": {"name": "Neckbreaker Encore!!", "anim": "neckbreaker", "dmg": 11.0, "kind": "throw", "tier": "strong", "time": 0.8, "height": 0.6, "land": -0.6, "flip": false, "pts": 650},
+	"chain_elbow": {"name": "...and the ELBOW!", "dmg": 7.0, "kind": "ground", "tier": "ground", "pts": 300},
+	"chain_stomp": {"name": "...and a STOMP!", "dmg": 5.0, "kind": "ground", "tier": "ground", "pts": 200},
+	# launcher follow-up: caught out of the air
+	"catch_slam": {"name": "CATCH & SLAM!", "anim": "powerslam", "keys": "catch_slam", "dmg": 12.0, "kind": "throw", "tier": "strong", "time": 0.75, "height": 1.0, "land": 1.0, "flip": false, "pts": 500},
+	# --- BRAWL MODE supers (brawl_mode): same moves, higher, spinning, harder. "lift" = extra
+	# height (m) through the air, "spin" = extra full pirouettes of the victim.
+	"super_knee": {"name": "MEGATON KNEE!!", "anim": "knee", "dmg": 10.0, "kind": "strike", "tier": "weak", "pts": 700},
+	"super_slam": {"name": "SKYSCRAPER SLAM!!", "anim": "slam", "dmg": 16.0, "kind": "throw", "tier": "strong", "time": 1.35, "height": 2.4, "land": 1.4, "flip": false, "pts": 1200, "lift": 1.0, "spin": 1},
+	"super_suplex": {"name": "STRATOSPHERE SUPLEX!!", "anim": "suplex", "dmg": 19.0, "kind": "throw", "tier": "strong", "time": 1.45, "height": 3.0, "land": -1.3, "flip": true, "pts": 1300, "lift": 1.1, "spin": 1},
+	"super_ddt": {"name": "DRILL BIT DDT!!", "anim": "ddt", "dmg": 19.0, "kind": "throw", "tier": "strong", "time": 1.05, "height": 1.4, "land": 0.8, "flip": false, "pts": 1200, "lift": 0.9, "spin": 2},
+	"super_piledriver": {"name": "TECTONIC TOMBSTONE!!", "anim": "piledriver", "dmg": 24.0, "kind": "throw", "tier": "strong", "time": 1.55, "height": 2.3, "land": 0.8, "flip": true, "pts": 1500, "lift": 1.0, "spin": 1},
+	"super_powerbomb": {"name": "THUNDERHEAD POWERBOMB!!", "anim": "powerbomb", "dmg": 23.0, "kind": "throw", "tier": "strong", "time": 1.6, "height": 3.2, "land": 1.2, "flip": false, "pts": 1500, "lift": 1.2, "spin": 1},
+	"super_spinebuster": {"name": "CYCLONE SPINEBUSTER!!", "anim": "spinebuster", "dmg": 20.0, "kind": "throw", "tier": "strong", "time": 1.15, "height": 1.6, "land": 1.3, "flip": false, "pts": 1300, "lift": 0.7, "spin": 1},
+	"super_neckbreaker": {"name": "WHIRLYBIRD NECKBREAKER!!", "anim": "neckbreaker", "dmg": 18.0, "kind": "throw", "tier": "strong", "time": 1.15, "height": 1.5, "land": -0.7, "flip": false, "pts": 1200, "lift": 0.9, "spin": 2},
+	"super_finisher": {"name": "THUNDER DRIVER MAXIMUM!!!", "anim": "finisher", "dmg": 34.0, "kind": "throw", "tier": "finisher", "time": 1.75, "height": 3.4, "land": 0.9, "flip": true, "pts": 2500, "lift": 1.0, "spin": 1},
 }
 
 var display_name := "Wrestler"
@@ -110,7 +135,6 @@ var opponent: Node3D
 
 var health := 100.0
 var spirit := 0.0
-var brawl_mode := false        # BRAWL MODE (style system): supers, air tricks score double
 var state: int = S.IDLE
 var state_time := 0.0
 var anim_clock := 0.0
@@ -1274,6 +1298,8 @@ func gain_spirit(v: float) -> void:
 func take_damage(d: float) -> void:
 	health = max(0.0, health - d)
 	spirit = max(0.0, spirit - d * 0.4)
+	if d > 0.0:
+		trick.emit("", 0, "break")  # getting hurt breaks our style combo
 
 
 func _down_time() -> float:
@@ -1344,7 +1370,7 @@ func tick(delta: float) -> void:
 		S.RUN:
 			_run(delta)
 		S.PUNCH:
-			_punch()
+			_punch(delta)
 		S.RUN_ATTACK:
 			_run_attack(delta)
 		S.STUNNED:
@@ -1364,8 +1390,7 @@ func tick(delta: float) -> void:
 		S.WHIPPING:
 			_whipping(delta)
 		S.THROWING:
-			if state_time >= throw_time + 0.15:
-				set_state(S.IDLE)
+			_throwing()  # grapple chains: may chain into the next move
 		S.THROWN:
 			_thrown()
 		S.DOWN:
@@ -1394,6 +1419,8 @@ func tick(delta: float) -> void:
 			_weapons_state(delta)  # weapons hook
 		S.CLIMB, S.PERCHED, S.DIVING, S.PERCH_FALL, S.CORNER_STUN:
 			_hf_tick(delta)  # high flying hook
+		S.JUGGLED:
+			_juggled(delta)  # strike strings: popped up by a launcher
 		S.ROLL:
 			_mv_roll(delta)  # movement hook: dodge roll
 
@@ -1458,6 +1485,8 @@ func _attempt_timed_reversal() -> void:
 			chance = 0.85
 		"lariat":
 			chance = 0.8
+		"ender", "chain":
+			chance = 0.85
 	chance += (health - opp_hp) / 600.0
 	if randf() >= chance:
 		reversal_lockout = REVERSAL_LOCKOUT
@@ -1484,6 +1513,14 @@ func _attempt_timed_reversal() -> void:
 			if os == S.RUN_ATTACK and dist < 2.6:
 				_snap_face_opponent()
 				_do_move("rev_backdrop")
+		"ender":
+			# Read the big finishing blow of a strike string: duck it and drag them over.
+			if os == S.PUNCH and dist < 2.4:
+				_snap_face_opponent()
+				_do_move("armdrag")
+		"chain":
+			if state == S.THROWN and os == S.THROWING:
+				_chain_break()
 
 
 # ---------------------------------------------------------------- standing / running
@@ -1503,6 +1540,8 @@ func _free_move(delta: float) -> void:
 	if _weapons_free_input():
 		return  # weapons hook: swing / drop / throw / pick up / tables
 	if _hf_free_move_hook(dir):  # high flying hook: corner climb, corner-stun follow-ups
+		return
+	if _combo_free_hook():  # strike strings hook: juggle follow-ups on a launched opponent
 		return
 	var opp_down := _opp_state() == S.DOWN
 	var opp_dist := _flat_to_opponent().length()
@@ -1587,25 +1626,24 @@ func _run(delta: float) -> void:
 		set_state(S.IDLE)
 
 
+## First strike of a string (a jab). See "# ---- strike strings & grapple chains".
 func _start_punch() -> void:
-	set_state(S.PUNCH)
-	current_move_key = "punch"
-	# Only a CPU defender gets a punch-reversal window: for a human it is below
-	# reaction time and just flickers "REVERSE!" on every jab.
-	if opponent.is_cpu and _opp_can_counter() and _in_front(1.6):
-		opponent.open_reversal_window(PUNCH_HIT, "punch")
+	string_step = 0
+	_start_strike("jab")
 
 
-func _punch() -> void:
-	if state_time >= PUNCH_HIT and not hit_landed:
-		hit_landed = true
-		if _in_front(1.35):
-			combo_hits += 1
-			combo_timer = 1.0
-			var knock := combo_hits >= 3
-			if opponent.receive_strike(self, 8.0 if knock else 4.0, knock) and knock:
-				announce.emit("3-Hit Combo!")
-				combo_hits = 0
+## Lock-up knee / whip clothesline: PUNCH states with fixed timing (strings use STRIKES).
+func _punch(delta: float) -> void:
+	if STRIKES.has(current_move_key):
+		_strike(delta)
+		return
+	# Knee lift out of a lock-up: STRIKE again while they are doubled over = grapple-to-strike
+	# transition straight into the string (hook, uppercut, ender).
+	if _strip_super(current_move_key) == "knee" and in_strike and state_time >= 0.16 \
+			and _opp_state() == S.STUNNED and _in_front(1.6):
+		string_step = 1
+		_start_strike(_string_pick(1, _stick_rel()))
+		return
 	if state_time >= PUNCH_END:
 		set_state(S.IDLE)
 
@@ -1624,14 +1662,24 @@ func _run_attack(delta: float) -> void:
 		var d := _flat_to_opponent()
 		if d.length() < 1.45 and (d.length() < 0.01 or facing.dot(d.normalized()) > 0.0):
 			hit_landed = true
+			var juggled := _opp_state() == S.JUGGLED
 			if opponent.receive_strike(self, 11.0, true):
-				announce.emit("Running Clothesline!")
+				if juggled:
+					announce.emit("EXPRESS LARIAT!!")
+					trick.emit("Express Lariat", 600, "super" if brawl_mode else "strike")
+				else:
+					announce.emit("Running Clothesline!")
+					trick.emit("Running Clothesline", 200, "strike")
+			else:
+				trick.emit("", 0, "break")
 	if state_time >= 0.55:
 		set_state(S.IDLE)
 
 
 ## Called on the defender. Returns true if the strike connected.
 func receive_strike(attacker: Node3D, dmg: float, knockdown: bool) -> bool:
+	if state == S.JUGGLED:
+		return _juggle_struck(attacker, dmg, knockdown)  # strike strings: hit in mid-air
 	var hf := _hf_receive_strike(attacker, dmg, knockdown)  # high flying hook: perched/airborne/cornered
 	if hf >= 0:
 		return hf == 1
@@ -1672,9 +1720,10 @@ func _stomp() -> void:
 	if state_time >= 0.22 and not hit_landed:
 		hit_landed = true
 		if _opp_state() == S.DOWN and _flat_to_opponent().length() < 1.9:
-			var m: Dictionary = MOVES["stomp"]
+			var m: Dictionary = MOVES.get(current_move_key, MOVES["stomp"])  # "chain_stomp" too
 			var dmg: float = m["dmg"]
-			opponent.receive_ground_hit(self, dmg, "stomp")
+			if opponent.receive_ground_hit(self, dmg, "stomp") and current_move_key == "stomp":
+				trick.emit("Stomp", 40, "strike")
 	if state_time >= 0.5:
 		set_state(S.IDLE)
 
@@ -1704,6 +1753,8 @@ func _ground_drop() -> void:
 	if landed:
 		opponent.receive_ground_hit(self, dmg, key)
 		announce.emit(m["name"])
+		if not key.begins_with("chain_"):  # chain links are scored when they start
+			trick.emit(m["name"], int(m.get("pts", 250)), "strike")
 	else:
 		take_damage(3.0)
 		announce.emit("Missed!")
@@ -1789,6 +1840,7 @@ func _try_grapple(strong: bool) -> void:
 		whiff_time = 0.6 if strong else 0.42
 		current_move_key = "whiff_strong" if strong else "whiff"
 		sfx.emit("whoosh", 0.25, _chest())
+		trick.emit("", 0, "break")
 
 
 func _tieup_attacker(delta: float) -> void:
@@ -1844,19 +1896,30 @@ func _commit(move: String) -> void:
 		opponent.open_reversal_window(commit_timer, kind)
 
 
-func _do_move(key: String) -> void:
+func _do_move(base_key: String, chained := false) -> void:
+	var key := base_key
+	if brawl_mode and MOVES.has("super_" + key):
+		key = "super_" + key  # BRAWL MODE: the flashy super version
 	var m: Dictionary = MOVES[key]
 	var tier: String = m.get("tier", "weak")
 	var kind: String = m["kind"]
 	var dmg: float = m["dmg"]
 	announce.emit(m["name"])
-	if key == "finisher":
+	throw_chained = chained
+	ai_string_plan = ""
+	if not chained:
+		chain_link = 0
+		chain_buf = ""
+		trick.emit(_trick_name(m), _move_points(key), "super" if key.begins_with("super_") else "grapple")
+	if key.begins_with("super_"):
+		sfx.emit("finisher", 0.8, _chest())
+	if key == "finisher" or key == "super_finisher":
 		sfx.emit("finisher", 1.0, _chest())
 	elif tier == "reversal":
 		sfx.emit("reversal", 0.6, _chest())
 	elif kind == "throw":
 		sfx.emit("whoosh", 0.5, _chest())
-	if key == "finisher":
+	if key == "finisher" or key == "super_finisher":
 		spirit = 0.0
 		special_timer = 0.0
 	gain_spirit(dmg * 1.5)
@@ -1875,17 +1938,22 @@ func _do_move(key: String) -> void:
 		return
 	set_state(S.THROWING)
 	current_move_key = key
-	throw_time = m["time"]
-	opponent.start_thrown(position + facing * float(m["land"]), m, key)
+	throw_time = float(m["time"]) + (CHAIN_YANK if chained else 0.0)
+	opponent.start_thrown(position + facing * float(m["land"]), m, key, chained)
 
 
-func start_thrown(land_pos: Vector3, m: Dictionary, key := "") -> void:
+## chained: hauled straight back up off the mat into this move (grapple chains).
+func start_thrown(land_pos: Vector3, m: Dictionary, key := "", chained := false) -> void:
+	# Caught out of a launcher juggle: the throw starts from where we hang in the air.
+	throw_start_y = STAND_Y + (juggle_h if state == S.JUGGLED else 0.0)
+	throw_start_pitch = pose_root.rotation.x if state == S.JUGGLED else 0.0
 	set_state(S.THROWN)
+	throw_chained = chained
 	current_move_key = key
 	last_hit_tier = m.get("tier", "weak")
 	throw_from = position
 	throw_to = _yard_clamp_pt(Vector3(land_pos.x, 0, land_pos.z), 0.5)  # movement hook: inside the yard
-	throw_time = m["time"]
+	throw_time = float(m["time"]) + (CHAIN_YANK if chained else 0.0)
 	throw_height = m["height"]
 	throw_end_angle = -PI / 2 - (TAU if m["flip"] else 0.0)
 	pending_damage = m["dmg"]
@@ -1960,6 +2028,7 @@ func _whipping(delta: float) -> void:
 			set_state(S.WHIFF)
 			whiff_time = 0.42
 			current_move_key = "whiff"
+			trick.emit("", 0, "break")
 	elif state_time > 4.5:
 		set_state(S.IDLE)
 
@@ -1972,6 +2041,7 @@ func _whip_clothesline() -> void:
 	hit_landed = true
 	if opponent.receive_strike(self, dmg, true):
 		announce.emit(m["name"])
+		trick.emit("Clothesline", 250, "strike")
 
 
 ## A whipped runner met nobody's move: both wrestlers stagger.
@@ -2080,6 +2150,738 @@ func _pinned(delta: float) -> void:
 		down_duration = 0.4
 		impact.emit(0.35 if near_fall else 0.2)
 		sfx.emit("kickout", 1.0 if near_fall else 0.6, global_position + Vector3(0, 0.6, 0))
+
+
+# ---- strike strings & grapple chains
+# STRIKE STRINGS: STRIKE again while a strike plays (from STRING_BUFFER on) chains into the next
+# one the moment the hit lands: Jab -> Hook -> Uppercut -> ender. The stick, relative to the
+# opponent, picks the ender: neutral = Haymaker (4th hit), toward = Spin Kick (3rd hit) or
+# Superkick (4th hit), away = Launcher (2nd hit on), which pops the opponent up (JUGGLED):
+# then STRIKE = Air Mail Knee juggle (re-pops, JUGGLE_MAX per launch), GRAB = Catch & Slam,
+# RUN = Express Lariat dash. GRAB mid-string locks up the staggered opponent. Enders are slower
+# and open a timed reversal ("ender") on the defender, so the big blow can be read and countered.
+# A late press lets the victim's stagger run out first: the timing window is real.
+# GRAPPLE CHAINS: while a chainable throw plays (from CHAIN_OPEN of it on), GRAB or STRIKE
+# queues the next move of CHAINS, which starts the moment the victim lands without letting go
+# (they are hauled straight back up, CHAIN_YANK). Up to CHAIN_MAX links, each scoring more; the
+# victim gets a short "chain" reversal window to break free. Reversals chain too (counter-to-combo).
+# BRAWL MODE (brawl_mode, set by the style system): any move with a "super_" twin in MOVES /
+# STRIKES uses it: higher lifts, extra spins, more damage. current_move_key carries the prefix.
+# Nothing here depends on the ring: positions are relative to the two wrestlers only.
+
+const STRING_BUFFER := 0.06   # presses earlier than this into a strike are ignored (no mashing through)
+const ENDER_REVERSAL_WINDOW := 0.22
+const CHAIN_OPEN := 0.45      # fraction of a throw after which GRAB / STRIKE queues a chain link
+const CHAIN_GRACE := 0.2      # the thrower's recovery after the landing (the queue is honoured in it)
+const CHAIN_MAX := 2          # chain links after the opening move (three moves in all)
+const CHAIN_YANK := 0.28      # seconds to haul the victim back up off the ground into a chain link
+const CHAIN_BREAK_WINDOW := 0.25
+const JUGGLE_G := 12.0
+const JUGGLE_VY := 3.8        # juggle hit re-pop (~0.6 m)
+const JUGGLE_MAX := 2         # juggle hits per launch
+
+## "hit" = contact time, "end" = recovery end (a whiff adds 0.16), "pts" = style points.
+const STRIKES := {
+	"jab": {"name": "Jab", "dmg": 3.0, "hit": 0.11, "end": 0.27, "reach": 1.35, "pts": 50},
+	"hook": {"name": "Hook", "dmg": 4.0, "hit": 0.12, "end": 0.29, "reach": 1.35, "pts": 75},
+	"uppercut": {"name": "Uppercut", "dmg": 5.0, "hit": 0.13, "end": 0.31, "reach": 1.3, "pts": 100},
+	"haymaker": {"name": "Porch Light Haymaker!", "dmg": 9.0, "hit": 0.22, "end": 0.48, "reach": 1.45, "pts": 300, "ender": true, "knock": true},
+	"spin_kick": {"name": "Lawn Dart Spin Kick!", "dmg": 8.0, "hit": 0.24, "end": 0.5, "reach": 1.6, "pts": 250, "ender": true, "knock": true},
+	"superkick": {"name": "Screen Door Superkick!", "dmg": 11.0, "hit": 0.22, "end": 0.5, "reach": 1.7, "pts": 400, "ender": true, "knock": true},
+	"launcher": {"name": "Bottle Rocket Launcher!", "dmg": 7.0, "hit": 0.2, "end": 0.42, "reach": 1.4, "pts": 300, "ender": true, "launch": true, "vy": 6.0},
+	"juggle_knee": {"name": "Air Mail Knee!", "dmg": 5.0, "hit": 0.15, "end": 0.38, "reach": 1.9, "pts": 250, "juggle": true},
+	# BRAWL MODE supers
+	"super_haymaker": {"name": "SUPERNOVA HAYMAKER!!", "anim": "haymaker", "dmg": 15.0, "hit": 0.24, "end": 0.55, "reach": 1.5, "pts": 900, "ender": true, "knock": true},
+	"super_spin_kick": {"name": "TORNADO ALLEY KICK!!", "anim": "spin_kick", "dmg": 13.0, "hit": 0.3, "end": 0.6, "reach": 1.7, "pts": 800, "ender": true, "knock": true},
+	"super_superkick": {"name": "SONIC BOOM SUPERKICK!!", "anim": "superkick", "dmg": 17.0, "hit": 0.24, "end": 0.56, "reach": 1.8, "pts": 1100, "ender": true, "knock": true},
+	"super_launcher": {"name": "ORBITAL LAUNCHER!!", "anim": "launcher", "dmg": 11.0, "hit": 0.22, "end": 0.5, "reach": 1.5, "pts": 900, "ender": true, "launch": true, "vy": 7.5},
+	"super_juggle_knee": {"name": "AIRSTRIKE KNEE!!", "anim": "juggle_knee", "dmg": 8.0, "hit": 0.16, "end": 0.42, "reach": 2.0, "pts": 600, "juggle": true},
+}
+const STRING_KEYS := ["jab", "hook", "uppercut", "haymaker"]
+
+## Grapple chains: move just landed -> {"grab": next move, "strike": next move}.
+const CHAINS := {
+	"slam": {"grab": "slam_2", "strike": "chain_elbow"},
+	"slam_2": {"grab": "slam_bomb", "strike": "chain_elbow"},
+	"suplex": {"grab": "suplex_2", "strike": "chain_stomp"},
+	"suplex_2": {"grab": "triple_suplex", "strike": "chain_elbow"},
+	"ddt": {"grab": "ddt_2", "strike": "chain_stomp"},
+	"ddt_2": {"grab": "chain_neckbreaker", "strike": "chain_elbow"},
+	"spinebuster": {"grab": "slam_bomb", "strike": "chain_elbow"},
+	"neckbreaker": {"grab": "ddt_2", "strike": "chain_stomp"},
+	"powerbomb": {"grab": "slam_bomb", "strike": "chain_elbow"},
+	"piledriver": {"strike": "chain_stomp"},
+	"backdrop": {"grab": "suplex_2", "strike": "chain_elbow"},
+	"powerslam": {"grab": "slam_2", "strike": "chain_elbow"},
+	"catch_slam": {"grab": "slam_bomb", "strike": "chain_elbow"},
+	# counter-to-combo: a reversal flows straight into offence
+	"armdrag": {"grab": "ddt_2", "strike": "chain_stomp"},
+	"hiptoss": {"grab": "slam_2", "strike": "chain_elbow"},
+	"rev_backdrop": {"strike": "chain_elbow"},
+}
+
+var brawl_mode := false        # BRAWL MODE (style system): moves become their super versions
+var string_step := 0           # hits so far in the current strike string (0 = opening jab)
+var strike_buf := ""           # "strike" / "grab" / "run" queued during the current strike
+var strike_buf_dir := 0        # stick at that press: 1 toward, -1 away, 0 neutral / sideways
+var strike_hit := false        # the current strike connected
+var chain_link := 0            # chain links done in the current grapple chain
+var chain_buf := ""            # "grab" / "strike" queued during the current throw
+var throw_chained := false     # this throw is a chain link (victim hauled up off the ground first)
+var throw_start_y := STAND_Y   # victim: pelvis height the throw starts from (caught mid-air)
+var throw_start_pitch := 0.0
+var juggle_h := 0.0            # JUGGLED: pelvis height above standing
+var juggle_vy := 0.0
+var juggle_vel := Vector3.ZERO
+var juggle_hits := 0
+var ai_string_plan := ""       # CPU: decided what to do in the current strike / throw
+
+
+func _strip_super(k: String) -> String:
+	return k.substr(6) if k.begins_with("super_") else k
+
+
+## The animation a move / strike key reuses ("anim"), e.g. "super_suplex" -> "suplex".
+func _anim_key(k: String) -> String:
+	if MOVES.has(k):
+		var m: Dictionary = MOVES[k]
+		var a: String = m.get("anim", k)
+		return a
+	if STRIKES.has(k):
+		var st: Dictionary = STRIKES[k]
+		var a2: String = st.get("anim", k)
+		return a2
+	return k
+
+
+func _trick_name(m: Dictionary) -> String:
+	var n: String = m["name"]
+	return n.replace("REVERSAL! ", "Reversal ").rstrip("!")
+
+
+func _move_points(key: String) -> int:
+	var m: Dictionary = MOVES[key]
+	if m.has("pts"):
+		return int(m["pts"])
+	var dmg: float = m["dmg"]
+	var mult := 25.0
+	match str(m.get("tier", "weak")):
+		"strong":
+			mult = 30.0
+		"finisher":
+			mult = 75.0
+		"reversal":
+			mult = 40.0
+	return int(dmg * mult)
+
+
+## Stick relative to the opponent: 1 = toward, -1 = away, 0 = neutral / sideways.
+func _stick_rel() -> int:
+	if in_move.length() < 0.5:
+		return 0
+	var d := _flat_to_opponent()
+	if d.length() < 0.01:
+		return 0
+	var dt := Vector2(d.x, d.z).normalized().dot(in_move.normalized())
+	if dt > 0.5:
+		return 1
+	if dt < -0.5:
+		return -1
+	return 0
+
+
+## The strike for hit number step + 1 of a string (step 0 = the opening jab).
+func _string_pick(step: int, dir: int) -> String:
+	if dir < 0 and step >= 1:
+		return "launcher"
+	if dir > 0 and step >= 2:
+		return "superkick" if step >= 3 else "spin_kick"
+	var k: String = STRING_KEYS[mini(step, STRING_KEYS.size() - 1)]
+	return k
+
+
+func _strike_times() -> Vector2:
+	if STRIKES.has(current_move_key):
+		var st: Dictionary = STRIKES[current_move_key]
+		return Vector2(float(st["hit"]), float(st["end"]))
+	return Vector2(PUNCH_HIT, PUNCH_END)
+
+
+func _start_strike(key: String) -> void:
+	var sk := key
+	if brawl_mode and STRIKES.has("super_" + key):
+		sk = "super_" + key
+	set_state(S.PUNCH)
+	current_move_key = sk
+	strike_buf = ""
+	strike_buf_dir = 0
+	strike_hit = false
+	ai_string_plan = ""
+	var st: Dictionary = STRIKES[sk]
+	if string_step > 0:
+		_snap_face_opponent()
+	if st.get("ender", false):
+		sfx.emit("whoosh", 0.45, _chest())
+		if _in_front(2.2) and opponent.is_standing():
+			opponent.open_reversal_window(ENDER_REVERSAL_WINDOW, "ender")
+	elif string_step == 0 and opponent.is_cpu and _opp_can_counter() and _in_front(1.6):
+		# Only a CPU defender gets a jab-reversal window: for a human it is below reaction
+		# time and would just flicker "REVERSE!" on every jab.
+		opponent.open_reversal_window(float(st["hit"]), "punch")
+
+
+## PUNCH state for a STRIKES key: step in, hit, then chain on a queued press.
+func _strike(delta: float) -> void:
+	var st: Dictionary = STRIKES[current_move_key]
+	var hit_t: float = st["hit"]
+	var end_t: float = st["end"]
+	var juggle: bool = st.get("juggle", false)
+	if state_time < hit_t:
+		# Step in so the string keeps reaching a victim the last hit knocked back.
+		var d := _flat_to_opponent()
+		var dist := d.length()
+		var want := 0.85 if juggle else 0.95
+		if (string_step > 0 or juggle) and dist > want and dist < 2.8:
+			position += d / dist * minf((6.0 if juggle else 3.0) * delta, dist - want)
+		_face_opponent(delta)
+	if (in_strike or in_grapple or in_run) and state_time >= STRING_BUFFER:
+		strike_buf = "strike" if in_strike else ("grab" if in_grapple else "run")
+		strike_buf_dir = _stick_rel()
+	if state_time >= hit_t and not hit_landed:
+		hit_landed = true
+		strike_hit = _strike_connect(st)
+	if strike_hit and strike_buf != "" and state_time >= hit_t + 0.03:
+		if _string_continue():
+			return
+	if state_time >= end_t + (0.0 if strike_hit else 0.16):
+		string_step = 0
+		set_state(S.IDLE)
+
+
+func _strike_connect(st: Dictionary) -> bool:
+	var k := current_move_key
+	var dmg: float = st["dmg"]
+	var reach: float = st.get("reach", 1.35)
+	var ok := false
+	if st.get("juggle", false):
+		if _opp_state() == S.JUGGLED and _flat_to_opponent().length() < reach:
+			ok = opponent.receive_juggle_hit(self, dmg)
+	elif _in_front(reach):
+		if st.get("launch", false):
+			ok = opponent.receive_launch(self, dmg, float(st.get("vy", 6.0)))
+		else:
+			ok = opponent.receive_strike(self, dmg, bool(st.get("knock", false)))
+	if not ok:
+		trick.emit("", 0, "break")  # whiffed
+		sfx.emit("whoosh", 0.3, _chest())
+		return false
+	var nm: String = st["name"]
+	var pts := int(st["pts"])
+	var big: bool = st.get("ender", false) or st.get("juggle", false)
+	if big:
+		announce.emit(nm)
+		impact.emit(0.6 if st.get("knock", false) else 0.35)
+		pts = int(pts * (1.0 + 0.25 * string_step))  # longer strings pay more
+		if string_step >= 3:
+			nm = "%d-Hit %s" % [string_step + 1, nm]
+	trick.emit(nm.rstrip("!"), pts, "super" if k.begins_with("super_") else "strike")
+	return true
+
+
+## A press queued during a strike that connected: the next hit, a lock-up or a juggle follow-up.
+func _string_continue() -> bool:
+	var buf := strike_buf
+	var dir := strike_buf_dir
+	strike_buf = ""
+	if _opp_state() == S.JUGGLED:
+		return _juggle_follow(buf)
+	var st: Dictionary = STRIKES[current_move_key]
+	if buf == "grab" and not st.get("ender", false):
+		# strike-to-grapple: lock up the staggered opponent mid-string
+		string_step = 0
+		set_state(S.GRAB_WINDUP)
+		return true
+	if buf != "strike" or st.get("ender", false) or st.get("juggle", false):
+		return false
+	string_step += 1
+	_start_strike(_string_pick(string_step, dir))
+	return true
+
+
+## Opponent popped up by a launcher: STRIKE = juggle knee, GRAB = catch slam, RUN = dash lariat.
+func _juggle_follow(buf: String) -> bool:
+	var dist := _flat_to_opponent().length()
+	var jh: int = opponent.juggle_hits
+	match buf:
+		"strike":
+			if jh < JUGGLE_MAX and dist < 3.0:
+				string_step += 1
+				_start_strike("juggle_knee")
+				return true
+		"grab":
+			if dist < 2.0:
+				_snap_face_opponent()
+				_do_move("catch_slam")
+				return true
+		"run":
+			if dist < 3.2:
+				_snap_face_opponent()
+				run_dir = facing
+				_start_run_attack()
+				return true
+	return false
+
+
+## _free_move hook: follow-ups on a juggled opponent from a standing start.
+func _combo_free_hook() -> bool:
+	if _opp_state() != S.JUGGLED:
+		return false
+	var buf := "strike" if in_strike else ("grab" if in_grapple else ("run" if in_run else ""))
+	if buf == "":
+		return false
+	return _juggle_follow(buf)
+
+
+# --- being launched ---------------------------------------------------------------------
+
+## Called on the defender by a launcher. Returns true if it connected.
+func receive_launch(attacker: Node3D, dmg: float, vy: float) -> bool:
+	if state != S.JUGGLED and not is_standing():
+		return false
+	take_damage(dmg)
+	attacker.gain_spirit(dmg * 1.5)
+	if state != S.JUGGLED:
+		juggle_h = 0.0
+		juggle_hits = 0
+		set_state(S.JUGGLED)
+	juggle_vy = vy
+	var away := position - attacker.position
+	away.y = 0.0
+	juggle_vel = away.normalized() * 1.3 if away.length() > 0.01 else -facing * 1.3
+	last_hit_tier = "strike"
+	impact.emit(0.5)
+	sfx.emit("kick", 0.85, global_position + Vector3(0, 1.4, 0))
+	return true
+
+
+## A juggle hit while JUGGLED: hurts and pops us up again.
+func receive_juggle_hit(attacker: Node3D, dmg: float) -> bool:
+	if state != S.JUGGLED:
+		return false
+	take_damage(dmg)
+	attacker.gain_spirit(dmg * 1.5)
+	juggle_hits += 1
+	juggle_vy = maxf(juggle_vy, JUGGLE_VY)
+	var away := position - attacker.position
+	away.y = 0.0
+	if away.length() > 0.01:
+		juggle_vel = away.normalized() * 1.0
+	impact.emit(0.3)
+	sfx.emit("punch", 0.7, global_position + Vector3(0, 1.4 + juggle_h, 0))
+	return true
+
+
+## receive_strike while JUGGLED: a knockdown blow spikes us out of the air.
+func _juggle_struck(attacker: Node3D, dmg: float, knockdown: bool) -> bool:
+	if not knockdown:
+		return receive_juggle_hit(attacker, dmg)
+	take_damage(dmg)
+	attacker.gain_spirit(dmg * 1.5)
+	var away := position - attacker.position
+	away.y = 0.0
+	if away.length() > 0.01:
+		position += away.normalized() * 0.5
+	_juggle_land(1.0)
+	return true
+
+
+func _juggled(delta: float) -> void:
+	juggle_vy -= JUGGLE_G * delta
+	juggle_h += juggle_vy * delta
+	position += juggle_vel * delta
+	juggle_vel = juggle_vel.lerp(Vector3.ZERO, clampf(delta * 1.5, 0.0, 1.0))
+	if (juggle_h <= 0.0 and juggle_vy < 0.0) or state_time > 3.0:
+		_juggle_land(0.55)
+
+
+func _juggle_land(strength: float) -> void:
+	juggle_h = 0.0
+	juggle_vy = 0.0
+	set_state(S.DOWN)
+	down_duration = _down_time()
+	last_hit_tier = "strike"
+	impact.emit(strength)
+	sfx.emit("big_thud" if strength >= 1.0 else "thud", strength, global_position + Vector3(0, 0.3, 0))
+
+
+# --- grapple chains ----------------------------------------------------------------------
+
+## THROWING: GRAB / STRIKE late in a chainable move queues the next link; it fires on landing.
+func _throwing() -> void:
+	var nexts: Dictionary = CHAINS.get(_strip_super(current_move_key), {})
+	if not nexts.is_empty() and chain_link < CHAIN_MAX and state_time >= throw_time * CHAIN_OPEN:
+		if in_grapple and nexts.has("grab"):
+			chain_buf = "grab"
+		elif in_strike and nexts.has("strike"):
+			chain_buf = "strike"
+	if chain_buf != "" and state_time >= throw_time and _opp_state() == S.DOWN:
+		var nk: String = nexts.get(chain_buf, "")
+		chain_buf = ""
+		if nk != "" and _flat_to_opponent().length() < 3.0:
+			_do_chain(nk)
+			return
+	if state_time >= throw_time + CHAIN_GRACE:
+		chain_buf = ""
+		set_state(S.IDLE)
+
+
+func _do_chain(nk: String) -> void:
+	var m: Dictionary = MOVES[nk]
+	chain_link += 1
+	var pts := int(m.get("pts", 300)) + 150 * chain_link
+	var kind := "super" if brawl_mode else "grapple"
+	trick.emit(_trick_name(m), pts, kind)
+	if str(m["kind"]) == "ground":
+		if nk == "chain_stomp":
+			_start_stomp()
+			current_move_key = nk
+			announce.emit(m["name"])
+		else:
+			_start_ground_drop(nk)
+		return
+	_snap_face_opponent()
+	_do_move(nk, true)
+	if chain_link >= CHAIN_MAX:
+		announce.emit("%s  -  %d-MOVE CHAIN!" % [m["name"], chain_link + 1])
+	opponent.open_reversal_window(CHAIN_BREAK_WINDOW, "chain")
+
+
+## Victim's timed reversal of a chain link: slip out while being hauled back up.
+func _chain_break() -> void:
+	_set_facing_angle(throw_yaw0 + throw_yaw_start)  # keep lying the way we landed
+	set_state(S.DOWN)
+	down_duration = 0.35
+	opponent.set_state(S.STUNNED)
+	opponent.stun_time = 0.6
+	opponent.emit_signal("trick", "", 0, "break")
+	announce.emit("CHAIN BROKEN!")
+	sfx.emit("reversal", 0.6, _chest())
+	trick.emit("Chain Breaker", 250, "grapple")
+
+
+## Victim path of a chain link: from lying on the ground, hauled up face to face (LOCKUP_DIST in
+## front of the thrower), then the move's own keys squeezed into the rest of the throw.
+func _chain_keys(k: Array, f0: float, s0: float) -> Array:
+	var cy := clampf(CHAIN_YANK / maxf(throw_time, 0.01), 0.05, 0.5)
+	var out: Array = [_key(0.0, f0, s0, LIE_Y, _qe(throw_yaw_start, -PI / 2)),
+		_key(cy, LOCKUP_DIST, 0.0, STAND_Y, _qe(PI, 0.0))]
+	for i in range(1, k.size()):
+		var e: Array = k[i]
+		var np: float = e[0]
+		out.append([cy + np * (1.0 - cy), e[1], e[2], e[3]])
+	return out
+
+
+## Super path: the base path resampled, lifted higher through the air and spun around the
+## vertical `spin` extra times (dense keys so every slerp step stays under half a turn).
+func _super_keys(k: Array, lift: float, spin: float) -> Array:
+	var n := 24
+	var out: Array = []
+	for i in range(n):
+		var p := float(i) / float(n)
+		var sm := _keys_at(k, p)
+		var v: Vector3 = sm[0]
+		var q: Quaternion = sm[1]
+		if i > 0:
+			v.z += lift * sin(PI * _seg(p, 0.05, 0.85))
+			var a := spin * TAU * _smooth(_seg(p, 0.12, 0.8))
+			q = (Quaternion(Vector3.UP, a) * q).normalized()
+		out.append([p, v, q, 3])
+	out.append(k[k.size() - 1])
+	return out
+
+
+## Interpolated [Vector3(forward, side, pelvis y), orientation] of a key list at p.
+func _keys_at(k: Array, p: float) -> Array:
+	var i := 0
+	while i < k.size() - 2:
+		var nxt: Array = k[i + 1]
+		var np: float = nxt[0]
+		if p < np:
+			break
+		i += 1
+	var a: Array = k[i]
+	var b: Array = k[i + 1]
+	var pa: float = a[0]
+	var pb: float = b[0]
+	var ek: int = b[3]
+	var u := _seg(p, pa, pb)
+	match ek:
+		EASE_SMOOTH:
+			u = _smooth(u)
+		EASE_IN:
+			u = _ease_in(u)
+		EASE_OUT:
+			u = _ease_out(u)
+	var va: Vector3 = a[1]
+	var vb: Vector3 = b[1]
+	var qa: Quaternion = a[2]
+	var qb: Quaternion = b[2]
+	return [va.lerp(vb, u), qa.slerp(qb, u).normalized()]
+
+
+# --- CPU ---------------------------------------------------------------------------------
+
+## PUNCH: once a strike connects, maybe keep the string going (and pick the ender).
+func _ai_string(toward: Vector2) -> void:
+	if not STRIKES.has(current_move_key) or not strike_hit or ai_string_plan != "":
+		return
+	ai_string_plan = "decided"
+	if _opp_state() == S.JUGGLED:
+		var r := randf()
+		if r < 0.45:
+			in_strike = true
+		elif r < 0.75:
+			in_grapple = true
+		elif r < 0.9:
+			in_run = true
+		return
+	var st: Dictionary = STRIKES[current_move_key]
+	if st.get("ender", false) or st.get("juggle", false):
+		return
+	if randf() > 0.4 + 0.45 * ai_skill:
+		return  # stop the string here
+	if randf() < 0.12:
+		in_grapple = true  # strike-to-grapple
+		return
+	in_strike = true
+	var r2 := randf()
+	if string_step >= 1 and r2 < 0.22:
+		in_move = -toward  # launcher
+	elif string_step >= 2 and r2 < 0.55:
+		in_move = toward   # spin kick / superkick
+
+
+## THROWING: maybe chain the next move.
+func _ai_chain() -> void:
+	if ai_string_plan != "" or chain_link >= CHAIN_MAX or state_time < throw_time * CHAIN_OPEN:
+		return
+	var nexts: Dictionary = CHAINS.get(_strip_super(current_move_key), {})
+	if nexts.is_empty():
+		return
+	ai_string_plan = "decided"
+	if randf() < 0.25 + 0.35 * ai_skill - 0.1 * chain_link:
+		if nexts.has("grab") and (randf() < 0.65 or not nexts.has("strike")):
+			in_grapple = true
+		else:
+			in_strike = true
+
+
+## IDLE / WALK with the opponent juggled: go get them.
+func _ai_juggle(dist: float, toward: Vector2, can_act: bool) -> void:
+	if dist > 1.6:
+		in_move = toward
+	if not can_act:
+		return
+	ai_timer = 0.3
+	var r := randf()
+	if dist < 1.9 and r < 0.5:
+		in_strike = true
+	elif dist < 1.9 and r < 0.8:
+		in_grapple = true
+	elif r < 0.95:
+		in_run = true
+
+
+# --- poses -------------------------------------------------------------------------------
+
+## Left hook: elbow up at shoulder height, the whole torso whips it around.
+func _pose_hook() -> void:
+	var tm := _strike_times()
+	var t := state_time
+	var cock := _smooth(_seg(t, 0.0, tm.x * 0.5))
+	var swing := _ease_in(_seg(t, tm.x * 0.5, tm.x))
+	var back := _smooth(_seg(t, tm.x + 0.05, tm.y))
+	var c := cock * (1.0 - swing)
+	var s := swing * (1.0 - back)
+	r_limb = 34.0
+	r_body = 26.0
+	_stance(0.6 + 0.1 * s)
+	pt_ll.x -= 0.12 * s
+	pt_tor = Vector3(0.22 + 0.08 * s, -0.35 * c + 0.6 * s, 0.08 * s)
+	pt_hd = Vector3(-0.1, 0.2 * c - 0.3 * s, 0.0)
+	var lean := pt_tor.x
+	pt_al = Vector3(-0.75 - lean, 0.0, -0.3).lerp(Vector3(-0.5, 0.0, -0.95), c).lerp(Vector3(-1.1 - lean * 0.5, 0.0, -1.3), s)
+	pt_el_l = Vector3(lerpf(-1.9, -1.5, s), 0.0, 0.0)
+	pt_ar = Vector3(-0.8 - lean, 0.0, 0.3)
+	pt_el_r = Vector3(-2.0, 0.0, 0.0)
+	pt_root_pos.z = 0.08 * s
+
+
+## Uppercut (and the launcher: deeper dip, full-extension rise, both feet leave the ground).
+func _pose_uppercut() -> void:
+	var tm := _strike_times()
+	var t := state_time
+	var launch := _anim_key(current_move_key) == "launcher"
+	var big := 1.4 if launch else 1.0
+	var dip := _smooth(_seg(t, 0.0, tm.x * 0.55))
+	var rise := _ease_out(_seg(t, tm.x * 0.5, tm.x))
+	var back := _smooth(_seg(t, tm.x + 0.06, tm.y))
+	var d := dip * (1.0 - rise)
+	var s := rise * (1.0 - back)
+	r_limb = 32.0
+	r_body = 24.0
+	_stance(0.6 + 0.35 * big * d - 0.2 * s)
+	pt_tor = Vector3(0.3 + 0.2 * big * d - 0.35 * s, 0.3 * d - 0.25 * s, 0.0)
+	pt_hd = Vector3(0.1 * d - 0.25 * s, 0.0, 0.0)
+	var lean := pt_tor.x
+	var top := -2.9 if launch else -2.4
+	pt_ar = Vector3(lerpf(-0.25, top, s) - lean * 0.5, 0.0, 0.22)
+	pt_el_r = Vector3(lerpf(-1.7, -0.3 if launch else -1.1, s), 0.0, 0.0)
+	pt_al = Vector3(-0.8 - lean, 0.0, -0.3)
+	pt_el_l = Vector3(-2.0, 0.0, 0.0)
+	if launch:
+		pt_root_dy = 0.28 * _hump(t, tm.x * 0.7, tm.y) * (1.6 if current_move_key.begins_with("super_") else 1.0)
+		pt_lr.x += 0.5 * s  # trailing leg kicks back off the ground
+
+
+## Overhand haymaker: wound up behind, swung over the top with the whole body.
+func _pose_haymaker() -> void:
+	var tm := _strike_times()
+	var t := state_time
+	var sup := current_move_key.begins_with("super_")
+	var wind := _smooth(_seg(t, 0.0, tm.x * 0.65))
+	var swing := _ease_in(_seg(t, tm.x * 0.65, tm.x))
+	var back := _smooth(_seg(t, tm.x + 0.08, tm.y))
+	var c := wind * (1.0 - swing)
+	var s := swing * (1.0 - back)
+	r_limb = 30.0
+	r_body = 22.0
+	_stance(0.5 + 0.25 * s)
+	pt_ll.x -= 0.3 * s
+	pt_tor = Vector3(0.1 - 0.15 * c + 0.45 * s, 0.7 * c - 0.55 * s, 0.0)
+	pt_hd = Vector3(-0.1 - 0.15 * c + 0.1 * s, -0.4 * c + 0.3 * s, 0.0)
+	var lean := pt_tor.x
+	pt_ar = Vector3(-0.6, 0.0, 0.3).lerp(Vector3(0.55, 0.0, 0.9), c).lerp(Vector3(-1.9 - lean * 0.5, 0.0, 0.25), s)
+	pt_el_r = Vector3(lerpf(lerpf(-1.4, -1.0, c), -0.25, s), 0.0, 0.0)
+	pt_al = Vector3(-1.0 - lean + 0.6 * c, 0.0, -0.45)
+	pt_el_l = Vector3(-1.6, 0.0, 0.0)
+	pt_root_pos.z = 0.15 * s
+	if sup:
+		pt_root_dy = 0.3 * _hump(t, tm.x * 0.3, tm.x + 0.1)  # leaping haymaker
+
+
+## Superkick: chamber the right knee, snap the sole up to the chin, lean back for reach.
+func _pose_superkick() -> void:
+	var tm := _strike_times()
+	var t := state_time
+	var sup := current_move_key.begins_with("super_")
+	var cham := _smooth(_seg(t, 0.0, tm.x * 0.6))
+	var snap := _ease_out(_seg(t, tm.x * 0.6, tm.x))
+	var back := _smooth(_seg(t, tm.x + 0.1, tm.y))
+	var c := cham * (1.0 - snap)
+	var s := snap * (1.0 - back)
+	r_limb = 32.0
+	r_body = 22.0
+	_stance(0.4)
+	pt_ll = Vector3(-0.1 + 0.15 * s, 0.0, -0.1)
+	pt_kn_l = 0.35 + 0.15 * c
+	pt_lr = Vector3(lerpf(lerpf(-0.05, -1.35, c), -1.75, s), 0.0, 0.06)
+	pt_kn_r = lerpf(lerpf(0.3, 2.1, c), 0.1, s)
+	pt_tor = Vector3(0.15 - 0.45 * s, 0.25 * c - 0.1 * s, 0.0)
+	pt_hd = Vector3(0.1 + 0.25 * s, 0.0, 0.0)
+	pt_al = Vector3(-0.4 + 0.5 * s, 0.0, -0.5 - 0.4 * s)
+	pt_ar = Vector3(-0.4 + 0.6 * s, 0.0, 0.5 + 0.4 * s)
+	pt_el_l = Vector3(-1.0, 0.0, 0.0)
+	pt_el_r = Vector3(-1.0, 0.0, 0.0)
+	pt_root_pos.z = -0.1 * s
+	if sup:
+		pt_root_dy = 0.35 * _hump(t, tm.x * 0.4, tm.x + 0.15)  # leaping superkick
+
+
+## Spinning back kick: a full turn on the lead foot (two in BRAWL MODE), leg lashing out.
+func _pose_spin_kick() -> void:
+	var tm := _strike_times()
+	var t := state_time
+	var turns := 2.0 if current_move_key.begins_with("super_") else 1.0
+	var spin := _smooth(_seg(t, 0.0, tm.x + 0.08))
+	var ext := _hump(t, tm.x * 0.45, tm.x + 0.14)
+	r_limb = 34.0
+	r_body = 26.0
+	pt_hip.y = TAU * turns * spin
+	pt_hip_y_direct = true
+	_stance(0.45)
+	pt_ll = Vector3(-0.05, 0.0, -0.08)
+	pt_kn_l = 0.35
+	pt_lr = Vector3(-0.2 - 0.6 * ext, 0.0, 0.15 + 1.15 * ext)
+	pt_kn_r = lerpf(0.9, 0.12, ext)
+	pt_tor = Vector3(0.15 - 0.1 * ext, 0.0, -0.35 * ext)
+	pt_hd = Vector3(-0.05, 0.0, 0.2 * ext)
+	pt_al = Vector3(-0.5, 0.0, -0.9 * ext - 0.3)
+	pt_ar = Vector3(-0.5, 0.0, 0.3 + 0.6 * ext)
+	pt_el_l = Vector3(-1.2, 0.0, 0.0)
+	pt_el_r = Vector3(-1.2, 0.0, 0.0)
+	if turns > 1.0:
+		pt_root_dy = 0.3 * _hump(t, 0.0, tm.x + 0.12)  # airborne tornado
+
+
+## Jumping knee into the airborne opponent.
+func _pose_juggle_knee() -> void:
+	var tm := _strike_times()
+	var t := state_time
+	var air := _hump(t, 0.0, tm.y * 0.9)
+	var k := _ease_out(_seg(t, 0.0, tm.x)) * (1.0 - _smooth(_seg(t, tm.x + 0.08, tm.y)))
+	r_limb = 30.0
+	r_body = 22.0
+	pt_root_direct = true
+	pt_root_pos = Vector3(0.0, STAND_Y - 0.05 + 0.55 * air, 0.1 * k)
+	pt_ll = Vector3(0.3 * k, 0.0, -0.1)
+	pt_kn_l = 0.6 + 0.6 * k
+	pt_lr = Vector3(-0.3 - 1.4 * k, 0.0, 0.06)
+	pt_kn_r = 0.4 + 1.8 * k
+	pt_tor = Vector3(0.1 - 0.2 * k, 0.0, 0.0)
+	pt_hd = Vector3(0.05, 0.0, 0.0)
+	pt_al = Vector3(-0.4 - 1.6 * k, 0.0, -0.5)
+	pt_ar = Vector3(-0.4 - 1.6 * k, 0.0, 0.5)
+	pt_el_l = Vector3(-0.5, 0.0, 0.0)
+	pt_el_r = Vector3(-0.5, 0.0, 0.0)
+
+
+## Chain link, first beat: bend down, grab the downed opponent by the head, haul them up.
+func _pose_chain_yank(u: float) -> void:
+	var bend := 1.0 - _smooth(_seg(u, 0.35, 1.0))
+	_stance(0.5 + 0.5 * bend)
+	pt_tor = Vector3(0.25 + 0.9 * bend, 0.0, 0.0)
+	pt_hd = Vector3(0.3 * bend - 0.1, 0.0, 0.0)
+	var vhd := _opp_node("head")
+	var hp := vhd.global_position + Vector3(0.0, 0.1, 0.0)
+	var side := Vector3(facing.z, 0.0, -facing.x) * 0.13
+	_reach_pair(hp - side, hp + side)
+	r_limb = 24.0
+	r_body = 20.0
+	r_root = 20.0
+
+
+## Popped up by a launcher: tipping over backwards in the air, arms and legs flung out.
+func _pose_juggled() -> void:
+	pt_root_direct = true
+	var f := _smooth(clampf(state_time / 0.85, 0.0, 1.0))
+	pt_root_rot = Vector3(-PI / 2 * f, 0.0, 0.0)
+	pt_root_pos = Vector3(0.0, lerpf(STAND_Y, LIE_Y + 0.1, f) + juggle_h, 0.0)
+	var fl := sin(anim_clock * 14.0)
+	var fl2 := sin(anim_clock * 11.0 + 1.3)
+	pt_al = Vector3(-2.2 + 0.3 * fl, 0.0, -0.7 - 0.2 * fl2)
+	pt_ar = Vector3(-2.2 - 0.3 * fl2, 0.0, 0.7 + 0.2 * fl)
+	pt_el_l = Vector3(-0.4, 0.0, 0.0)
+	pt_el_r = Vector3(-0.4, 0.0, 0.0)
+	pt_ll = Vector3(-0.6 + 0.25 * fl, 0.0, -0.15)
+	pt_lr = Vector3(-0.3 - 0.25 * fl2, 0.0, 0.15)
+	pt_kn_l = 0.7
+	pt_kn_r = 0.4
+	pt_tor = Vector3(-0.25, 0.0, 0.08 * fl)
+	pt_hd = Vector3(-0.45, 0.0, 0.0)
+	r_limb = 16.0
+	r_body = 14.0
 
 
 # ---- weapons
@@ -3135,6 +3937,12 @@ func _ai(delta: float) -> void:
 			if committed_move == "" and state_time > ai_tie_delay:
 				_ai_lockup_move(toward)
 			return
+		S.PUNCH:
+			_ai_string(toward)  # strike strings
+			return
+		S.THROWING:
+			_ai_chain()  # grapple chains
+			return
 		S.WHIPPING:
 			var rb: int = opponent.rope_bounces
 			if ai_whip_roll <= 1.0 and rb >= 1 and dist < ai_whip_trigger:
@@ -3171,6 +3979,9 @@ func _ai(delta: float) -> void:
 
 	if os == S.DOWN:
 		_ai_vs_downed(dist, toward, opp_hp, can_act)
+		return
+	if os == S.JUGGLED:
+		_ai_juggle(dist, toward, can_act)  # strike strings: launcher follow-ups
 		return
 	if not opp_standing:
 		# Getting up, flying through the air, ...: line up, press nothing.
@@ -3291,6 +4102,10 @@ func _ai_reversal_chance() -> float:
 		c += 0.1
 	elif reversal_kind == "punch":
 		c = 0.05 + 0.15 * ai_skill
+	elif reversal_kind == "ender":
+		c = 0.08 + 0.3 * ai_skill
+	elif reversal_kind == "chain":
+		c = 0.05 + 0.25 * ai_skill
 	return clampf(c, 0.0, 0.95)
 
 
@@ -3627,6 +4442,8 @@ func _update_pose(delta: float) -> void:
 			_pose_hf_perch_fall()
 		S.CORNER_STUN:
 			_pose_hf_corner_stun()
+		S.JUGGLED:
+			_pose_juggled()  # strike strings
 		S.ROLL:
 			_pose_mv_roll()  # movement: dodge roll
 	if held_item != null:
@@ -3787,21 +4604,34 @@ func _pose_run(delta: float) -> void:
 # --- strikes -------------------------------------------------------------------------
 
 func _pose_punch() -> void:
-	match current_move_key:
+	match _anim_key(current_move_key):
 		"knee":
 			_pose_knee_lift()
 		"clothesline":
 			_pose_clothesline()
+		"hook":
+			_pose_hook()
+		"uppercut", "launcher":
+			_pose_uppercut()
+		"haymaker":
+			_pose_haymaker()
+		"superkick":
+			_pose_superkick()
+		"spin_kick":
+			_pose_spin_kick()
+		"juggle_knee":
+			_pose_juggle_knee()
 		_:
 			_pose_jab()
 
 
 func _pose_jab() -> void:
-	# 0.08 s wind-up (shoulder back, fist cocked) -> snap out to PUNCH_HIT -> recoil.
+	# Short wind-up (shoulder back, fist cocked) -> snap out to the hit -> recoil.
 	var t := state_time
-	var wind := _smooth(_seg(t, 0.0, 0.08))
-	var snap := _ease_in(_seg(t, 0.08, PUNCH_HIT))
-	var back := _smooth(_seg(t, PUNCH_HIT + 0.06, PUNCH_END))
+	var tm := _strike_times()
+	var wind := _smooth(_seg(t, 0.0, tm.x * 0.45))
+	var snap := _ease_in(_seg(t, tm.x * 0.45, tm.x))
+	var back := _smooth(_seg(t, tm.x + 0.05, tm.y))
 	var cock := wind * (1.0 - snap)
 	var ext := snap * (1.0 - back)
 	r_limb = 34.0
@@ -3905,7 +4735,7 @@ func _pose_stunned() -> void:
 		r_body = 6.0
 		r_limb = 8.0
 		return
-	if os == S.PUNCH and ok == "knee":
+	if os == S.PUNCH and _strip_super(ok) == "knee":
 		# Knee to the gut: yanked in, folding over, clutching the stomach.
 		var fold := _smooth(_seg(t, 0.0, 0.1)) * (1.0 - _smooth(_seg(t, 0.4, 0.7)))
 		_stance(0.5 + 0.3 * fold)
@@ -4062,6 +4892,14 @@ func _pose_whipping() -> void:
 func _pose_throwing() -> void:
 	var t := state_time
 	var p := clampf(t / maxf(throw_time, 0.01), 0.0, 1.0)
+	var mk := _anim_key(current_move_key)
+	if throw_chained:
+		# grapple chain: haul the victim back up first, then the move plays in the rest
+		var cy := clampf(CHAIN_YANK / maxf(throw_time, 0.01), 0.05, 0.5)
+		if p < cy:
+			_pose_chain_yank(p / cy)
+			return
+		p = _seg(p, cy, 1.0)
 	r_limb = 18.0
 	r_body = 16.0
 	r_root = 18.0
@@ -4073,12 +4911,12 @@ func _pose_throwing() -> void:
 	var vhead := vhd.to_global(Vector3(0.0, 0.15, 0.0))
 	var hip_a := vh.to_global(Vector3(-0.26, 0.05, 0.0))
 	var hip_b := vh.to_global(Vector3(0.26, 0.05, 0.0))
-	match current_move_key:
+	match mk:
 		"slam", "powerslam":
 			var dip := _hump(p, 0.0, 0.22)
 			var lift := _smooth(_seg(p, 0.05, 0.4))
 			var slam := _ease_in(_seg(p, 0.5, 1.0))
-			if current_move_key == "powerslam":
+			if mk == "powerslam":
 				# fall forward onto the victim, landing on the knees
 				_legs_blend(0.4 + 0.5 * dip, 0.6, 0.7, -0.3 - 0.7, -0.1 - 0.7, slam)
 				pt_tor = Vector3(0.3 * (1.0 - lift) - 0.12 * lift + 0.45 * slam, 0.0, 0.0)
@@ -4169,7 +5007,7 @@ func _pose_throwing() -> void:
 				pt_el_r = Vector3(-0.8, 0.0, 0.0)
 		"hiptoss", "armdrag":
 			var turn := _hump(p, 0.0, 0.85)
-			if current_move_key == "armdrag":
+			if mk == "armdrag":
 				# drop to a knee, dragging the arm down and across
 				var kneel := _smooth(_seg(p, 0.1, 0.45)) * (1.0 - _smooth(_seg(p, 0.8, 1.0)))
 				_legs_blend(0.5, 0.6, 0.0, 0.0, -1.25, kneel)
@@ -4201,6 +5039,8 @@ func _pose_throwing() -> void:
 			_stance(0.5 + 0.4 * _hump(p, 0.0, 1.0))
 			pt_tor = Vector3(0.2, 0.0, 0.0)
 			_reach_pair(hip_a, hip_b)
+	if current_move_key.begins_with("super_"):
+		pt_root_dy += 0.3 * _hump(p, 0.15, 0.6)  # BRAWL MODE: leap with it
 
 
 # --- throws: the victim -------------------------------------------------------------------
@@ -4219,9 +5059,24 @@ func _throw_keys(key: String) -> Array:
 	var s0 := d0.dot(rgt)
 	var fl := d1.dot(fwd)
 	var sl := d1.dot(rgt)
-	var k: Array = [_key(0.0, f0, s0, STAND_Y, _qe(throw_yaw_start, 0.0))]
+	var k: Array = [_key(0.0, f0, s0, throw_start_y, _qe(throw_yaw_start, throw_start_pitch))]
 	var land_ease := EASE_IN
-	match key:
+	var mv: Dictionary = MOVES.get(key, {})
+	var kk: String = mv.get("keys", mv.get("anim", key))
+	match kk:
+		"triple_suplex":
+			# up and over like the suplex, but held upside down at the very top first
+			throw_land_yaw = PI
+			k.append(_key(0.1, 0.75, 0.5, 1.3, _qe(PI, 0.25 * PI)))
+			k.append(_key(0.22, 0.5, 0.5, 1.95, _qe(PI, 0.55 * PI)))
+			k.append(_key(0.38, 0.3, 0.5, 2.6, _qe(PI, 0.88 * PI), EASE_OUT))
+			k.append(_key(0.55, 0.2, 0.5, 2.75, _qe(PI, 1.0 * PI)))
+			k.append(_key(0.65, 0.1, 0.5, 2.5, _qe(PI, 1.08 * PI)))
+		"catch_slam":
+			# caught in mid-air across the chest and slammed straight down
+			throw_land_yaw = -0.5 * PI
+			k.append(_key(0.3, 0.5, 0.0, 1.7, _qe(PI, 0.0, 0.5 * PI), EASE_OUT))
+			k.append(_key(0.45, 0.5, 0.0, 1.75, _qe(PI, 0.0, 0.5 * PI)))
 		"suplex":
 			# head dives under the thrower's arm, legs swing up and over, lands behind
 			throw_land_yaw = PI
@@ -4303,38 +5158,18 @@ func _throw_keys(key: String) -> Array:
 			k.append(_key(0.4, 0.55, 0.0, 1.85, _qe(PI, 0.1, 0.9 * PI), EASE_OUT))
 			k.append(_key(0.55, 0.55, 0.0, 1.92, _qe(PI, 0.1, 0.92 * PI)))
 	k.append(_key(1.0, fl, sl, LIE_Y, _qe(throw_land_yaw, -PI / 2), land_ease))
+	if key.begins_with("super_"):
+		k = _super_keys(k, float(mv.get("lift", 0.9)), float(mv.get("spin", 1)))
+	if throw_chained:
+		k = _chain_keys(k, f0, s0)
 	return k
 
 
 ## Samples the victim's throw path at p: sets our ring position and the pelvis pose.
 func _throw_sample(p: float) -> void:
-	var k := _throw_keys(current_move_key)
-	var i := 0
-	while i < k.size() - 2:
-		var nxt: Array = k[i + 1]
-		var np: float = nxt[0]
-		if p < np:
-			break
-		i += 1
-	var a: Array = k[i]
-	var b: Array = k[i + 1]
-	var pa: float = a[0]
-	var pb: float = b[0]
-	var ek: int = b[3]
-	var u := _seg(p, pa, pb)
-	match ek:
-		EASE_SMOOTH:
-			u = _smooth(u)
-		EASE_IN:
-			u = _ease_in(u)
-		EASE_OUT:
-			u = _ease_out(u)
-	var va: Vector3 = a[1]
-	var vb: Vector3 = b[1]
-	var qa: Quaternion = a[2]
-	var qb: Quaternion = b[2]
-	var v := va.lerp(vb, u)
-	throw_pose_q = qa.slerp(qb, u).normalized()
+	var sm := _keys_at(_throw_keys(current_move_key), p)
+	var v: Vector3 = sm[0]
+	throw_pose_q = sm[1]
 	throw_pose_y = v.z
 	var fwd := Vector3(sin(throw_yaw0), 0.0, cos(throw_yaw0))
 	var rgt := Vector3(cos(throw_yaw0), 0.0, -sin(throw_yaw0))
@@ -4344,6 +5179,8 @@ func _throw_sample(p: float) -> void:
 
 func _pose_thrown() -> void:
 	var p := clampf(state_time / maxf(throw_time, 0.01), 0.0, 1.0)
+	if throw_chained:
+		p = _seg(p, clampf(CHAIN_YANK / maxf(throw_time, 0.01), 0.05, 0.5), 1.0)
 	pt_use_basis = true
 	r_limb = 16.0
 	r_body = 14.0
@@ -4358,7 +5195,7 @@ func _pose_thrown() -> void:
 	pt_kn_l = 0.6 + 0.2 * fl2
 	pt_kn_r = 0.4 + 0.2 * fl
 	pt_hd = Vector3(-0.2 + 0.1 * fl2, 0.0, 0.0)
-	match current_move_key:
+	match _anim_key(current_move_key):
 		"powerbomb":
 			if p < 0.28:
 				# bent over, arms hanging
