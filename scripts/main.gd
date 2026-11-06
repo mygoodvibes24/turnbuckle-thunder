@@ -15,6 +15,27 @@ var cam_shake := 0.0
 var touch: Control
 var match_over := false
 
+# Feel / FX (see "# ---- feel / FX")
+const Audio := preload("res://scripts/audio.gd")
+const Fx := preload("res://scripts/fx.gd")
+const SLOWMO_SCALE := 0.35
+const SLOWMO_HOLD := 0.6          # real seconds at SLOWMO_SCALE
+const SLOWMO_EASE := 0.3          # real seconds easing back to 1.0
+const ROPE_BOUNCE_TIME := 0.45
+var audio: Node
+var fx: Node3D
+var hitstop_until_ms := 0         # wrestlers' tick is frozen until this Time.get_ticks_msec()
+var slowmo_start_ms := -1         # -1 = no slow motion running
+var buf_strike := false           # button presses buffered during hit-stop
+var buf_grapple := false
+var buf_run := false
+var buf_pin := false
+var feel_last_count := 0          # highest pin count of the current cover (for near-falls)
+var rope_rest := {}               # rope Node3D -> rest position (captured on first bounce)
+var rope_bounce_t := PackedFloat32Array([-1.0, -1.0, -1.0, -1.0])  # per side; < 0 = idle
+var rope_bounce_amp := PackedFloat32Array([0.0, 0.0, 0.0, 0.0])
+var rope_bounce_dir: Array[Vector3] = [Vector3.ZERO, Vector3.ZERO, Vector3.ZERO, Vector3.ZERO]
+
 # HUD
 var hud: CanvasLayer
 var bars := {}
@@ -29,7 +50,10 @@ var win_label: Label
 
 func _ready() -> void:
 	randomize()
+	Engine.time_scale = 1.0
 	_setup_input()
+	audio = Audio.new()
+	add_child(audio)
 	_build_environment()
 	_build_arena()
 	_build_crowd()
@@ -58,8 +82,14 @@ func _ready() -> void:
 	p1._snap_face_opponent()
 	p2._snap_face_opponent()
 
+	fx = Fx.new()
+	add_child(fx)
+
 	_build_hud()
 	_announce("FIGHT!", 1.5)
+	audio.ring_bell(1)
+	audio.start_crowd()
+	audio.set_crowd_intensity(0.3)
 
 
 # ---------------------------------------------------------------- input
@@ -600,7 +630,249 @@ func _spawn(n: String, look: Dictionary, cpu: bool, pos: Vector3) -> Node3D:
 	w.impact.connect(func(s): cam_shake = max(cam_shake, s))
 	w.pin_count.connect(_on_pin_count)
 	w.won.connect(func(): _on_win(w))
+	w.sfx.connect(func(kind: String, s: float, where: Vector3): _on_sfx(w, kind, s, where))
+	w.pin_count.connect(func(c: int): _on_feel_count(w, c))
+	w.won.connect(func(): _on_feel_win(w))
 	return w
+
+
+# ---- feel / FX
+# Audio wiring, hit-stop, slow motion, camera kicks, sparks/dust/flash, rope bounce,
+# haptics and crowd reactions. Driven by the wrestlers' sfx / pin_count / won signals.
+
+func _snd(sound: String, db := 0.0, pitch_var := 0.08) -> void:
+	if audio == null:
+		return
+	var clips: Dictionary = audio.get("clips")
+	if clips.has(sound):
+		audio.play(sound, db, pitch_var)
+
+
+func _hitstop(secs: float) -> void:
+	hitstop_until_ms = maxi(hitstop_until_ms, Time.get_ticks_msec() + int(secs * 1000.0))
+
+
+func _slowmo() -> void:
+	slowmo_start_ms = Time.get_ticks_msec()
+	Engine.time_scale = SLOWMO_SCALE
+
+
+func _update_slowmo(now: int) -> void:
+	if slowmo_start_ms < 0:
+		return
+	var el: float = float(now - slowmo_start_ms) / 1000.0
+	if el < SLOWMO_HOLD:
+		Engine.time_scale = SLOWMO_SCALE
+	elif el < SLOWMO_HOLD + SLOWMO_EASE:
+		var k: float = smoothstep(0.0, 1.0, (el - SLOWMO_HOLD) / SLOWMO_EASE)
+		Engine.time_scale = lerpf(SLOWMO_SCALE, 1.0, k)
+	else:
+		Engine.time_scale = 1.0
+		slowmo_start_ms = -1
+
+
+func _kick_cam(fov: float, shake: float) -> void:
+	cam_fov_kick = minf(cam_fov_kick, fov)
+	cam_shake = max(cam_shake, shake)
+
+
+func _buzz(ms: int) -> void:
+	if DisplayServer.is_touchscreen_available():
+		Input.vibrate_handheld(ms)
+
+
+func _hype(amount: float) -> void:
+	crowd_hype = clampf(crowd_hype + amount, 0.0, 1.0)
+
+
+func _fx_spark(where: Vector3, s: float) -> void:
+	if fx != null:
+		fx.spark(where, s)
+
+
+func _fx_dust(where: Vector3, s: float) -> void:
+	if fx != null:
+		fx.dust(Vector3(where.x, RING_TOP + 0.03, where.z), s)
+
+
+func _fx_flash(s: float) -> void:
+	if fx != null:
+		fx.flash(s)
+
+
+func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
+	var st: float = clampf(s, 0.0, 1.5)
+	match kind:
+		"punch":
+			_snd("punch", -3.0 + 3.0 * st)
+			_hitstop(0.05 + 0.02 * clampf(st, 0.0, 1.0))
+			_fx_spark(where, st)
+			_kick_cam(-2.0, st * 0.6)
+			_buzz(20)
+			_hype(0.03)
+		"kick":
+			_snd("kick", -1.0 + 2.0 * st)
+			_hitstop(0.06 + 0.01 * clampf(st, 0.0, 1.0))
+			_fx_spark(where, st)
+			_kick_cam(-2.0, st * 0.6)
+			_buzz(20)
+			_hype(0.05)
+		"thud":
+			_snd("thud", -1.0 + 2.0 * st, 0.05)
+			_hitstop(0.1)
+			_fx_dust(where, st)
+			_fx_spark(where + Vector3(0, 0.2, 0), st * 0.6)
+			_kick_cam(-4.0, st)
+			_buzz(45)
+			_hype(0.15)
+		"big_thud":
+			_snd("big_thud", 2.0, 0.03)
+			_snd("ooh", -6.0, 0.05)
+			_hitstop(0.14)
+			_fx_dust(where, maxf(st, 1.0))
+			_fx_spark(where + Vector3(0, 0.2, 0), 0.9)
+			_kick_cam(-4.0, maxf(st, 0.8))
+			_buzz(45)
+			_hype(0.15)
+		"finisher":
+			_snd("whoosh", 0.0, 0.03)
+			_snd("pop", -1.0, 0.03)
+			_hitstop(0.14)
+			_slowmo()
+			_fx_flash(1.0)
+			_fx_spark(where, 1.2)
+			_kick_cam(-7.0, 0.6)
+			_buzz(80)
+			_hype(0.4)
+		"rope":
+			_snd("rope", -3.0 + 2.0 * st)
+			_rope_bounce(where, st)
+			_kick_cam(0.0, st * 0.3)
+		"whoosh":
+			_snd("whoosh", -4.0 + 3.0 * st)
+		"count":
+			_snd("count", 0.0, 0.03)
+			_fx_dust(where, 0.15)
+		"kickout":
+			_snd("whoosh", -3.0)
+			_fx_spark(where, 0.6)
+			_kick_cam(-3.0, 0.3)
+			_buzz(45)
+			if feel_last_count >= 2:
+				_snd("ooh", 1.0, 0.04)   # near-fall!
+				_hype(0.4)
+			else:
+				_snd("pop", -8.0)
+				_hype(0.15)
+			feel_last_count = 0
+		"reversal":
+			_snd("whoosh", -2.0)
+			_snd("pop", -9.0)
+			_hitstop(0.06)
+			_fx_spark(where, st)
+			_kick_cam(-2.0, 0.3)
+			_buzz(20)
+			_hype(0.2)
+		"taunt":
+			var cpu: bool = w.is_cpu
+			_snd("boo" if cpu else "pop", -5.0)
+			_hype(0.1)
+		"grab":
+			_snd("punch", -9.0, 0.15)
+			_kick_cam(-1.0, 0.0)
+		_:
+			# Unknown kinds (added later): play a clip of the same name if one exists.
+			_snd(kind, -3.0)
+
+
+func _on_feel_count(_w: Node3D, c: int) -> void:
+	feel_last_count = c
+	if c >= 3:
+		_slowmo()
+		_kick_cam(-4.0, 0.4)
+		_buzz(45)
+	else:
+		_kick_cam(-1.0, 0.0)
+		_hype(0.05 * float(c))
+
+
+func _on_feel_win(_w: Node3D) -> void:
+	feel_last_count = 0
+	_hype(0.6)
+	_snd("pop", 2.0, 0.03)
+	_fx_flash(0.6)
+	_buzz(80)
+	_win_bells()
+
+
+func _win_bells() -> void:
+	# Ding-ding-ding on real time (ignore_time_scale) so slow motion doesn't drag it out.
+	for i in 3:
+		_snd("bell", 0.0, 0.0)
+		if i < 2:
+			await get_tree().create_timer(0.35, true, false, true).timeout
+			if not is_inside_tree():
+				return
+
+
+func _rope_bounce(where: Vector3, s: float) -> void:
+	if rope_nodes.size() < 12:
+		return
+	# Bottom-row ropes (indices 0..3) sit at the side midpoints: the nearest one is the side hit.
+	var side := -1
+	var best := INF
+	for i in 4:
+		var r: Node3D = rope_nodes[i]
+		if not is_instance_valid(r):
+			continue
+		var rp: Vector3 = r.global_position
+		var d: float = Vector2(rp.x - where.x, rp.z - where.z).length()
+		if d < best:
+			best = d
+			side = i
+	if side < 0:
+		return
+	for h in 3:
+		var rope: Node3D = rope_nodes[h * 4 + side]
+		if is_instance_valid(rope) and not rope_rest.has(rope):
+			rope_rest[rope] = rope.position
+	var rest0: Vector3 = rope_rest.get(rope_nodes[side], Vector3.ZERO)
+	var out := Vector3(rest0.x, 0.0, rest0.z)
+	rope_bounce_dir[side] = out.normalized() if out.length() > 0.01 else Vector3.ZERO
+	rope_bounce_amp[side] = clampf(0.07 + 0.12 * s, 0.0, 0.15)
+	rope_bounce_t[side] = 0.0
+
+
+func _update_ropes(delta: float) -> void:
+	if rope_nodes.size() < 12:
+		return
+	var height_k: Array[float] = [0.7, 1.0, 0.85]
+	for side in 4:
+		var t: float = rope_bounce_t[side]
+		if t < 0.0:
+			continue
+		t += delta
+		var done: bool = t >= ROPE_BOUNCE_TIME
+		rope_bounce_t[side] = -1.0 if done else t
+		# Damped spring: snaps outward (peak ~0.05 s), then wobbles back to rest.
+		var off: float = 0.0
+		if not done:
+			off = rope_bounce_amp[side] * sin(t * 28.0) * exp(-t * 8.0) / 0.665
+		for h in 3:
+			var rope: Node3D = rope_nodes[h * 4 + side]
+			if not is_instance_valid(rope) or not rope_rest.has(rope):
+				continue
+			var rest: Vector3 = rope_rest[rope]
+			rope.position = rest + rope_bounce_dir[side] * off * height_k[h]
+
+
+func _update_feel(delta: float) -> void:
+	_update_ropes(delta)
+	if audio != null:
+		var sp1: float = p1.spirit
+		var sp2: float = p2.spirit
+		var ci: float = 0.2 + 0.35 * maxf(sp1, sp2) / 100.0 + 0.55 * crowd_hype
+		audio.set_crowd_intensity(clampf(ci, 0.0, 1.0))
 
 
 # ---------------------------------------------------------------- HUD
@@ -1150,6 +1422,9 @@ func _draw_player_bar(w: Node3D, d: Dictionary, sr: Rect2, side_w: float) -> voi
 
 
 func _restart() -> void:
+	Engine.time_scale = 1.0
+	slowmo_start_ms = -1
+	hitstop_until_ms = 0
 	get_tree().reload_current_scene()
 
 
@@ -1209,24 +1484,44 @@ func _update_touch_labels() -> void:
 # ---------------------------------------------------------------- loop
 
 func _physics_process(delta: float) -> void:
+	var now: int = Time.get_ticks_msec()
+	_update_slowmo(now)
+	var frozen: bool = now < hitstop_until_ms
 	if not match_over:
 		var mv := Input.get_vector("move_left", "move_right", "move_up", "move_down")
 		if touch.joy_vector.length() > mv.length():
 			mv = touch.joy_vector
 		p1.in_move = mv
-		p1.in_strike = Input.is_action_just_pressed("strike")
-		p1.in_grapple = Input.is_action_just_pressed("grapple")
-		p1.in_run = Input.is_action_just_pressed("run")
-		p1.in_pin = Input.is_action_just_pressed("pin")
-		p1.any_pressed = p1.in_strike or p1.in_grapple or p1.in_run or p1.in_pin
+		var js: bool = Input.is_action_just_pressed("strike")
+		var jg: bool = Input.is_action_just_pressed("grapple")
+		var jr: bool = Input.is_action_just_pressed("run")
+		var jp: bool = Input.is_action_just_pressed("pin")
+		if frozen:
+			# Hit-stop: hold presses and hand them over on the first unfrozen tick.
+			buf_strike = buf_strike or js
+			buf_grapple = buf_grapple or jg
+			buf_run = buf_run or jr
+			buf_pin = buf_pin or jp
+		else:
+			p1.in_strike = js or buf_strike
+			p1.in_grapple = jg or buf_grapple
+			p1.in_run = jr or buf_run
+			p1.in_pin = jp or buf_pin
+			p1.any_pressed = p1.in_strike or p1.in_grapple or p1.in_run or p1.in_pin
+			buf_strike = false
+			buf_grapple = false
+			buf_run = false
+			buf_pin = false
 	else:
 		p1.in_move = Vector2.ZERO
 		if Input.is_action_just_pressed("restart"):
 			_restart()
 			return
-	p1.tick(delta)
-	p2.tick(delta)
+	if not frozen:
+		p1.tick(delta)
+		p2.tick(delta)
 
+	_update_feel(delta)
 	_update_camera(delta)
 	_update_hud(delta)
 
