@@ -10,6 +10,9 @@ signal won()
 ## "rope", "whoosh", "count", "kickout", "finisher", "reversal", "taunt", "grab".
 ## strength is 0..1+, where is the world-space contact point.
 signal sfx(kind: String, strength: float, where: Vector3)
+## Style points: a move / trick landed (kind "strike", "grapple", "aerial", "air_trick", "weapon",
+## "movement", "super"), or name "" + kind "break" when the combo breaks.
+signal trick(name: String, points: int, kind: String)
 
 enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THROWING, THROWN,
 	DOWN, GETTING_UP, PINNING, PINNED, TAUNT, WIN, LOSE,
@@ -32,12 +35,14 @@ enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THRO
 	PERCHED,      # crouched on the top turnbuckle, waiting to fly
 	DIVING,       # airborne: dives off the top, springboards, corner splash
 	PERCH_FALL,   # knocked off the top: crotched on the turnbuckle or dumped to the mat
-	CORNER_STUN } # whipped into the turnbuckle: slumped in the corner
+	CORNER_STUN,  # whipped into the turnbuckle: slumped in the corner
+	# --- movement (appended; see "# ---- movement & air tricks") ---
+	ROLL }        # dodge roll (double-tap RUN): brief invulnerability
 
 const RING_HALF := 3.5        # throws always land inside this
 const ROPE_BOUNCE := 3.75     # runners rebound here (the ropes are at 4.15)
 const RING_CLAMP := 3.8       # hard limit for any wrestler position
-const WALK_SPEED := 2.7
+const WALK_SPEED := 3.0
 const RUN_SPEED := 6.2
 const PIN_COUNT_TIME := 0.85
 const PIN_ESCAPE_NEEDED := 6.0
@@ -105,6 +110,7 @@ var opponent: Node3D
 
 var health := 100.0
 var spirit := 0.0
+var brawl_mode := false        # BRAWL MODE (style system): supers, air tricks score double
 var state: int = S.IDLE
 var state_time := 0.0
 var anim_clock := 0.0
@@ -1277,8 +1283,9 @@ func _down_time() -> float:
 func _clamp_ring() -> void:
 	if _hf_clamp():  # high flying hook: corners / height allowed while climbing, perched, diving
 		return
-	position.x = clamp(position.x, -RING_CLAMP, RING_CLAMP)
-	position.z = clamp(position.z, -RING_CLAMP, RING_CLAMP)
+	var yr := _yard_rect()  # movement hook: the yard (arena.yard_bounds) replaces the ring
+	position.x = clampf(position.x, yr.position.x, yr.end.x)
+	position.z = clampf(position.z, yr.position.y, yr.end.y)
 	position.y = 0.0
 
 
@@ -1387,6 +1394,8 @@ func tick(delta: float) -> void:
 			_weapons_state(delta)  # weapons hook
 		S.CLIMB, S.PERCHED, S.DIVING, S.PERCH_FALL, S.CORNER_STUN:
 			_hf_tick(delta)  # high flying hook
+		S.ROLL:
+			_mv_roll(delta)  # movement hook: dodge roll
 
 	_separate()
 	_clamp_ring()
@@ -1501,6 +1510,7 @@ func _free_move(delta: float) -> void:
 		run_dir = dir.normalized() if dir.length() > 0.3 else facing
 		rope_bounces = 0
 		set_state(S.RUN)
+		_mv_start_run()  # movement hook: momentum sprint starts slow
 	elif in_strike:
 		if opp_down and opp_dist < 1.7:
 			_start_stomp()
@@ -1516,8 +1526,11 @@ func _free_move(delta: float) -> void:
 
 
 func _run(delta: float) -> void:
+	if not whipped and _mv_run_input(delta):
+		return  # movement hook: dodge roll (double-tap RUN)
 	if not whipped and in_move.length() > 0.3:
 		var want := Vector3(in_move.x, 0, in_move.y).normalized()
+		_mv_turn_bleed(want, delta)  # movement hook: hard turns bleed momentum
 		run_dir = run_dir.lerp(want, clamp(delta * 2.5, 0.0, 1.0)).normalized()
 	elif whipped and rope_bounces >= 1:
 		# Coming off the ropes after a whip: run back at whoever whipped us.
@@ -1526,25 +1539,21 @@ func _run(delta: float) -> void:
 			var nd := run_dir.lerp(back.normalized(), clampf(delta * 6.0, 0.0, 1.0))
 			if nd.length() > 0.1:
 				run_dir = nd.normalized()
-	position += run_dir * RUN_SPEED * delta
+	position += run_dir * (RUN_SPEED if whipped else _mv_run_speed(delta)) * delta
 	_set_facing_angle(atan2(run_dir.x, run_dir.z))
 	if whipped and _hf_check_corner_crash():  # high flying hook: whipped into a corner
 		return
 
-	# Rebound off the ropes (visually touching them; the clamp stops us at RING_CLAMP).
-	var bounced := false
-	if absf(position.x) >= ROPE_BOUNCE and signf(position.x) == signf(run_dir.x):
-		run_dir.x = -run_dir.x
-		bounced = true
-	if absf(position.z) >= ROPE_BOUNCE and signf(position.z) == signf(run_dir.z):
-		run_dir.z = -run_dir.z
-		bounced = true
+	# Rebound off the fence / house wall (movement hook: arena.yard_bounds).
+	var bounced := _mv_fence_bounce()
 	if bounced:
 		rope_bounces += 1
 		_hf_on_rope_bounce()  # high flying hook: opens the springboard window
 		impact.emit(0.15)
-		sfx.emit("rope", 0.5, global_position + Vector3(0, 1.2, 0))
-		if rope_bounces > (1 if whipped else 2):
+		sfx.emit("thud", 0.35, global_position + Vector3(0, 1.2, 0))  # off the fence
+		if not whipped and _hf_rope_buffered_launch():
+			return  # high flying hook: rope launch pressed just before the ropes
+		if rope_bounces > (1 if whipped else 3):
 			set_state(S.IDLE)
 			return
 
@@ -1561,6 +1570,10 @@ func _run(delta: float) -> void:
 		return
 	if in_strike and _hf_run_strike():  # high flying hook: springboard / corner splash
 		return
+	if in_grapple and _hf_run_grab():  # high flying hook: slingshot off the ropes
+		return
+	if (in_strike or in_grapple) and _hf_buffer_rope_launch():
+		return  # high flying hook: about to hit the ropes: launch on the rebound
 	var opp_down := _opp_state() == S.DOWN or _opp_state() == S.ON_TABLE  # weapons: table counts
 	var dist := _flat_to_opponent().length()
 	if in_strike:
@@ -1570,7 +1583,7 @@ func _run(delta: float) -> void:
 			_start_run_attack()
 	elif in_grapple and opp_down and dist < 2.6:
 		_start_ground_drop("knee_drop")
-	elif in_run or in_grapple or state_time > 4.0:
+	elif in_run or in_grapple or state_time > 5.0:
 		set_state(S.IDLE)
 
 
@@ -1871,7 +1884,7 @@ func start_thrown(land_pos: Vector3, m: Dictionary, key := "") -> void:
 	current_move_key = key
 	last_hit_tier = m.get("tier", "weak")
 	throw_from = position
-	throw_to = Vector3(clamp(land_pos.x, -RING_HALF, RING_HALF), 0, clamp(land_pos.z, -RING_HALF, RING_HALF))
+	throw_to = _yard_clamp_pt(Vector3(land_pos.x, 0, land_pos.z), 0.5)  # movement hook: inside the yard
 	throw_time = m["time"]
 	throw_height = m["height"]
 	throw_end_angle = -PI / 2 - (TAU if m["flip"] else 0.0)
@@ -3614,6 +3627,8 @@ func _update_pose(delta: float) -> void:
 			_pose_hf_perch_fall()
 		S.CORNER_STUN:
 			_pose_hf_corner_stun()
+		S.ROLL:
+			_pose_mv_roll()  # movement: dodge roll
 	if held_item != null:
 		_pose_hold_item()  # weapons hook: carry / hoist the item with both hands
 	_apply_pose(delta)
@@ -4797,43 +4812,105 @@ func _pose_lifted(delta: float) -> void:
 
 
 # ---- high flying
-# Turnbuckle climbs, dives off the top, springboards off the ropes and corner spots.
-# Corner posts sit at local (±4.15, ±4.15); a perched wrestler stands on the top turnbuckle at
-# (±3.75, 1.35, ±3.75). While climbing / perched / diving / falling off, position.y may be > 0
-# (_hf_clamp keeps _clamp_ring from flattening it). Airborne wrestlers can't be pinned, grabbed
-# or struck (receive_strike returns false), except that a strike within 1.4 m knocks a
-# climbing / perched wrestler off the top.
+# Perch climbs, dives off the top, springboards off the fence / house wall and fence spots.
+# The yard (main.gd, see yard_contract) provides `arena.perches`: Dictionaries {pos, approach,
+# height, kind, name}. RUN near a perch's approach point climbs it; PERCHED stands at its pos; dives
+# arc from there to the target (higher perch = more hang time, more points; a "trampoline" launches
+# extra high, the "roof" is the biggest dive). Without an arena, the four old turnbuckles are used.
+# While climbing / perched / diving / falling off, position.y may be > 0 (_hf_clamp keeps
+# _clamp_ring from flattening it). Airborne wrestlers can't be pinned, grabbed or struck
+# (receive_strike returns false), except that a strike within 1.4 m knocks a climbing / perched
+# wrestler off the top. CORNER_STUN = whipped (diagonally) into the fence / wall, slumped against it.
 
-const HF_CORNER_POST := 4.15
-const HF_PERCH_XZ := 3.75
-const HF_PERCH_Y := 1.35
-const HF_CLAMP := 3.9            # xz limit in the high-flying states (corners are reachable)
-const HF_CLIMB_RANGE := 1.1      # distance from a corner post that allows a climb
-const HF_SPRING_WINDOW := 0.35   # STRIKE this soon after a rope bounce = springboard
-const HF_MAX_DIVE := 5.0         # nobody flies further than this off the top
-const HF_GROUND_DIVES := ["backyard_splash", "moonsault", "flying_elbow", "gutter_star"]
+const HF_CLIMB_RANGE := 1.1      # distance from a perch's approach point that allows a climb
+const HF_SPRING_WINDOW := 0.45   # STRIKE / GRAB this soon after a fence rebound = fence launch
+const HF_MAX_DIVE := 4.5         # nobody flies further than this (+1.5 m per metre of perch height)
+const HF_GROUND_DIVES := ["backyard_splash", "moonsault", "flying_elbow", "gutter_star",
+	"springboard_splash", "slingshot_senton"]
+# fence / wall launches (STRIKE = springboard, GRAB = slingshot); those aimed at a standing target
+# land on their feet when it moves
+const HF_ROPE_LAUNCHES := ["springboard_forearm", "springboard_moonsault", "springboard_splash",
+	"slingshot_senton", "slingshot_crossbody"]
+const HF_FEET_LAUNCHES := ["springboard_forearm", "springboard_moonsault", "slingshot_crossbody"]
+const HF_SPRING_REACH := 4.2
+const HF_SLING_REACH := 5.5
+const HF_ROPE_BUFFER_DIST := 0.9  # STRIKE / GRAB this close to the fence while running at it = launch on the rebound
+# extra launch moves ("time" = base flight time, "height" = arc apex above the straight line)
+const HF_EXTRA_MOVES := {
+	"springboard_splash": {"name": "Springboard Splash!", "dmg": 13.0, "kind": "dive", "tier": "strong", "time": 0.85, "height": 1.3},
+	"slingshot_senton": {"name": "SLINGSHOT SENTON!", "dmg": 14.0, "kind": "dive", "tier": "strong", "time": 0.95, "height": 1.5},
+	"slingshot_crossbody": {"name": "Slingshot Crossbody!", "dmg": 12.0, "kind": "dive", "tier": "strike", "time": 0.9, "height": 1.4},
+}
+# BRAWL MODE: every dive becomes its super version (higher, longer, harder, named)
+const HF_SUPER_NAMES := {
+	"backyard_splash": "SATELLITE DISH SPLASH!!",
+	"moonsault": "HARVEST MOONSAULT!!",
+	"flying_elbow": "SUNDAY-BEST ELBOW!!",
+	"gutter_star": "GUTTER SUPERNOVA!!!",
+	"missile_dropkick": "SURFACE-TO-AIR DROPKICK!!",
+	"crossbody": "WRECKING BALL CROSSBODY!!",
+	"springboard_forearm": "TRAMPOLINE FOREARM!!",
+	"springboard_moonsault": "SPRINGBOARD SUPERMOON!!",
+	"springboard_splash": "BOUNCE HOUSE SPLASH!!",
+	"slingshot_senton": "SLINGSHOT SKYSCRAPER SENTON!!",
+	"slingshot_crossbody": "CATAPULT CROSSBODY!!",
+}
+# air tricks (see "# --- air tricks")
+const AT_SPIN_RATE := 13.96      # rad/s (800 deg/s): each STRIKE adds 180
+const AT_FLIP_RATE := 12.57      # rad/s (720 deg/s): each GRAB is a full 360 flip
+const AT_POSE_TIME := 0.55       # PIN pose tricks: in, hold, out
+const AT_START := 0.08           # tricks start once we've left the launch point
+const AT_LAND_SLOP := 0.35       # rad of rotation still left at touchdown that still counts as landed
+const AT_SPIN_POINTS := [0, 150, 300, 650, 1200, 1800, 2600]
+const AT_POSE_POINTS := {"Spread Eagle": 250, "Porch Light": 300, "Lawn Chair": 400,
+	"Air Guitar": 450, "Kiddie Pool Cannonball": 350}
+const AT_CLEAN_CALLS := ["NAILED IT!", "STUCK THE LANDING!", "BUTTERED IT!", "CLEAN AS A WHISTLE!",
+	"BACKYARD LEGEND!"]
+const AT_BOTCH_CALLS := ["BOTCHED IT!", "EATS THE GRASS!", "BACKYARD BLOOPER!", "WIPEOUT!"]
 
-var hf_move := ""                # DIVING: MOVES key of the dive / springboard / splash
+var hf_move := ""                # DIVING: move key of the dive / launch / splash
 var hf_mode := ""                # CLIMB: "up" / "down" / "jump"; PERCH_FALL: "crotch" / "fall"
-var hf_corner := Vector3.ZERO    # sign vector of the corner we're using, e.g. (1, 0, -1)
+var hf_perch: Dictionary = {}    # the perch we're climbing / standing on / just dove off
+var hf_fence_n := Vector3.ZERO   # CORNER_STUN: outward normal of the fence / wall we're slumped on
 var hf_from := Vector3.ZERO
 var hf_to := Vector3.ZERO
 var hf_time := 0.7               # flight / climb duration
 var hf_height := 1.0             # arc apex
 var hf_land_time := 0.3          # DIVING: settle time after touching down
 var hf_landed := false
-var hf_result := ""              # "hit" / "crash" once landed
+var hf_result := ""              # "hit" / "crash" / "feet" / "botch" once landed
 var hf_end_yaw := 0.0            # visual yaw (rel. to facing) of the final lying pose
 var hf_stun_time := 1.5          # CORNER_STUN duration
-var hf_corner_whip := false      # current whip was aimed at a corner
-var hf_rope_at := -10.0          # anim_clock of the last rope bounce
+var hf_corner_whip := false      # current whip is a diagonal one: slams into the fence
+var hf_rope_at := -10.0          # anim_clock of the last fence rebound (main.gd HUD reads it)
+var hf_bounce_n := Vector3.ZERO  # outward normal of the last fence / wall rebound
 var hf_fall_hit := false         # PERCH_FALL one-shot (crotch impact)
+var hf_crotch_y := 0.32          # PERCH_FALL crotch: body height straddling the perch edge
+var hf_super := false            # this dive is a BRAWL MODE super
+var hf_dmg_mult := 1.0
+var hf_pts_mult := 1.0           # bigger perch = more points
+var hf_rope_buf := ""            # "strike" / "grab" pressed just before a fence rebound
+var hf_rope_buf_at := -10.0
+var hf_fallback_perches: Array = []
+# air tricks
+var at_queue: Array = []         # queued tricks (Dictionaries: kind, target, sign, front / name)
+var at_cur: Dictionary = {}      # the trick being performed
+var at_prog := 0.0               # its progress (rad for spins / flips, s for poses)
+var at_spin := 0.0               # spin so far this air (rad, about the vertical)
+var at_flip := 0.0               # current flip angle (rad, about the hips' side axis)
+var at_parts := PackedStringArray()  # finished trick names, for the stacked combo name
+var at_points := 0
+var at_count := 0
+var at_used := false
 # AI
 var hf_ai_wait := 0.5
-var hf_ai_climb_plan := -1       # -1 undecided, 0 no, 1 heading for a corner to climb
+var hf_ai_climb_plan := -1       # -1 undecided, 0 no, 1 heading for a perch, 2 fence launch run
+var hf_ai_perch := -1
 var hf_ai_spring_roll := 2.0
 var hf_ai_tie_rolled := false
 var hf_ai_dodge := -1
+var hf_ai_plan: Array = []       # air-trick button presses [time, button, stick]
+var hf_ai_rope_run := false
 
 
 func is_airborne() -> bool:
@@ -4842,9 +4919,11 @@ func is_airborne() -> bool:
 
 func _hf_clamp() -> bool:
 	if state in [S.CLIMB, S.PERCHED, S.DIVING, S.PERCH_FALL, S.CORNER_STUN]:
-		position.x = clampf(position.x, -HF_CLAMP, HF_CLAMP)
-		position.z = clampf(position.z, -HF_CLAMP, HF_CLAMP)
-		position.y = 0.0 if state == S.CORNER_STUN else clampf(position.y, 0.0, 3.5)
+		var r := _yard_rect()
+		var g := 0.0 if state == S.CORNER_STUN else 0.8  # perches may sit on the yard's edge
+		position.x = clampf(position.x, r.position.x - g, r.end.x + g)
+		position.z = clampf(position.z, r.position.y - g, r.end.y + g)
+		position.y = 0.0 if state == S.CORNER_STUN else clampf(position.y, 0.0, 4.5)
 		return true
 	return false
 
@@ -4853,20 +4932,99 @@ func _hf_sign(v: float) -> float:
 	return -1.0 if v < 0.0 else 1.0
 
 
-## Sign vector of the corner we're within HF_CLIMB_RANGE of, or ZERO.
-func _hf_near_corner() -> Vector3:
-	var c := Vector3(_hf_sign(position.x), 0.0, _hf_sign(position.z))
-	var d := Vector3(c.x * HF_CORNER_POST - position.x, 0.0, c.z * HF_CORNER_POST - position.z)
-	return c if d.length() <= HF_CLIMB_RANGE else Vector3.ZERO
+# --- perches -------------------------------------------------------------------------------
+
+func _hf_perches() -> Array:
+	if arena != null and "perches" in arena:
+		var ps: Array = arena.perches
+		if not ps.is_empty():
+			return ps
+	if hf_fallback_perches.is_empty():
+		for c in [Vector3(1, 0, 1), Vector3(-1, 0, 1), Vector3(1, 0, -1), Vector3(-1, 0, -1)]:
+			hf_fallback_perches.append({"pos": Vector3(c.x * 3.75, 1.35, c.z * 3.75),
+				"approach": Vector3(c.x * 3.35, 0.0, c.z * 3.35), "height": 1.35,
+				"kind": "turnbuckle", "name": "top turnbuckle"})
+	return hf_fallback_perches
 
 
-func _hf_nearest_corner_point(p: Vector3, inset: float) -> Vector3:
-	return Vector3(_hf_sign(p.x) * inset, 0.0, _hf_sign(p.z) * inset)
+func _perch_pos(pr: Dictionary) -> Vector3:
+	var v: Vector3 = pr.get("pos", Vector3(0.0, 1.0, 0.0))
+	return v
 
 
-func _hf_face_center() -> void:
-	var c := hf_corner if hf_corner != Vector3.ZERO else Vector3(_hf_sign(position.x), 0.0, _hf_sign(position.z))
-	_set_facing_angle(atan2(-c.x, -c.z))
+func _perch_approach(pr: Dictionary) -> Vector3:
+	var v: Vector3 = pr.get("approach", _perch_pos(pr))
+	return Vector3(v.x, 0.0, v.z)
+
+
+func _perch_height(pr: Dictionary) -> float:
+	var h: float = pr.get("height", _perch_pos(pr).y)
+	return h
+
+
+func _perch_kind(pr: Dictionary) -> String:
+	var k: String = pr.get("kind", "")
+	return k
+
+
+func _perch_name(pr: Dictionary) -> String:
+	var n: String = pr.get("name", "top")
+	return n
+
+
+## Index of the perch whose approach point is within HF_CLIMB_RANGE (the nearest), or -1.
+func _hf_near_perch(range_m := HF_CLIMB_RANGE) -> int:
+	var best := -1
+	var best_d := range_m
+	var ps := _hf_perches()
+	for i in ps.size():
+		var pr: Dictionary = ps[i]
+		var ap := _perch_approach(pr)
+		var d := Vector3(ap.x - position.x, 0.0, ap.z - position.z).length()
+		if d <= best_d:
+			best_d = d
+			best = i
+	return best
+
+
+## Index of the nearest perch (any distance), or -1 if there are none.
+func _hf_nearest_perch() -> int:
+	return _hf_near_perch(1000.0)
+
+
+## Ground point to land on when knocked off / hopping down: out from the perch's base.
+func _hf_off_point(pr: Dictionary, dist: float) -> Vector3:
+	var pp := _perch_pos(pr)
+	var ap := _perch_approach(pr)
+	var out := Vector3(ap.x - pp.x, 0.0, ap.z - pp.z)
+	if out.length() < 0.05:
+		out = -Vector3(pp.x, 0.0, pp.z)
+	if out.length() < 0.05:
+		out = Vector3(0.0, 0.0, 1.0)
+	return _yard_clamp_pt(ap + out.normalized() * dist, 0.4)
+
+
+func _hf_face_opp_or_center() -> void:
+	var d := _flat_to_opponent()
+	if d.length() < 0.05:
+		d = -Vector3(position.x, 0.0, position.z)
+	if d.length() > 0.01:
+		_set_facing_angle(atan2(d.x, d.z))
+
+
+## Takeoff call for a dive off a perch: "Off the picnic table!", "From the SHED ROOF!" ...
+func _hf_perch_call(pr: Dictionary) -> String:
+	match _perch_kind(pr):
+		"roof":
+			return "From the SHED ROOF!"
+		"trampoline":
+			return "Off the TRAMPOLINE!"
+	return "Off the %s!" % _perch_name(pr)
+
+
+## "fence" or "wall" (the house is along -z).
+func _hf_edge_name(n: Vector3) -> String:
+	return "wall" if n.z < -0.5 else "fence"
 
 
 func _hf_tick(delta: float) -> void:
@@ -4876,7 +5034,7 @@ func _hf_tick(delta: float) -> void:
 		S.PERCHED:
 			_hf_perched(delta)
 		S.DIVING:
-			_hf_diving()
+			_hf_diving(delta)
 		S.PERCH_FALL:
 			_hf_perch_fall()
 		S.CORNER_STUN:
@@ -4886,7 +5044,7 @@ func _hf_tick(delta: float) -> void:
 
 # --- hooks called from the core state machine ----------------------------------------
 
-## _free_move: RUN near a corner climbs it; GRAB on a cornered opponent = Super Drop.
+## _free_move: RUN near a perch climbs it; GRAB on an opponent slumped on the fence = Super Drop.
 func _hf_free_move_hook(dir: Vector3) -> bool:
 	var os := _opp_state()
 	if os == S.CORNER_STUN and in_grapple and _flat_to_opponent().length() < 1.6:
@@ -4894,23 +5052,24 @@ func _hf_free_move_hook(dir: Vector3) -> bool:
 		return true
 	if not in_run:
 		return false
-	var c := _hf_near_corner()
-	if c == Vector3.ZERO:
+	var i := _hf_near_perch()
+	if i < 0:
 		return false
-	var post := Vector3(c.x * HF_CORNER_POST, 0.0, c.z * HF_CORNER_POST)
-	var to_post := post - position
-	to_post.y = 0.0
-	var aimed := dir.length() < 0.3 or dir.normalized().dot(to_post.normalized()) > 0.5
+	var pr: Dictionary = _hf_perches()[i]
+	var pp := _perch_pos(pr)
+	var to_p := Vector3(pp.x - position.x, 0.0, pp.z - position.z)
+	var aimed := dir.length() < 0.3 or to_p.length() < 0.2 or dir.normalized().dot(to_p.normalized()) > 0.5
 	var op: Vector3 = opponent.position
-	var opp_in_corner := Vector3(post.x - op.x, 0.0, post.z - op.z).length() < 1.2
-	if not aimed or opp_in_corner:
+	var opp_on := Vector3(pp.x - op.x, 0.0, pp.z - op.z).length() < 1.0
+	if not aimed or opp_on:
 		return false
-	hf_corner = c
+	hf_perch = pr
 	_hf_start_climb("up")
 	return true
 
 
-## _run (non-whipped, STRIKE pressed): corner splash or springboard. True if handled.
+## _run (non-whipped, STRIKE pressed): fence splash on a slumped opponent, or a springboard off
+## the fence right after a rebound. True if handled.
 func _hf_run_strike() -> bool:
 	var os := _opp_state()
 	var to := _flat_to_opponent()
@@ -4921,53 +5080,110 @@ func _hf_run_strike() -> bool:
 	if os == S.CORNER_STUN and dist < 3.4:
 		_hf_launch("corner_splash", opf - dir * 0.7)
 		return true
-	if anim_clock - hf_rope_at > HF_SPRING_WINDOW or os == S.DOWN:
+	if anim_clock - hf_rope_at > HF_SPRING_WINDOW:
 		return false
-	var opp_up: bool = opponent.is_standing() or os == S.CORNER_STUN
-	var key := "springboard_moonsault" if opp_up and dist > 1.6 and dist < 3.0 else "springboard_forearm"
-	var target := position + run_dir * 2.4
-	if dist < 3.6:
-		target = opf - dir * (0.35 if key == "springboard_moonsault" else 0.75)
-	_hf_launch(key, target)
+	_hf_rope_launch(false)
 	return true
+
+
+## _run (non-whipped, GRAB pressed) right off the fence: slingshot launch. True if handled.
+func _hf_run_grab() -> bool:
+	if anim_clock - hf_rope_at > HF_SPRING_WINDOW:
+		return false
+	_hf_rope_launch(true)
+	return true
+
+
+## _run: STRIKE / GRAB pressed while about to hit the fence (heading into it, close, nobody to
+## lariat): remembered and launched on the rebound.
+func _hf_buffer_rope_launch() -> bool:
+	if _flat_to_opponent().length() < 2.8:
+		return false
+	var r := _yard_rect()
+	var m := 0.35 + HF_ROPE_BUFFER_DIST
+	var near := (position.x > r.end.x - m and run_dir.x > 0.2) or (position.x < r.position.x + m and run_dir.x < -0.2) \
+		or (position.z > r.end.y - m and run_dir.z > 0.2) or (position.z < r.position.y + m and run_dir.z < -0.2)
+	if not near:
+		return false
+	hf_rope_buf = "grab" if in_grapple else "strike"
+	hf_rope_buf_at = anim_clock
+	return true
+
+
+## _run rebound hook: a buffered fence launch fires now.
+func _hf_rope_buffered_launch() -> bool:
+	if hf_rope_buf == "" or anim_clock - hf_rope_buf_at > 0.45:
+		hf_rope_buf = ""
+		return false
+	var sling := hf_rope_buf == "grab"
+	hf_rope_buf = ""
+	_hf_rope_launch(sling)
+	return true
+
+
+## Off the fence / wall at the opponent, standing or down: STRIKE = springboard, GRAB = slingshot
+## (higher, further, more hang time). Out of reach it still launches toward them and comes up short.
+func _hf_rope_launch(sling: bool) -> void:
+	var os := _opp_state()
+	var to := _flat_to_opponent()
+	var dist := to.length()
+	var dir := to / dist if dist > 0.01 else facing
+	var op: Vector3 = opponent.position
+	var opf := Vector3(op.x, 0.0, op.z)
+	var reach := HF_SLING_REACH if sling else HF_SPRING_REACH
+	var ground := os == S.DOWN or _hf_opp_on_table()
+	var key := ""
+	var off := 0.75
+	if ground and dist <= reach:
+		key = "slingshot_senton" if sling else "springboard_splash"
+		off = 0.3
+	elif sling:
+		key = "slingshot_crossbody"
+		off = 0.55
+	else:
+		var opp_up: bool = opponent.is_standing() or os == S.CORNER_STUN
+		key = "springboard_moonsault" if opp_up and dist > 1.6 and dist < 3.4 else "springboard_forearm"
+		off = 0.35 if key == "springboard_moonsault" else 0.75
+	var target := position + dir * minf(maxf(dist - off, 1.0), reach)
+	if dist <= reach:
+		target = opf - dir * off
+	announce.emit("%s %s off the %s!" % [display_name, "slingshots" if sling else "springboards",
+		_hf_edge_name(hf_bounce_n)])
+	trick.emit("Off the %s" % _hf_edge_name(hf_bounce_n).capitalize(), 100, "movement")
+	_hf_launch(key, target)
 
 
 func _hf_on_rope_bounce() -> void:
 	hf_rope_at = anim_clock
 	hf_ai_spring_roll = randf()
+	run_speed = minf(run_speed + RUN_ROPE_BOOST, RUN_TOP_SPEED)  # the fence springs us back faster
 
 
-## start_whipped: a whip aimed roughly at a corner is steered straight into it.
+## start_whipped: a diagonal whip slams the runner into the fence / wall instead of rebounding.
 func _hf_corner_whip_dir(d: Vector3) -> Vector3:
-	hf_corner_whip = false
-	if absf(d.x) < 0.2 or absf(d.z) < 0.2:
-		return d
-	var c := Vector3(_hf_sign(d.x) * 3.6, 0.0, _hf_sign(d.z) * 3.6)
-	var to_c := c - position
-	to_c.y = 0.0
-	if to_c.length() < 1.5 or d.normalized().dot(to_c.normalized()) < 0.88:
-		return d
-	hf_corner_whip = true
-	return to_c.normalized()
+	hf_corner_whip = absf(d.x) > 0.4 and absf(d.z) > 0.4
+	return d
 
 
-## _run (whipped): reaching the corner = crash into the turnbuckle.
+## _run (whipped): reaching the fence on a diagonal whip = slam into it and slump.
 func _hf_check_corner_crash() -> bool:
 	if not hf_corner_whip or rope_bounces > 0:
 		return false
-	if absf(position.x) < 3.3 or absf(position.z) < 3.3:
+	var n := _yard_hit_normal(0.5)
+	if n == Vector3.ZERO:
 		return false
-	hf_corner = Vector3(_hf_sign(position.x), 0.0, _hf_sign(position.z))
 	set_state(S.CORNER_STUN)
 	hf_corner_whip = false
 	hf_stun_time = 1.5
-	position = Vector3(hf_corner.x * 3.55, 0.0, hf_corner.z * 3.55)
-	_hf_face_center()
-	take_damage(5.0)
+	hf_fence_n = n
+	position = _yard_clamp_pt(position, 0.45)
+	_set_facing_angle(atan2(-n.x, -n.z))
+	var concrete := _surface_here() == "concrete"
+	take_damage(6.0 if concrete else 5.0)
 	impact.emit(0.35)
-	sfx.emit("thud", 0.7, global_position + Vector3(0, 1.2, 0))
-	sfx.emit("rope", 0.8, global_position + Vector3(0, 1.2, 0))
-	announce.emit("Into the turnbuckle!")
+	sfx.emit("thud_concrete" if concrete else "thud", 0.8, global_position + Vector3(0, 1.2, 0))
+	sfx.emit("big_thud", 0.5, global_position + Vector3(0, 1.2, 0))
+	announce.emit("Slammed into the %s!" % _hf_edge_name(n))
 	return true
 
 
@@ -4989,7 +5205,7 @@ func _hf_receive_strike(attacker: Node3D, dmg: float, knockdown: bool) -> int:
 			attacker.gain_spirit(dmg * 1.5)
 			if knockdown:
 				set_state(S.DOWN)
-				position -= Vector3(hf_corner.x, 0.0, hf_corner.z).normalized() * 0.6
+				position -= hf_fence_n * 0.6
 				down_duration = _down_time()
 				last_hit_tier = "strike"
 				impact.emit(0.5)
@@ -5005,28 +5221,38 @@ func _hf_receive_strike(attacker: Node3D, dmg: float, knockdown: bool) -> int:
 # --- climbing & the perch ------------------------------------------------------------
 
 func _hf_start_climb(mode: String) -> void:
-	if hf_corner == Vector3.ZERO:
-		hf_corner = Vector3(_hf_sign(position.x), 0.0, _hf_sign(position.z))
-	var c := hf_corner
+	if hf_perch.is_empty():
+		var i := _hf_nearest_perch()
+		if i < 0:
+			set_state(S.IDLE)
+			return
+		hf_perch = _hf_perches()[i]
+	var pp := _perch_pos(hf_perch)
+	var h := maxf(pp.y, 0.3)
 	set_state(S.CLIMB)
 	current_move_key = "climb_" + mode
 	hf_mode = mode
 	hf_from = position
 	match mode:
 		"up":
-			hf_to = Vector3(c.x * HF_PERCH_XZ, HF_PERCH_Y, c.z * HF_PERCH_XZ)
-			hf_time = 0.7
+			hf_to = pp
+			hf_time = 0.35 + 0.28 * h
 			sfx.emit("climb", 0.6, global_position + Vector3(0, 1.0, 0))
-			announce.emit("%s is going up top!" % display_name)
+			if _perch_kind(hf_perch) == "roof":
+				announce.emit("%s is climbing onto the SHED ROOF!" % display_name)
+			else:
+				announce.emit("%s is going up on the %s!" % [display_name, _perch_name(hf_perch)])
 		"down":
-			hf_to = Vector3(c.x * 3.35, 0.0, c.z * 3.35)
-			hf_time = 0.6
+			hf_to = _perch_approach(hf_perch)
+			hf_time = 0.3 + 0.22 * h
 			sfx.emit("climb", 0.4, global_position + Vector3(0, 1.0, 0))
 		_:
-			hf_to = Vector3(c.x * 2.9, 0.0, c.z * 2.9)
-			hf_time = 0.5
+			var d := _flat_to_opponent()
+			var dir := d.normalized() if d.length() > 0.05 else (_perch_approach(hf_perch) - Vector3(pp.x, 0.0, pp.z)).normalized()
+			hf_to = _yard_clamp_pt(Vector3(pp.x, 0.0, pp.z) + dir * 1.2, 0.4)
+			hf_time = 0.45 + 0.1 * h
 			sfx.emit("whoosh", 0.3, _chest())
-	_hf_face_center()
+	_hf_face_opp_or_center()
 
 
 func _hf_climb() -> void:
@@ -5054,11 +5280,15 @@ func _hf_climb() -> void:
 		position.y = 0.0
 		set_state(S.IDLE)
 		if hf_mode == "jump":
-			sfx.emit("thud", 0.3, global_position + Vector3(0, 0.2, 0))
+			sfx.emit(_hf_thud("thud"), 0.3, global_position + Vector3(0, 0.2, 0))
 
 
 func _hf_perched(delta: float) -> void:
-	position = Vector3(hf_corner.x * HF_PERCH_XZ, HF_PERCH_Y, hf_corner.z * HF_PERCH_XZ)
+	if hf_perch.is_empty():
+		set_state(S.IDLE)  # safety: nothing to stand on
+		position.y = 0.0
+		return
+	position = _perch_pos(hf_perch)
 	_face_opponent(delta)
 	if in_strike:
 		_hf_start_dive()
@@ -5069,26 +5299,35 @@ func _hf_perched(delta: float) -> void:
 
 
 func _hf_knock_off() -> void:
-	if hf_corner == Vector3.ZERO:
-		hf_corner = Vector3(_hf_sign(position.x), 0.0, _hf_sign(position.z))
-	var crotch := position.y > 0.9 and randf() < 0.5
+	if hf_perch.is_empty():
+		var i := _hf_nearest_perch()
+		if i >= 0:
+			hf_perch = _hf_perches()[i]
+	var kind := _perch_kind(hf_perch)
+	var crotch := position.y > 0.98 and kind != "trampoline" and kind != "roof" and randf() < 0.5
+	hf_crotch_y = maxf(0.0, position.y - 1.03)
 	set_state(S.PERCH_FALL)
 	hf_mode = "crotch" if crotch else "fall"
 	current_move_key = "perch_" + hf_mode
 	hf_fall_hit = false
 	hf_from = position
-	hf_to = Vector3(hf_corner.x * 2.7, 0.0, hf_corner.z * 2.7)
-	_hf_face_center()
+	hf_to = _hf_off_point(hf_perch, 0.7) if not hf_perch.is_empty() else Vector3(position.x, 0.0, position.z)
+	var d := Vector3(hf_to.x - position.x, 0.0, hf_to.z - position.z)
+	if d.length() > 0.05:
+		_set_facing_angle(atan2(d.x, d.z))
 	impact.emit(0.35)
 	sfx.emit("whoa", 0.8, _chest())
-	announce.emit("Crotched on the turnbuckle! OOF!" if crotch else "Knocked off the top!")
+	if crotch:
+		announce.emit("Crotched on the %s! OOF!" % _perch_name(hf_perch))
+	else:
+		announce.emit("Knocked off the %s!" % _perch_name(hf_perch))
 
 
 func _hf_perch_fall() -> void:
 	if hf_mode == "crotch":
 		if state_time < 1.1:
 			var d := _smooth(_seg(state_time, 0.0, 0.2))
-			position = Vector3(hf_from.x, lerpf(hf_from.y, 0.32, d), hf_from.z)
+			position = Vector3(hf_from.x, lerpf(hf_from.y, hf_crotch_y, d), hf_from.z)
 			if d >= 1.0 and not hf_fall_hit:
 				hf_fall_hit = true
 				take_damage(4.0)
@@ -5097,7 +5336,7 @@ func _hf_perch_fall() -> void:
 			return
 		var u := _seg(state_time, 1.1, 1.6)
 		var flat := Vector3(hf_from.x, 0.0, hf_from.z).lerp(hf_to, u)
-		position = Vector3(flat.x, lerpf(0.32, 0.0, _ease_in(u)), flat.z)
+		position = Vector3(flat.x, lerpf(hf_crotch_y, 0.0, _ease_in(u)), flat.z)
 		if u >= 1.0:
 			_hf_fall_land()
 		return
@@ -5105,13 +5344,13 @@ func _hf_perch_fall() -> void:
 	var f2 := hf_from.lerp(hf_to, p)
 	position = Vector3(f2.x, lerpf(hf_from.y, 0.0, p) + 1.2 * p * (1.0 - p), f2.z)
 	if p >= 1.0:
-		take_damage(6.0)
+		take_damage(6.0 * _surface_mult())
 		_hf_fall_land()
 
 
 func _hf_fall_land() -> void:
 	impact.emit(0.5)
-	sfx.emit("big_thud", 0.8, global_position + Vector3(0, 0.3, 0))
+	sfx.emit(_hf_thud("big_thud"), 0.8, global_position + Vector3(0, 0.3, 0))
 	_hf_go_down(PI, _down_time())
 	last_hit_tier = "strike"
 
@@ -5126,6 +5365,15 @@ func _hf_go_down(yaw_add: float, dur: float) -> void:
 	down_duration = dur
 	pose_root.rotation = Vector3(-PI / 2, 0.0, 0.0)
 	pose_root.position = Vector3(0.0, LIE_Y, 0.0)
+
+
+## Hard landings on the patio hurt more and sound harsher.
+func _surface_mult(p := Vector3.INF) -> float:
+	return 1.2 if _surface_here(p) == "concrete" else 1.0
+
+
+func _hf_thud(kind: String, p := Vector3.INF) -> String:
+	return "thud_concrete" if _surface_here(p) == "concrete" else kind
 
 
 # --- dives ---------------------------------------------------------------------------
@@ -5143,6 +5391,23 @@ func _hf_on_table_state() -> int:
 func _hf_opp_on_table() -> bool:
 	var ot := _hf_on_table_state()
 	return ot >= 0 and _opp_state() == ot
+
+
+func _hf_m(key: String) -> Dictionary:
+	if HF_EXTRA_MOVES.has(key):
+		var e: Dictionary = HF_EXTRA_MOVES[key]
+		return e
+	var m: Dictionary = MOVES[key]
+	return m
+
+
+func _hf_name(key: String) -> String:
+	if hf_super and HF_SUPER_NAMES.has(key):
+		var sn: String = HF_SUPER_NAMES[key]
+		return sn
+	var m := _hf_m(key)
+	var nm: String = m["name"]
+	return nm
 
 
 func _hf_start_dive() -> void:
@@ -5169,30 +5434,62 @@ func _hf_start_dive() -> void:
 	var op: Vector3 = opponent.position
 	var target := Vector3(op.x, 0.0, op.z) - dir * off
 	var flat_from := Vector3(position.x, 0.0, position.z)
-	if target.distance_to(flat_from) > HF_MAX_DIVE:
-		target = flat_from + dir * HF_MAX_DIVE  # too far: this one's going to hurt
+	var max_d := HF_MAX_DIVE + 1.5 * maxf(position.y, 0.0)
+	if _perch_kind(hf_perch) == "trampoline":
+		max_d += 1.5
+	if target.distance_to(flat_from) > max_d:
+		target = flat_from + dir * max_d  # too far: this one's going to hurt
 	_hf_launch(key, target)
 
 
 func _hf_launch(key: String, target: Vector3) -> void:
-	var m: Dictionary = MOVES[key]
+	var m := _hf_m(key)
 	var from_perch := state == S.PERCHED
+	var rope := key in HF_ROPE_LAUNCHES
 	var base_t: float = m["time"]
 	var h: float = m["height"]
-	var name_txt: String = m["name"]
+	var mom := clampf((run_speed - RUN_START_SPEED) / (RUN_TOP_SPEED - RUN_START_SPEED), 0.0, 1.0)
+	var perch_h := position.y
+	var kind := _perch_kind(hf_perch) if from_perch else ""
 	set_state(S.DIVING)
 	current_move_key = key
 	hf_move = key
 	hf_from = position
-	hf_to = Vector3(clampf(target.x, -RING_HALF, RING_HALF), 0.0, clampf(target.z, -RING_HALF, RING_HALF))
+	hf_to = _yard_clamp_pt(Vector3(target.x, 0.0, target.z), 0.4)
 	var d := Vector3(hf_to.x - position.x, 0.0, hf_to.z - position.z)
-	hf_time = base_t * clampf(d.length() / 3.0, 0.8, 1.35)
-	hf_height = h
+	var span := clampf(d.length() / 3.0, 0.85, 1.25)
+	hf_super = brawl_mode and key != "corner_splash"
+	hf_dmg_mult = 1.0
+	hf_pts_mult = 1.0
+	if from_perch:
+		# big hang time off the top (~0.9-1.2 s; more off the higher perches, the roof most)
+		var hk := clampf((perch_h - 0.75) / 1.65, 0.0, 1.0)
+		hf_time = clampf(base_t * 1.3 * span, 0.9, 1.2) * lerpf(0.92, 1.3, hk)
+		hf_height = h * lerpf(1.25, 1.6, hk)
+		hf_pts_mult = clampf(0.6 + 0.5 * perch_h, 0.9, 1.8)
+		hf_dmg_mult = lerpf(0.9, 1.25, hk)
+		if kind == "trampoline":
+			hf_time *= 1.25   # the trampoline launches extra high
+			hf_height *= 1.8
+			hf_pts_mult = 1.5
+		announce.emit(_hf_perch_call(hf_perch))
+	elif rope:
+		# faster run-up = more air off the fence
+		hf_time = base_t * lerpf(1.0, 1.2, mom) * span
+		hf_height = h * lerpf(1.1, 1.35, mom)
+	else:
+		hf_time = base_t * clampf(d.length() / 3.0, 0.8, 1.35)
+		hf_height = h
+	if hf_super:
+		hf_time *= 1.2
+		hf_height *= 1.4
+		hf_dmg_mult *= 1.35
 	hf_landed = false
 	hf_result = ""
 	hf_land_time = 0.3
+	_at_reset()
 	match key:
-		"backyard_splash", "gutter_star":
+		"backyard_splash", "gutter_star", "springboard_splash":
 			hf_end_yaw = PI
 		"flying_elbow":
 			hf_end_yaw = 0.5 * PI
@@ -5203,20 +5500,31 @@ func _hf_launch(key: String, target: Vector3) -> void:
 	if key == "corner_splash":
 		sfx.emit("whoosh", 0.5, _chest())
 	else:
-		sfx.emit("dive", 0.8 if from_perch else 0.5, _chest())
-	if from_perch:
+		sfx.emit("dive", 0.8 if from_perch or hf_super else 0.5, _chest())
+	if from_perch or rope:
 		sfx.emit("whoa", 0.7, _chest())
+	# a downed target stays down for the (longer) flight
+	if _opp_state() == S.DOWN:
+		var ost: float = opponent.state_time
+		var odd: float = opponent.down_duration
+		opponent.down_duration = maxf(odd, ost + hf_time + 0.35)
 	if key == "gutter_star":
 		spirit = 0.0
 		special_timer = 0.0
 		sfx.emit("finisher", 1.0, _chest())
-	if key == "gutter_star":
-		announce.emit(name_txt)  # finisher: called on takeoff (other moves on impact)
+		announce.emit(_hf_name(key))  # finisher: called on takeoff (other moves on impact)
+	elif hf_super:
+		sfx.emit("finisher", 0.8, _chest())
+		announce.emit(_hf_name(key))
+	if is_cpu:
+		_hf_ai_plan_tricks()
 
 
-func _hf_diving() -> void:
+func _hf_diving(delta: float) -> void:
 	var p := clampf(state_time / maxf(hf_time, 0.01), 0.0, 1.0)
 	if not hf_landed:
+		_at_input()
+		_at_update(delta)
 		var flat := hf_from.lerp(hf_to, p)
 		position = Vector3(flat.x, lerpf(hf_from.y, hf_to.y, p) + 4.0 * hf_height * p * (1.0 - p), flat.z)
 		if p >= 1.0:
@@ -5224,17 +5532,51 @@ func _hf_diving() -> void:
 			position = hf_to
 			_hf_land()
 		return
-	if state_time >= hf_time + hf_land_time:
+	if state_time >= hf_time + hf_land_time or state_time > hf_time + 3.0:
 		_hf_finish_dive()
 
 
-## Touchdown: did the target stay put? Applies the hit or the crash.
+## Touchdown: a trick cut short = botch; else did the target stay put? Hit, crash or feet.
 func _hf_land() -> void:
+	if _at_touchdown():
+		_hf_botch()
+		return
+	_hf_land_resolve()
+	if hf_result == "hit":
+		var m := _hf_m(hf_move)
+		var dmg: float = m["dmg"]
+		var pts := int(dmg * 30.0 * hf_pts_mult * (2.0 if hf_super else 1.0))
+		trick.emit(_hf_name(hf_move), pts, "super" if hf_super else "aerial")
+	if hf_result == "hit" or hf_result == "feet":
+		_at_clean_landing()
+	else:
+		trick.emit("", 0, "break")  # crash and burn: the combo is gone
+
+
+## Touched down mid-trick: under-rotated onto the grass / patio.
+func _hf_botch() -> void:
+	hf_result = "botch"
+	hf_land_time = 0.55
+	at_cur = {}
+	take_damage(8.0 * _surface_mult())
+	var line: String = AT_BOTCH_CALLS[randi() % AT_BOTCH_CALLS.size()]
+	if _surface_here() == "concrete":
+		line = "EATS THE PATIO!"
+	announce.emit(line)
+	trick.emit("", 0, "break")
+	impact.emit(0.7)
+	var contact := global_position + Vector3(0, 0.4, 0)
+	sfx.emit(_hf_thud("big_thud"), 1.0, contact)
+	sfx.emit("whoa", 0.9, contact + Vector3(0, 1.0, 0))
+
+
+func _hf_land_resolve() -> void:
 	var key := hf_move
-	var m: Dictionary = MOVES[key]
+	var m := _hf_m(key)
 	var dmg: float = m["dmg"]
+	dmg *= hf_dmg_mult * _surface_mult()
 	var tier: String = m["tier"]
-	var name_txt: String = m["name"]
+	var name_txt := _hf_name(key)
 	var os := _opp_state()
 	var op: Vector3 = opponent.position
 	var miss_by := Vector3(op.x - hf_to.x, 0.0, op.z - hf_to.z).length()
@@ -5246,16 +5588,17 @@ func _hf_land() -> void:
 			hf_result = "hit"
 			opponent.take_damage(dmg)
 			gain_spirit(dmg * 1.5)
+			var on: Vector3 = opponent.hf_fence_n
 			opponent.set_state(S.STUNNED)
 			opponent.stun_time = 1.1
-			opponent.dazed = true  # stumbles out of the corner: free lock-up
-			opponent.position = op - Vector3(_hf_sign(op.x), 0.0, _hf_sign(op.z)).normalized() * 0.4
+			opponent.dazed = true  # stumbles off the fence: free lock-up
+			opponent.position = op - on * 0.4
 			announce.emit(name_txt)
 			impact.emit(0.45)
 			sfx.emit("big_thud", 0.8, contact + Vector3(0, 0.8, 0))
 		else:
 			take_damage(5.0)
-			announce.emit("Ate the turnbuckle!")
+			announce.emit("Ate the %s!" % _hf_edge_name(_yard_hit_normal(1.0)))
 			impact.emit(0.3)
 			sfx.emit("thud", 0.6, contact + Vector3(0, 0.8, 0))
 		return
@@ -5279,13 +5622,13 @@ func _hf_land() -> void:
 			opponent.down_duration = maxf(odd, ost + 2.0)
 			gain_spirit(6.0)
 			impact.emit(clampf(dmg / 16.0, 0.6, 1.3))
-			sfx.emit("big_thud", clampf(dmg / 18.0, 0.8, 1.4), contact)
+			sfx.emit(_hf_thud("big_thud"), clampf(dmg / 18.0, 0.8, 1.4), contact)
 			return
 	else:
 		match key:
 			"springboard_moonsault":
 				hf_land_time = 0.5
-			"crossbody":
+			"crossbody", "slingshot_crossbody":
 				hf_land_time = 0.35
 			"springboard_forearm":
 				hf_land_time = 0.2
@@ -5301,7 +5644,7 @@ func _hf_land() -> void:
 				gain_spirit(4.0)
 				announce.emit(name_txt)
 				impact.emit(clampf(dmg / 16.0, 0.5, 1.0))
-				sfx.emit("big_thud" if key != "springboard_forearm" else "thud", 0.8, contact + Vector3(0, 0.6, 0))
+				sfx.emit("big_thud" if key != "springboard_forearm" else _hf_thud("thud"), 0.8, contact + Vector3(0, 0.6, 0))
 				return
 		elif key == "springboard_moonsault" and _opp_state() == S.DOWN and miss_by <= 1.2:
 			hf_result = "hit"
@@ -5309,21 +5652,33 @@ func _hf_land() -> void:
 			announce.emit(name_txt)
 			impact.emit(0.6)
 			return
-	# the target moved: crash and burn
-	if key == "springboard_forearm":
-		announce.emit("Missed!")
-		sfx.emit("thud", 0.4, contact)
+	# the target moved: fence launches at a standing target land on their feet ...
+	if key in HF_FEET_LAUNCHES:
+		hf_result = "feet"
+		hf_land_time = 0.35
+		if at_count == 0:
+			announce.emit("Missed! Lands on the feet.")
+		sfx.emit(_hf_thud("thud"), 0.4, contact)
 		return
+	# ... everything else crashes and burns
 	hf_land_time = maxf(hf_land_time, 0.45)
-	take_damage(10.0 if key in HF_GROUND_DIVES else 7.0)
-	announce.emit("CRASH AND BURN!")
+	take_damage((10.0 if key in HF_GROUND_DIVES else 7.0) * _surface_mult())
+	announce.emit("CRASH AND BURN!" if _surface_here() != "concrete" else "CRASH AND BURN ON THE PATIO!")
 	impact.emit(0.7)
-	sfx.emit("big_thud", 1.0, contact)
+	sfx.emit(_hf_thud("big_thud"), 1.0, contact)
 	sfx.emit("whoa", 0.9, contact + Vector3(0, 1.0, 0))
 
 
 func _hf_finish_dive() -> void:
 	var hit := hf_result == "hit"
+	if hf_result == "botch":
+		_hf_go_down(hf_end_yaw, _down_time() + 0.4)
+		last_hit_tier = "strike"
+		return
+	if hf_result == "feet":
+		position.y = 0.0
+		set_state(S.IDLE)
+		return
 	match hf_move:
 		"springboard_forearm":
 			position.y = 0.0
@@ -5363,9 +5718,195 @@ func _hf_super_drop() -> void:
 	sfx.emit("whoa", 0.8, _chest())
 	gain_spirit(dmg * 1.5)
 	set_state(S.THROWING)
-	current_move_key = "suplex"  # reuses the suplex animation, hauled out of the corner
+	current_move_key = "suplex"  # reuses the suplex animation, hauled off the fence
 	throw_time = m["time"]
 	opponent.start_thrown(position + facing * land, m, "suplex")
+
+
+# --- air tricks ----------------------------------------------------------------------
+# While airborne (any dive / springboard / slingshot): STRIKE = spin (each press +180, stick
+# left / right picks the direction), GRAB = flip (stick up = frontflip, else backflip; pressing it
+# again during a flip the same way makes it a double, triple ...), PIN = a pose trick picked by the
+# stick (none: Spread Eagle, up: Porch Light, down: Lawn Chair, left: Air Guitar, right: Kiddie
+# Pool Cannonball). Tricks play one after another; each finished one scores
+# trick(name, points, "air_trick"): later tricks in the same air are worth more, bigger perches
+# more, BRAWL MODE double. Touching down with a spin / flip / pose still going = botch.
+
+func _at_reset() -> void:
+	at_queue.clear()
+	at_cur = {}
+	at_prog = 0.0
+	at_spin = 0.0
+	at_flip = 0.0
+	at_parts = PackedStringArray()
+	at_points = 0
+	at_count = 0
+	at_used = false
+
+
+## The most recently queued trick (or the one being performed), {} if none.
+func _at_last() -> Dictionary:
+	if not at_queue.is_empty():
+		var q: Dictionary = at_queue[at_queue.size() - 1]
+		return q
+	return at_cur
+
+
+func _at_input() -> void:
+	if hf_move == "corner_splash":
+		return
+	if in_strike:
+		_at_press("spin")
+	if in_grapple:
+		_at_press("flip")
+	if in_pin:
+		_at_press("pose")
+
+
+func _at_press(kind: String) -> void:
+	at_used = true
+	var last := _at_last()
+	var lk: String = last.get("kind", "")
+	match kind:
+		"spin":
+			if lk == "spin":
+				var t0: float = last["target"]
+				last["target"] = t0 + PI  # stack another 180
+				return
+			var sg := -1.0 if in_move.x > 0.3 else 1.0
+			_at_enqueue({"kind": "spin", "target": PI, "sign": sg})
+		"flip":
+			var front := in_move.y < -0.4
+			if lk == "flip":
+				var lf: bool = last["front"]
+				if lf == front:
+					var t1: float = last["target"]
+					last["target"] = t1 + TAU  # double, triple ...
+					return
+			_at_enqueue({"kind": "flip", "target": TAU, "front": front, "sign": 1.0 if front else -1.0})
+		_:
+			_at_enqueue({"kind": "pose", "name": _at_pose_name(in_move), "target": AT_POSE_TIME, "sign": 1.0})
+
+
+func _at_enqueue(t: Dictionary) -> void:
+	if at_queue.size() < 6:
+		at_queue.append(t)
+
+
+func _at_pose_name(mv: Vector2) -> String:
+	if mv.length() < 0.4:
+		return "Spread Eagle"
+	if absf(mv.x) > absf(mv.y):
+		return "Air Guitar" if mv.x < 0.0 else "Kiddie Pool Cannonball"
+	return "Porch Light" if mv.y < 0.0 else "Lawn Chair"
+
+
+func _at_update(delta: float) -> void:
+	if state_time < AT_START:
+		return
+	if at_cur.is_empty():
+		if at_queue.is_empty():
+			return
+		at_cur = at_queue.pop_front()
+		at_prog = 0.0
+		sfx.emit("whoosh", 0.35, _chest())
+	var kind: String = at_cur["kind"]
+	var target: float = at_cur["target"]
+	var sg: float = at_cur["sign"]
+	match kind:
+		"spin":
+			var step := minf(AT_SPIN_RATE * delta, target - at_prog)
+			at_prog += step
+			at_spin += sg * step
+		"flip":
+			at_prog = minf(at_prog + AT_FLIP_RATE * delta, target)
+			at_flip = sg * at_prog
+		_:
+			at_prog = minf(at_prog + delta, target)
+	if at_prog >= target - 0.0001:
+		_at_complete()
+
+
+func _at_complete() -> void:
+	var kind: String = at_cur["kind"]
+	var target: float = at_cur["target"]
+	var nm := ""
+	var base := 0
+	match kind:
+		"spin":
+			var halves := int(round(target / PI))
+			var deg := halves * 180
+			nm = str(deg) if deg < 360 else "%d Spin" % deg
+			if halves < AT_SPIN_POINTS.size():
+				base = AT_SPIN_POINTS[halves]
+			else:
+				base = 2600 + 900 * (halves - 6)
+			at_parts.append(str(deg))
+		"flip":
+			var n := int(round(target / TAU))
+			var front: bool = at_cur["front"]
+			nm = "Frontflip" if front else "Backflip"
+			if n == 2:
+				nm = "Double " + nm
+			elif n == 3:
+				nm = "Triple " + nm
+			elif n > 3:
+				nm = "%dx %s" % [n, nm]
+			var fm := 1.0 if n <= 1 else (2.5 if n == 2 else (5.0 if n == 3 else 2.0 * n))
+			base = int((550.0 if front else 600.0) * fm)
+			at_flip = 0.0
+			at_parts.append(nm)
+		_:
+			nm = at_cur["name"]
+			base = AT_POSE_POINTS.get(nm, 300)
+			at_parts.append(nm)
+	var pts := int(float(base) * (1.0 + 0.25 * at_count) * hf_pts_mult * (2.0 if brawl_mode else 1.0))
+	at_count += 1
+	at_points += pts
+	at_cur = {}
+	at_prog = 0.0
+	trick.emit(nm, pts, "air_trick")
+	sfx.emit("trick", 0.6, _chest())
+
+
+## Touchdown: a trick that's nearly done is finished; one cut short = botch (returns true).
+## The spin so far is folded into our facing, so the landing pose carries on from it.
+func _at_touchdown() -> bool:
+	var botch := false
+	if not at_cur.is_empty():
+		var kind: String = at_cur["kind"]
+		var target: float = at_cur["target"]
+		var left := target - at_prog
+		if left <= (0.15 if kind == "pose" else AT_LAND_SLOP):
+			if kind == "spin":
+				var sg: float = at_cur["sign"]
+				at_spin += sg * left
+			if kind == "flip":
+				at_flip = 0.0
+			at_prog = target
+			_at_complete()
+		else:
+			botch = true
+	at_queue.clear()
+	if absf(at_spin) > 0.0001:
+		_set_facing_angle(rotation.y + at_spin)
+		at_spin = 0.0
+	return botch
+
+
+func _at_clean_landing() -> void:
+	if at_count == 0:
+		return
+	var line: String = AT_CLEAN_CALLS[randi() % AT_CLEAN_CALLS.size()]
+	var bonus := maxi(150, int(float(at_points) * 0.3))
+	if at_count >= 2:
+		var combo := " ".join(at_parts) + "!"
+		announce.emit(combo)
+		trick.emit(combo + " " + line, bonus, "air_trick")
+	else:
+		announce.emit(line)
+		trick.emit(line, bonus, "air_trick")
+	sfx.emit("trick", 1.0, _chest())
 
 
 # --- AI --------------------------------------------------------------------------------
@@ -5375,8 +5916,13 @@ func _hf_ai(dist: float, toward: Vector2, os: int) -> bool:
 		hf_ai_tie_rolled = false
 	if os != S.DIVING:
 		hf_ai_dodge = -1
+	if state != S.RUN and state != S.IDLE and state != S.WALK:
+		hf_ai_rope_run = false
 	match state:
-		S.CLIMB, S.DIVING, S.PERCH_FALL, S.CORNER_STUN:
+		S.CLIMB, S.PERCH_FALL, S.CORNER_STUN, S.ROLL:
+			return true
+		S.DIVING:
+			_hf_ai_air_tricks()  # air tricks on the way down
 			return true
 		S.PERCHED:
 			_hf_ai_perched(dist, toward, os)
@@ -5385,11 +5931,9 @@ func _hf_ai(dist: float, toward: Vector2, os: int) -> bool:
 			if not hf_ai_tie_rolled and committed_move == "" and state_time > ai_tie_delay:
 				hf_ai_tie_rolled = true
 				if randf() < 0.12:
-					# Irish whip into the nearest corner
-					var cp := _hf_nearest_corner_point(position, 3.6)
-					var dc := cp - position
+					# diagonal Irish whip: slams them into the fence
 					in_run = true
-					in_move = Vector2(dc.x, dc.z).normalized()
+					in_move = Vector2(_hf_sign(position.x), _hf_sign(position.z)).normalized()
 					return true
 			return false
 		S.RUN:
@@ -5401,11 +5945,20 @@ func _hf_ai(dist: float, toward: Vector2, os: int) -> bool:
 				else:
 					in_move = toward
 				return true
-			if anim_clock - hf_rope_at < 0.3 and hf_ai_spring_roll < 0.3 and os != S.DOWN \
-					and dist > 1.2 and dist < 3.8:
+			var fresh := anim_clock - hf_rope_at < 0.3
+			var target_ok: bool = opponent.is_standing() or os == S.DOWN or _hf_opp_on_table()
+			if fresh and (hf_ai_rope_run or hf_ai_spring_roll < 0.4) and dist > 1.2 and dist < 5.5 and target_ok:
 				hf_ai_spring_roll = 2.0
-				in_strike = true
+				hf_ai_rope_run = false
+				if randf() < 0.5:
+					in_grapple = true  # slingshot
+				else:
+					in_strike = true   # springboard
 				return true
+			if hf_ai_rope_run:
+				if rope_bounces == 0 and state_time < 2.5:
+					return true  # straight into the fence
+				hf_ai_rope_run = false
 			return false
 	if state != S.IDLE and state != S.WALK:
 		return false
@@ -5419,7 +5972,17 @@ func _hf_ai(dist: float, toward: Vector2, os: int) -> bool:
 			if randf() < 0.7:
 				in_strike = true
 		return true
-	# punish a cornered opponent
+	# a running lariat coming: sometimes dodge-roll out of the way
+	if os == S.RUN_ATTACK:
+		if not mv_ai_roll_seen and dist < 3.0:
+			mv_ai_roll_seen = true
+			if randf() < 0.12 + 0.25 * ai_skill:
+				var side := 1.0 if randf() < 0.5 else -1.0
+				_mv_start_roll(Vector3(-toward.y, 0.0, toward.x) * side)
+				return true
+	else:
+		mv_ai_roll_seen = false
+	# punish an opponent slumped on the fence
 	if os == S.CORNER_STUN:
 		if can_act:
 			ai_timer = randf_range(0.25, 0.5)
@@ -5430,39 +5993,60 @@ func _hf_ai(dist: float, toward: Vector2, os: int) -> bool:
 					in_strike = true
 			elif dist < 3.4:
 				in_run = true
-				in_move = toward  # charge in for a corner splash
+				in_move = toward  # charge in for a splash
 			else:
 				in_move = toward
 		elif dist > 1.4:
 			in_move = toward
 		return true
-	# see a standing-target dive coming: sometimes sidestep it
+	# see a standing-target dive coming: sometimes sidestep or roll out of it
 	if os == S.DIVING:
 		var om: String = opponent.hf_move
 		if dist < 4.0 and not (om in HF_GROUND_DIVES):
 			if hf_ai_dodge < 0:
 				hf_ai_dodge = 1 if randf() < 0.15 + 0.3 * ai_skill else 0
+				if hf_ai_dodge == 1 and randf() < 0.5:
+					hf_ai_dodge = 2
+			if hf_ai_dodge == 2 and dist < 2.6:
+				hf_ai_dodge = 1
+				_mv_start_roll(Vector3(-toward.y, 0.0, toward.x))
+				return true
 			if hf_ai_dodge == 1:
 				in_move = Vector2(-toward.y, toward.x)
 		return true
-	# opponent down and a corner close by: sometimes go up top
+	# opponent down: sometimes go up on a perch, or hit the fence for a launch
 	if os != S.DOWN:
 		hf_ai_climb_plan = -1
 		return false
 	if hf_ai_climb_plan < 0:
-		var cp := _hf_nearest_corner_point(position, HF_PERCH_XZ)
 		var ost: float = opponent.state_time
 		var odd: float = opponent.down_duration
-		var near := Vector3(cp.x - position.x, 0.0, cp.z - position.z).length() < 3.0
-		hf_ai_climb_plan = 1 if near and odd - ost > 1.6 and randf() < 0.25 else 0
+		var left := odd - ost
+		hf_ai_perch = _hf_near_perch(3.5)
+		hf_ai_climb_plan = 1 if hf_ai_perch >= 0 and left > 1.6 and randf() < 0.28 else 0
+		if hf_ai_climb_plan == 0 and left > 1.8 and dist < 4.5 and randf() < 0.22:
+			hf_ai_climb_plan = 2
 	if hf_ai_climb_plan == 1:
-		var cp2 := _hf_nearest_corner_point(position, HF_PERCH_XZ)
-		var dc2 := Vector3(cp2.x - position.x, 0.0, cp2.z - position.z)
-		in_move = Vector2(dc2.x, dc2.z).normalized()
-		if _hf_near_corner() != Vector3.ZERO and ai_react <= 0.0:
-			in_move = Vector2.ZERO  # RUN standing still next to a corner = climb
+		var ps := _hf_perches()
+		if hf_ai_perch < 0 or hf_ai_perch >= ps.size():
+			hf_ai_climb_plan = 0
+			return false
+		var pr: Dictionary = ps[hf_ai_perch]
+		var ap := _perch_approach(pr)
+		var dc2 := Vector3(ap.x - position.x, 0.0, ap.z - position.z)
+		if dc2.length() > 0.05:
+			in_move = Vector2(dc2.x, dc2.z).normalized()
+		if dc2.length() < HF_CLIMB_RANGE * 0.8 and ai_react <= 0.0:
+			in_move = Vector2.ZERO  # RUN standing still at a perch = climb
 			in_run = true
 			hf_ai_climb_plan = 0
+		return true
+	if hf_ai_climb_plan == 2:
+		if ai_react <= 0.0:
+			hf_ai_climb_plan = 0
+			hf_ai_rope_run = true
+			in_run = true
+			in_move = -toward  # hit the fence behind us, launch off it
 		return true
 	return false
 
@@ -5487,6 +6071,77 @@ func _hf_ai_perched(dist: float, toward: Vector2, os: int) -> void:
 				in_move = toward                    # missile dropkick (else crossbody)
 	elif state_time > 2.5:
 		in_run = true                               # nothing to dive at: climb down
+
+
+## On takeoff: maybe plan a few air tricks that fit the hang time (the less skilled sometimes
+## reach for one too many and botch).
+func _hf_ai_plan_tricks() -> void:
+	hf_ai_plan.clear()
+	if hf_move == "corner_splash":
+		return
+	var chance := 0.85 if brawl_mode else 0.3 + 0.35 * ai_skill
+	if randf() >= chance:
+		return
+	var budget := hf_time - lerpf(0.2, 0.06, ai_skill)
+	var greedy := randf() < 0.3 - 0.2 * ai_skill
+	var t := AT_START
+	var prev := ""
+	for i in range(3):
+		var kind := "pose"
+		var r := randf()
+		if r < 0.45 and prev != "spin":
+			kind = "spin"
+		elif r < 0.75 and prev != "flip":
+			kind = "flip"
+		var halves := 2 + randi() % 3
+		var dur := AT_POSE_TIME
+		if kind == "spin":
+			dur = float(halves) * PI / AT_SPIN_RATE
+		elif kind == "flip":
+			dur = TAU / AT_FLIP_RATE
+		var over := t + dur > budget
+		if over and not greedy:
+			if kind == "spin" and t + 2.0 * PI / AT_SPIN_RATE <= budget:
+				halves = 2
+				dur = 2.0 * PI / AT_SPIN_RATE
+				over = false
+			else:
+				break
+		match kind:
+			"spin":
+				var sx := -1.0 if randf() < 0.5 else 1.0
+				for k in range(halves):
+					hf_ai_plan.append([t + 0.07 * k, "strike", Vector2(sx, 0.0)])
+			"flip":
+				hf_ai_plan.append([t, "grab", Vector2(0.0, -1.0 if randf() < 0.4 else 1.0)])
+			_:
+				var dirs := [Vector2.ZERO, Vector2(0.0, -1.0), Vector2(0.0, 1.0), Vector2(-1.0, 0.0), Vector2(1.0, 0.0)]
+				hf_ai_plan.append([t, "pin", dirs[randi() % dirs.size()]])
+		t += dur + 0.03
+		prev = kind
+		if over:
+			break
+
+
+func _hf_ai_air_tricks() -> void:
+	if hf_ai_plan.is_empty() or hf_landed:
+		return
+	var e: Array = hf_ai_plan[0]
+	var t0: float = e[0]
+	if t0 > state_time:
+		return
+	hf_ai_plan.pop_front()
+	var btn: String = e[1]
+	var mv: Vector2 = e[2]
+	in_move = mv
+	match btn:
+		"strike":
+			in_strike = true
+		"grab":
+			in_grapple = true
+		_:
+			in_pin = true
+
 
 
 # --- poses -------------------------------------------------------------------------------
@@ -5539,18 +6194,6 @@ func _pose_hf_climb() -> void:
 	pt_ar = Vector3(-0.7, 0.0, 0.95)
 	pt_el_l = Vector3(-0.5, 0.0, 0.0)
 	pt_el_r = Vector3(-0.5, 0.0, 0.0)
-	var grip := 1.0 - _smooth(_seg(p, 0.6, 0.85))
-	if hf_mode == "down":
-		grip = _smooth(_seg(p, 0.1, 0.35))
-	var rr := get_parent() as Node3D
-	if grip > 0.0 and rr != null and hf_corner != Vector3.ZERO:
-		var c := hf_corner
-		var top := HF_PERCH_Y - 0.1  # top rope height (ring local)
-		var lift_a := 0.15 * lift if left_steps else 0.0
-		var lift_b := 0.0 if left_steps else 0.15 * lift
-		var pa := Vector3(c.x * HF_CORNER_POST, top + lift_a, clampf(position.z + c.z * 0.12, -HF_CORNER_POST, HF_CORNER_POST))
-		var pb := Vector3(clampf(position.x + c.x * 0.12, -HF_CORNER_POST, HF_CORNER_POST), top + lift_b, c.z * HF_CORNER_POST)
-		_reach_pair(rr.to_global(pa), rr.to_global(pb), grip)
 
 
 func _pose_hf_perched() -> void:
@@ -5675,7 +6318,11 @@ func _pose_hf_perch_fall() -> void:
 ## Flight keys [p, pelvis_y, orientation] for the dives that tumble (basis-posed).
 func _hf_dive_keys(key: String) -> Array:
 	match key:
-		"backyard_splash":
+		"slingshot_senton":
+			# slung up, then a forward 3/4 flip onto the back
+			return [[0.0, 0.72, _qe(0.0, 0.3)], [0.25, 0.95, _qe(0.0, 0.5 * PI)], [0.5, 0.95, _qe(0.0, PI)],
+				[0.75, 0.8, _qe(0.0, 1.25 * PI)], [1.0, 0.42, _qe(0.0, 1.5 * PI)]]
+		"backyard_splash", "springboard_splash":
 			# springs up arched, then lays out flat face-down for most of the flight
 			return [[0.0, 0.72, _qe(0.0, 0.35)], [0.2, 0.95, _qe(0.0, -0.2)], [0.45, 0.95, _qe(0.0, 1.05)],
 				[0.75, 0.75, _qe(0.0, 1.4)], [1.0, 0.42, _qe(0.0, PI / 2)]]
@@ -5695,7 +6342,7 @@ func _hf_dive_keys(key: String) -> Array:
 		"missile_dropkick":
 			return [[0.0, 0.72, _qe(0.0, 0.35)], [0.25, 0.95, _qe(0.0, -0.3)], [0.55, 0.9, _qe(0.0, -1.35)],
 				[1.0, LIE_Y + 0.03, _qe(0.0, -PI / 2)]]
-		"crossbody":
+		"crossbody", "slingshot_crossbody":
 			return [[0.0, 0.72, _qe(0.0, 0.35)], [0.3, 0.95, _qe(0.0, 0.5, 0.6)], [0.7, 1.0, _qe(0.0, 0.3, PI / 2)],
 				[1.0, 1.0, _qe(0.0, 0.2, PI / 2)]]
 	return [[0.0, STAND_Y, Quaternion.IDENTITY], [1.0, STAND_Y, Quaternion.IDENTITY]]
@@ -5725,8 +6372,16 @@ func _hf_sample(keys: Array, p: float) -> void:
 
 
 func _pose_hf_diving() -> void:
-	if hf_move == "springboard_forearm" or hf_move == "corner_splash":
+	_pose_hf_dive_body()
+	_pose_at_overlay()
+
+
+func _pose_hf_dive_body() -> void:
+	var hop := hf_move == "springboard_forearm" or hf_move == "corner_splash"
+	if hop and hf_result != "botch":
 		_pose_hf_hop()
+		if at_used:
+			_at_hop_to_basis()  # so air tricks can turn the body
 		return
 	pt_use_basis = true
 	r_limb = 16.0
@@ -5740,20 +6395,27 @@ func _pose_hf_diving() -> void:
 	# Touched down: hold the impact, then settle / roll onto the back (or into the cover).
 	var last: Array = keys[keys.size() - 1]
 	var q0: Quaternion = last[2]
+	q0 = (Quaternion(Vector3.RIGHT, at_flip) * q0).normalized()  # a botched flip lands where it got to
 	var y0: float = last[1]
 	var u := clampf((state_time - hf_time) / maxf(hf_land_time, 0.01), 0.0, 1.0)
 	var q1 := _qe(hf_end_yaw, -PI / 2)
 	var y1 := LIE_Y
 	var w := _smooth(_seg(u, 0.35, 1.0))
 	var wy := w
-	if hf_move == "crossbody":
+	if hf_result == "feet":
+		# missed: tuck it and come down on the feet in a crouch
+		q1 = Quaternion.IDENTITY
+		y1 = 0.8
+		w = _smooth(_seg(u, 0.0, 0.6))
+		wy = w
+	elif hf_move == "crossbody":
 		w = _ease_in(_seg(u, 0.0, 0.8))
 		wy = w
 		if hf_result == "hit":
 			q1 = _qe(0.0, 1.35)
 			y1 = PIN_Y
-	elif hf_result == "crash":
-		wy = _smooth(_seg(u, 0.0, 0.2))  # nobody to land on: straight to the mat
+	elif hf_result == "crash" or hf_result == "botch":
+		wy = _smooth(_seg(u, 0.0, 0.2))  # nobody to land on: straight to the ground
 	throw_pose_q = q0.slerp(q1, w).normalized()
 	throw_pose_y = lerpf(y0, y1, wy)
 	var fling := _hump(u, 0.0, 0.3)
@@ -5768,6 +6430,172 @@ func _pose_hf_diving() -> void:
 	pt_tor = Vector3(0.1, 0.0, 0.0)
 	pt_hd = Vector3(0.3 * fling, 0.0, 0.0)
 	r_limb = 12.0
+	if hf_result == "feet":
+		pt_ll = Vector3(-0.55, 0.0, -0.18)
+		pt_lr = Vector3(-0.35, 0.0, 0.18)
+		pt_kn_l = 1.1
+		pt_kn_r = 0.9
+		pt_al = Vector3(-1.2, 0.0, -1.1)
+		pt_ar = Vector3(-1.2, 0.0, 1.1)
+		pt_tor = Vector3(0.35, 0.0, 0.0)
+		pt_hd = Vector3(-0.3, 0.0, 0.0)
+		r_limb = 18.0
+
+
+## Springboard forearm with tricks: express the hop pose as a pelvis basis (spins / flips go on it).
+func _at_hop_to_basis() -> void:
+	var y := pt_root_pos.y
+	if pt_auto_height:
+		y = maxf(_leg_drop(-pt_ll.x, pt_kn_l, pt_ll.z), _leg_drop(-pt_lr.x, pt_kn_r, pt_lr.z))
+	y += pt_root_dy
+	pt_use_basis = true
+	throw_pose_q = Quaternion(Basis.from_euler(pt_root_rot))
+	throw_pose_y = y
+	pt_basis_off = Vector3(pt_root_pos.x, 0.0, pt_root_pos.z)
+
+
+## Air tricks on top of the dive's own keys: the spin about the vertical, the flip about the hips'
+## side axis, and the limbs of whatever trick is going (keyframed in / hold / out).
+func _pose_at_overlay() -> void:
+	if not pt_use_basis or hf_landed:
+		return
+	if not at_cur.is_empty():
+		var kind: String = at_cur["kind"]
+		var tgt: float = at_cur["target"]
+		match kind:
+			"spin":
+				# arms wrapped across the chest, legs together: a tight, fast spin
+				var w := _smooth(_seg(at_prog, 0.0, 0.5)) * (1.0 - _smooth(_seg(at_prog, tgt - 0.5, tgt)))
+				pt_al = pt_al.lerp(Vector3(-1.2, 0.0, 0.35), w)
+				pt_ar = pt_ar.lerp(Vector3(-1.2, 0.0, -0.35), w)
+				pt_el_l = pt_el_l.lerp(Vector3(-1.9, 0.0, 0.0), w)
+				pt_el_r = pt_el_r.lerp(Vector3(-1.9, 0.0, 0.0), w)
+				pt_ll = pt_ll.lerp(Vector3(-0.15, 0.0, 0.03), w)
+				pt_lr = pt_lr.lerp(Vector3(-0.15, 0.0, -0.03), w)
+				pt_kn_l = lerpf(pt_kn_l, 0.35, w)
+				pt_kn_r = lerpf(pt_kn_r, 0.35, w)
+				pt_hd.x = lerpf(pt_hd.x, -0.2, w)
+				r_limb = 24.0
+			"flip":
+				# tuck tight through the flip, open out to finish it
+				var w := _smooth(_seg(at_prog, 0.0, 0.6)) * (1.0 - _smooth(_seg(at_prog, tgt - 0.9, tgt)))
+				pt_ll = pt_ll.lerp(Vector3(-2.0, 0.0, -0.1), w)
+				pt_lr = pt_lr.lerp(Vector3(-2.0, 0.0, 0.1), w)
+				pt_kn_l = lerpf(pt_kn_l, 2.2, w)
+				pt_kn_r = lerpf(pt_kn_r, 2.2, w)
+				pt_al = pt_al.lerp(Vector3(-1.3, 0.0, -0.3), w)
+				pt_ar = pt_ar.lerp(Vector3(-1.3, 0.0, 0.3), w)
+				pt_el_l = pt_el_l.lerp(Vector3(-1.2, 0.0, 0.0), w)
+				pt_el_r = pt_el_r.lerp(Vector3(-1.2, 0.0, 0.0), w)
+				pt_tor.x = lerpf(pt_tor.x, 0.5, w)
+				pt_hd.x = lerpf(pt_hd.x, 0.4, w)
+				r_limb = 26.0
+			_:
+				var nm: String = at_cur["name"]
+				_pose_at_trick(nm)
+	var q := Quaternion(Vector3.UP, at_spin) * Quaternion(Vector3.RIGHT, at_flip)
+	throw_pose_q = (q * throw_pose_q).normalized()
+
+
+## The PIN pose tricks (limbs + the body attitude each reads best in), blended in / out.
+func _pose_at_trick(nm: String) -> void:
+	var t := at_prog
+	var w := _smooth(_seg(t, 0.0, 0.12)) * (1.0 - _smooth(_seg(t, AT_POSE_TIME - 0.12, AT_POSE_TIME)))
+	var ac := anim_clock
+	var al := pt_al
+	var ar := pt_ar
+	var el_l := pt_el_l
+	var el_r := pt_el_r
+	var ll := pt_ll
+	var lr := pt_lr
+	var kl := pt_kn_l
+	var kr := pt_kn_r
+	var tor := pt_tor
+	var hd := pt_hd
+	var pref := throw_pose_q
+	var pw := 0.0
+	match nm:
+		"Spread Eagle":
+			# a big X: arms and legs straight out, chest arched
+			al = Vector3(-0.25, 0.0, -1.55)
+			ar = Vector3(-0.25, 0.0, 1.55)
+			el_l = Vector3(-0.05, 0.0, 0.0)
+			el_r = el_l
+			ll = Vector3(0.05, 0.0, -0.55)
+			lr = Vector3(0.05, 0.0, 0.55)
+			kl = 0.08
+			kr = 0.08
+			tor = Vector3(-0.2, 0.0, 0.0)
+			hd = Vector3(-0.5, 0.0, 0.0)
+		"Porch Light":
+			# upright, right arm reaching straight for the sky, left hand on the hip, one knee up
+			ar = Vector3(-3.05, 0.0, 0.12)
+			el_r = Vector3(-0.05, 0.0, 0.0)
+			al = Vector3(0.15, 0.0, -0.4)
+			el_l = Vector3(-1.7, 0.0, 0.0)
+			ll = Vector3(-0.1, 0.0, -0.05)
+			kl = 0.1
+			lr = Vector3(-1.0, 0.0, 0.1)
+			kr = 1.7
+			tor = Vector3(-0.1, 0.0, 0.0)
+			hd = Vector3(-0.6, 0.0, 0.0)
+			pref = _qe(0.0, -0.1)
+			pw = 0.85
+		"Lawn Chair":
+			# kicked back in mid-air: seated, legs crossed, hands behind the head
+			ll = Vector3(-1.55, 0.0, 0.14)
+			lr = Vector3(-1.4, 0.0, -0.05)
+			kl = 1.45
+			kr = 1.35
+			al = Vector3(-2.7, 0.0, -0.8)
+			ar = Vector3(-2.7, 0.0, 0.8)
+			el_l = Vector3(-2.4, 0.0, 0.0)
+			el_r = el_l
+			tor = Vector3(-0.15, 0.0, 0.05 * sin(ac * 6.0))
+			hd = Vector3(0.15, 0.0, 0.0)
+			pref = _qe(0.0, -0.5)
+			pw = 0.85
+		"Air Guitar":
+			# knees bent, left hand up the neck, right hand strumming, head banging
+			ll = Vector3(-0.7, 0.0, -0.3)
+			kl = 1.3
+			lr = Vector3(-0.2, 0.0, 0.25)
+			kr = 0.6
+			al = Vector3(-1.35, 0.0, -0.7)
+			el_l = Vector3(-0.35, 0.0, 0.0)
+			ar = Vector3(-0.6 + 0.3 * sin(ac * 28.0), 0.0, 0.3)
+			el_r = Vector3(-1.5, 0.0, 0.0)
+			tor = Vector3(0.3, 0.25, 0.0)
+			hd = Vector3(0.25 + 0.35 * sin(ac * 14.0), 0.0, 0.0)
+			pref = _qe(0.0, -0.05)
+			pw = 0.85
+		_:
+			# "Kiddie Pool Cannonball": balled up, hugging the shins
+			ll = Vector3(-2.3, 0.0, -0.12)
+			lr = Vector3(-2.3, 0.0, 0.12)
+			kl = 2.4
+			kr = 2.4
+			al = Vector3(-1.0, 0.0, 0.2)
+			ar = Vector3(-1.0, 0.0, -0.2)
+			el_l = Vector3(-1.9, 0.0, 0.0)
+			el_r = el_l
+			tor = Vector3(0.7, 0.0, 0.0)
+			hd = Vector3(0.5, 0.0, 0.0)
+			pref = _qe(0.0, 0.3)
+			pw = 0.85
+	pt_al = pt_al.lerp(al, w)
+	pt_ar = pt_ar.lerp(ar, w)
+	pt_el_l = pt_el_l.lerp(el_l, w)
+	pt_el_r = pt_el_r.lerp(el_r, w)
+	pt_ll = pt_ll.lerp(ll, w)
+	pt_lr = pt_lr.lerp(lr, w)
+	pt_kn_l = lerpf(pt_kn_l, kl, w)
+	pt_kn_r = lerpf(pt_kn_r, kr, w)
+	pt_tor = pt_tor.lerp(tor, w)
+	pt_hd = pt_hd.lerp(hd, w)
+	throw_pose_q = throw_pose_q.slerp(pref, w * pw).normalized()
+	r_limb = 26.0
+	r_body = 22.0
 
 
 ## Limbs while flying (body orientation comes from the keys).
@@ -5784,7 +6612,7 @@ func _hf_dive_limbs(p: float) -> void:
 	pt_tor = Vector3(0.3 * launch, 0.0, 0.0)
 	pt_hd = Vector3(-0.3, 0.0, 0.0)
 	match hf_move:
-		"backyard_splash":
+		"backyard_splash", "springboard_splash":
 			# spread-eagle: arms straight out to the sides, legs straight and apart, flat
 			var spread := _smooth(_seg(p, 0.25, 0.5))
 			var sz := 1.5 + 0.08 * sin(anim_clock * 14.0) * spread  # arms flutter in the wind
@@ -5798,7 +6626,7 @@ func _hf_dive_limbs(p: float) -> void:
 			pt_kn_r = pt_kn_l
 			pt_tor.x = lerpf(pt_tor.x, -0.1, spread)  # slight arch: chest leads
 			pt_hd.x = lerpf(-0.3, -0.65, spread)
-		"moonsault", "springboard_moonsault", "gutter_star":
+		"moonsault", "springboard_moonsault", "gutter_star", "slingshot_senton":
 			var tuck := _hump(p, 0.3, 0.85)
 			var open := _smooth(_seg(p, 0.2, 0.4))
 			var flat2 := _smooth(_seg(p, 0.85, 1.0))
@@ -5833,7 +6661,7 @@ func _hf_dive_limbs(p: float) -> void:
 			pt_al = pt_al.lerp(Vector3(0.6, 0.0, -0.8), kick)
 			pt_ar = pt_ar.lerp(Vector3(0.6, 0.0, 0.8), kick)
 			pt_hd.x = lerpf(-0.3, 0.4, kick)
-		"crossbody":
+		"crossbody", "slingshot_crossbody":
 			var spread := _smooth(_seg(p, 0.2, 0.5))
 			pt_al = pt_al.lerp(Vector3(-1.4, 0.0, -0.9), spread)
 			pt_ar = pt_ar.lerp(Vector3(-1.4, 0.0, 0.9), spread)
@@ -5880,3 +6708,168 @@ func _pose_hf_hop() -> void:
 	pt_el_l = Vector3(-0.6, 0.0, 0.0)
 	pt_tor = Vector3(0.25 + 0.15 * strike, -0.3 * strike, 0.0)
 	pt_hd = Vector3(-0.2, 0.0, 0.0)
+
+
+# ---- movement & air tricks
+# (The air tricks themselves live in "# --- air tricks" of the high-flying section.)
+# Momentum sprint: a run starts at RUN_START_SPEED and builds to RUN_TOP_SPEED over ~1 s ("Full
+# Steam"); a fence rebound adds RUN_ROPE_BOOST, hard turns bleed speed. Whipped runs keep RUN_SPEED.
+# Dodge roll: double-tap RUN (the second press within ROLL_DOUBLE_TAP of starting the run) rolls
+# toward the stick (no stick = backward, away from the opponent). A roll isn't "standing", so
+# strikes, grabs and dives pass through it; slipping an attack mid-roll = "Close Shave!".
+# The yard: `arena.yard_bounds` (Rect2 over x / z) replaces the ring: the clamp, and the fence /
+# house-wall rebounds (_mv_fence_bounce). `arena.surface_at(p)` = "grass" / "concrete".
+
+const RUN_START_SPEED := 4.6
+const RUN_TOP_SPEED := 8.6
+const RUN_ACCEL := 4.2           # ~1 s from a standing start to full steam
+const RUN_ROPE_BOOST := 0.6
+const ROLL_TIME := 0.5
+const ROLL_DIST := 2.4
+const ROLL_DOUBLE_TAP := 0.3
+const YARD_BOUNCE_MARGIN := 0.35 # runners rebound this far inside the yard's edge
+
+var arena = null                 # the match (main.gd): yard_bounds, perches, surface_at(); may be null
+var run_speed := RUN_START_SPEED
+var mv_full_steam := false
+var mv_roll_dir := Vector3.ZERO
+var mv_roll_shave := false
+var mv_ai_roll_seen := false
+
+
+func _yard_rect() -> Rect2:
+	if arena != null and "yard_bounds" in arena:
+		var r: Rect2 = arena.yard_bounds
+		if r.size.x > 1.0 and r.size.y > 1.0:
+			return r
+	return Rect2(-RING_CLAMP, -RING_CLAMP, 2.0 * RING_CLAMP, 2.0 * RING_CLAMP)
+
+
+func _yard_clamp_pt(p: Vector3, inset: float) -> Vector3:
+	var r := _yard_rect()
+	return Vector3(clampf(p.x, r.position.x + inset, r.end.x - inset), p.y,
+		clampf(p.z, r.position.y + inset, r.end.y - inset))
+
+
+## Outward normal of the yard edge we're within `margin` of and running into (run_dir), or ZERO.
+func _yard_hit_normal(margin: float) -> Vector3:
+	var r := _yard_rect()
+	var n := Vector3.ZERO
+	if position.x >= r.end.x - margin and run_dir.x > 0.0:
+		n.x = 1.0
+	elif position.x <= r.position.x + margin and run_dir.x < 0.0:
+		n.x = -1.0
+	if position.z >= r.end.y - margin and run_dir.z > 0.0:
+		n.z = 1.0
+	elif position.z <= r.position.y + margin and run_dir.z < 0.0:
+		n.z = -1.0
+	return n.normalized() if n != Vector3.ZERO else n
+
+
+func _surface_here(p := Vector3.INF) -> String:
+	var q := position if not p.is_finite() else p
+	if arena != null and arena.has_method("surface_at"):
+		var s: String = arena.surface_at(q)
+		return s
+	return "grass"
+
+
+## _run: rebound off the fence / house wall. Returns true if we bounced this frame.
+func _mv_fence_bounce() -> bool:
+	var n := _yard_hit_normal(YARD_BOUNCE_MARGIN)
+	if n == Vector3.ZERO:
+		return false
+	if n.x != 0.0:
+		run_dir.x = -run_dir.x
+	if n.z != 0.0:
+		run_dir.z = -run_dir.z
+	hf_bounce_n = n
+	return true
+
+
+func _mv_start_run() -> void:
+	run_speed = RUN_START_SPEED
+	mv_full_steam = false
+	hf_rope_buf = ""
+
+
+func _mv_run_speed(delta: float) -> float:
+	run_speed = clampf(run_speed + RUN_ACCEL * delta, RUN_START_SPEED * 0.8, RUN_TOP_SPEED)
+	if not mv_full_steam and run_speed >= RUN_TOP_SPEED - 0.01:
+		mv_full_steam = true
+		trick.emit("Full Steam", 100, "movement")
+	return run_speed
+
+
+## Hard turns while running bleed momentum.
+func _mv_turn_bleed(want: Vector3, delta: float) -> void:
+	var d := run_dir.dot(want)
+	if d < 0.3:
+		run_speed = maxf(RUN_START_SPEED, run_speed - (0.3 - d) * 7.0 * delta)
+
+
+## _run: RUN pressed again right after starting the run = dodge roll. True if handled.
+func _mv_run_input(_delta: float) -> bool:
+	if not (in_run and state_time < ROLL_DOUBLE_TAP):
+		return false
+	var dir := Vector3(in_move.x, 0.0, in_move.y)
+	if dir.length() < 0.3:
+		dir = -_flat_to_opponent()
+	_mv_start_roll(dir)
+	return true
+
+
+func _mv_start_roll(dir: Vector3) -> void:
+	var d := Vector3(dir.x, 0.0, dir.z)
+	if d.length() < 0.1:
+		d = -facing
+	mv_roll_dir = d.normalized()
+	set_state(S.ROLL)
+	current_move_key = "roll"
+	mv_roll_shave = false
+	sfx.emit("whoosh", 0.4, _chest())
+
+
+func _mv_roll(delta: float) -> void:
+	var u := clampf(state_time / ROLL_TIME, 0.0, 1.0)
+	# fast out of the gate, easing off: covers ROLL_DIST in ROLL_TIME
+	position += mv_roll_dir * (2.0 * ROLL_DIST / ROLL_TIME) * (1.0 - u) * delta
+	if not mv_roll_shave and _flat_to_opponent().length() < 2.2 \
+			and _opp_state() in [S.PUNCH, S.RUN_ATTACK, S.DIVING, S.SWING, S.GRAB_WINDUP, S.GROUND_DROP]:
+		mv_roll_shave = true
+		trick.emit("Close Shave!", 250, "movement")
+		announce.emit("CLOSE SHAVE!")
+	if state_time >= ROLL_TIME:
+		set_state(S.IDLE)
+
+
+## Tucked shoulder roll toward mv_roll_dir: the body turns into the roll (or rolls backward when
+## going away from where it faces), pivoting about the middle of the ball, then pops back up.
+func _pose_mv_roll() -> void:
+	var t := state_time
+	var ld := basis.inverse() * mv_roll_dir
+	ld.y = 0.0
+	var back := ld.z < -0.3
+	var yaw := atan2(-ld.x, -ld.z) if back else atan2(ld.x, ld.z)
+	var turn := _smooth(_seg(t, 0.0, 0.08)) * (1.0 - _smooth(_seg(t, ROLL_TIME - 0.1, ROLL_TIME)))
+	var a := TAU * _smooth(_seg(t, 0.04, ROLL_TIME - 0.08))
+	var tk := _smooth(_seg(t, 0.0, 0.1)) * (1.0 - _smooth(_seg(t, ROLL_TIME - 0.12, ROLL_TIME)))
+	var q := (Quaternion(Vector3.UP, yaw * turn) * Quaternion(Vector3.RIGHT, -a if back else a)).normalized()
+	pt_use_basis = true
+	throw_pose_q = q
+	var c_local := Vector3(0.0, 0.25, 0.12) * tk
+	throw_pose_y = lerpf(STAND_Y, 0.62, tk)
+	pt_basis_off = -(q * c_local)
+	_stance(0.6)
+	pt_ll = pt_ll.lerp(Vector3(-2.1, 0.0, -0.1), tk)
+	pt_lr = pt_lr.lerp(Vector3(-2.0, 0.0, 0.1), tk)
+	pt_kn_l = lerpf(pt_kn_l, 2.3, tk)
+	pt_kn_r = lerpf(pt_kn_r, 2.3, tk)
+	pt_al = Vector3(-0.6, 0.0, -0.3).lerp(Vector3(-1.1, 0.0, -0.2), tk)
+	pt_ar = Vector3(-0.6, 0.0, 0.3).lerp(Vector3(-1.1, 0.0, 0.2), tk)
+	pt_el_l = Vector3(-1.4, 0.0, 0.0).lerp(Vector3(-1.8, 0.0, 0.0), tk)
+	pt_el_r = pt_el_l
+	pt_tor = Vector3(0.7 * tk, 0.0, 0.0)
+	pt_hd = Vector3(0.6 * tk, 0.0, 0.0)
+	r_limb = 30.0
+	r_body = 26.0
