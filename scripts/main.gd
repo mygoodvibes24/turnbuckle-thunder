@@ -41,11 +41,15 @@ func _ready() -> void:
 	var brick := {
 		"gear": Color(0.85, 0.12, 0.12), "trunks": Color(0.08, 0.08, 0.1), "boot_color": Color(0.1, 0.1, 0.12),
 		"skin": Color(0.87, 0.64, 0.47), "hair": "flattop", "hair_color": Color(0.18, 0.12, 0.08),
+		"trunk_pattern": "bricks", "initials": "BM", "stubble": true, "boot_trim": Color(0.85, 0.12, 0.12),
+		"elbow_pads": false, "wrist_tape": true,
 	}
 	var volcano := {
 		"gear": Color(1.0, 0.5, 0.1), "trunks": Color(0.12, 0.3, 0.85), "boot_color": Color(0.12, 0.3, 0.85),
 		"skin": Color(0.6, 0.42, 0.3), "tights": true, "mask": true,
 		"mask_color": Color(0.12, 0.3, 0.85), "mask_trim": Color(1.0, 0.55, 0.1), "hair_color": Color.BLACK,
+		"trunk_pattern": "flames", "tights_pattern": "flames", "boot_trim": Color(1.0, 0.5, 0.1),
+		"elbow_pads": true, "wrist_tape": true,
 	}
 	p1 = _spawn("BRICK MASON", brick, false, Vector3(-1.8, 0, 0.3))
 	p2 = _spawn("THE VOLCANO", volcano, true, Vector3(1.8, 0, -0.3))

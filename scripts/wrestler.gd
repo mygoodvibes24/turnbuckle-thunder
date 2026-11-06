@@ -96,21 +96,43 @@ func setup(p_name: String, p_look: Dictionary, p_cpu: bool) -> void:
 
 
 # ---------------------------------------------------------------- body building
-# N64-style look: chunky low-poly parts (6-8 sided), matte materials, and tiny
-# pixel textures for faces/masks with bilinear filtering (that soft N64 blur).
+# N64-style look: chunky 8-sided low-poly parts built with SurfaceTool (smooth
+# per-vertex normals for that Gouraud shading), matte per-vertex lit materials and
+# tiny painted textures with bilinear filtering (the soft N64 blur).
+#
+# Pivot layout: pose_root sits at the pelvis (STAND_Y above the feet when standing)
+# and hips is at pose_root's origin, so falls and throws rotate the body around
+# the pelvis. Standing straight, the boot soles touch y = 0.
+# Loft UVs: u wraps around the part (front/+z at u = 0.5, -x side at 0.25,
+# +x side at 0.75, back seam at 0/1), v runs from the top ring (0) to the bottom (1).
+
+const STAND_Y := 0.95  # pelvis height when standing
+const LIE_Y := 0.21    # pelvis height when lying on the back (rotation.x = -PI/2)
+const PIN_Y := 0.55    # pelvis height when lying across a downed opponent
+
+const FONT_3X5 := {
+	"B": "110101110101110", "M": "101111111101101", "T": "111010010010010",
+	"V": "101101101101010", "R": "110101110101101", "K": "101101110101101",
+}
+
+
+func _sat(c: Color, amt := 1.15) -> Color:
+	return Color.from_hsv(c.h, clampf(c.s * amt, 0.0, 1.0), c.v, c.a)
+
 
 func _mat(c: Color, tex: Texture2D = null) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = c
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_PER_VERTEX
 	m.roughness = 1.0
-	m.metallic_specular = 0.15
+	m.metallic_specular = 0.0
 	m.diffuse_mode = BaseMaterial3D.DIFFUSE_LAMBERT
 	m.specular_mode = BaseMaterial3D.SPECULAR_DISABLED
-	if tex:
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	if tex != null:
 		m.albedo_texture = tex
 		m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
-		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-		m.alpha_scissor_threshold = 0.5
+		m.texture_repeat = true
 	return m
 
 
@@ -131,17 +153,17 @@ func _box(parent: Node3D, size: Vector3, pos: Vector3, mat: Material) -> MeshIns
 	return _add_mesh(parent, b, pos, mat)
 
 
-func _ball(parent: Node3D, r: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 7, hemi := false) -> MeshInstance3D:
+func _ball(parent: Node3D, r: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 8, hemi := false) -> MeshInstance3D:
 	var s := SphereMesh.new()
 	s.radius = r
-	s.height = r * 2.0
+	s.height = r if hemi else r * 2.0
 	s.is_hemisphere = hemi
 	s.radial_segments = segs
 	s.rings = 4
 	return _add_mesh(parent, s, pos, mat, scl)
 
 
-func _prism(parent: Node3D, top_r: float, bottom_r: float, h: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 6) -> MeshInstance3D:
+func _prism(parent: Node3D, top_r: float, bottom_r: float, h: float, pos: Vector3, mat: Material, scl := Vector3.ONE, segs := 8) -> MeshInstance3D:
 	var c := CylinderMesh.new()
 	c.top_radius = top_r
 	c.bottom_radius = bottom_r
@@ -158,61 +180,383 @@ func _pivot(parent: Node3D, pos: Vector3) -> Node3D:
 	return p
 
 
-# --- tiny pixel textures -----------------------------------------------------
+# --- SurfaceTool lofts -------------------------------------------------------------
+
+func _tri(st: SurfaceTool, a: Vector3, b: Vector3, c: Vector3, na: Vector3, nb: Vector3, nc: Vector3,
+		ua: Vector2, ub: Vector2, uc: Vector2) -> void:
+	# Godot treats clockwise triangles as front faces, i.e. (b - a) x (c - a) points
+	# away from the outward normal. Swap two corners when the winding disagrees.
+	if (b - a).cross(c - a).dot(na + nb + nc) > 0.0:
+		var tp := b
+		b = c
+		c = tp
+		var tn := nb
+		nb = nc
+		nc = tn
+		var tu := ub
+		ub = uc
+		uc = tu
+	st.set_normal(na)
+	st.set_uv(ua)
+	st.add_vertex(a)
+	st.set_normal(nb)
+	st.set_uv(ub)
+	st.add_vertex(b)
+	st.set_normal(nc)
+	st.set_uv(uc)
+	st.add_vertex(c)
+
+
+func _cap(st: SurfaceTool, ring: PackedVector3Array, uvs: PackedVector2Array, center: Vector3, n: Vector3, v: float) -> void:
+	var cu := Vector2(0.5, v)
+	for i in ring.size() - 1:
+		_tri(st, center, ring[i], ring[i + 1], n, n, n, cu, Vector2(uvs[i].x, v), Vector2(uvs[i + 1].x, v))
+
+
+## Builds a tapered 8-sided tube. rings: Array of Vector4(y, radius_x, radius_z, z_offset),
+## ordered top to bottom. Vertices sit half a segment off the axes so a flat face points
+## forward (+z) and to each side.
+func _loft_mesh(rings: Array, cap_top: bool, cap_bottom: bool, segs := 8) -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var n_r := rings.size()
+	var first: Vector4 = rings[0]
+	var last: Vector4 = rings[n_r - 1]
+	var span: float = maxf(0.001, first.x - last.x)
+	var step: float = TAU / float(segs)
+	var ring_p: Array = []
+	var ring_n: Array = []
+	var ring_u: Array = []
+	for j in n_r:
+		var r: Vector4 = rings[j]
+		var rp: Vector4 = rings[maxi(j - 1, 0)]
+		var rn: Vector4 = rings[mini(j + 1, n_r - 1)]
+		var dy: float = rp.x - rn.x
+		var slope := 0.0
+		if dy > 0.0001:
+			slope = ((rn.y + rn.z) - (rp.y + rp.z)) * 0.5 / dy
+		# keep v half a texel away from the edges so repeat-wrap doesn't bleed top<->bottom
+		var v: float = 0.03 + 0.94 * (first.x - r.x) / span
+		var pr := PackedVector3Array()
+		var nr := PackedVector3Array()
+		var ur := PackedVector2Array()
+		for i in segs + 1:
+			var a: float = -PI + (float(i) + 0.5) * step
+			var sa := sin(a)
+			var ca := cos(a)
+			pr.append(Vector3(sa * r.y, r.x, ca * r.z + r.w))
+			var hn := Vector3(sa / maxf(r.y, 0.001), 0.0, ca / maxf(r.z, 0.001)).normalized()
+			nr.append(Vector3(hn.x, slope, hn.z).normalized())
+			ur.append(Vector2((a + PI) / TAU, v))
+		ring_p.append(pr)
+		ring_n.append(nr)
+		ring_u.append(ur)
+	for j in n_r - 1:
+		var p0: PackedVector3Array = ring_p[j]
+		var p1: PackedVector3Array = ring_p[j + 1]
+		var n0: PackedVector3Array = ring_n[j]
+		var n1: PackedVector3Array = ring_n[j + 1]
+		var u0: PackedVector2Array = ring_u[j]
+		var u1: PackedVector2Array = ring_u[j + 1]
+		for i in segs:
+			_tri(st, p0[i], p0[i + 1], p1[i + 1], n0[i], n0[i + 1], n1[i + 1], u0[i], u0[i + 1], u1[i + 1])
+			_tri(st, p0[i], p1[i + 1], p1[i], n0[i], n1[i + 1], n1[i], u0[i], u1[i + 1], u1[i])
+	if cap_top:
+		_cap(st, ring_p[0], ring_u[0], Vector3(0, first.x, first.w), Vector3.UP, 0.03)
+	if cap_bottom:
+		_cap(st, ring_p[n_r - 1], ring_u[n_r - 1], Vector3(0, last.x, last.w), Vector3.DOWN, 0.97)
+	return st.commit()
+
+
+func _loft(parent: Node3D, rings: Array, mat: Material, cap_top := true, cap_bottom := true, pos := Vector3.ZERO) -> MeshInstance3D:
+	return _add_mesh(parent, _loft_mesh(rings, cap_top, cap_bottom), pos, mat)
+
+
+# --- tiny painted textures -----------------------------------------------------------
+# All are drawn so that texture column w/2 is the front centre (u = 0.5); pairs are
+# mirrored with x -> (w - 1 - x).
 
 func _px(img: Image, x: int, y: int, w: int, h: int, c: Color) -> void:
 	img.fill_rect(Rect2i(x, y, w, h), c)
 
 
-func _face_texture() -> ImageTexture:
-	# 16x16 face drawn on a transparent card in front of the head.
-	var img := Image.create_empty(16, 16, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))
+func _new_img(w: int, h: int, c: Color) -> Image:
+	var img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
+	img.fill(c)
+	return img
+
+
+func _paint_flames(img: Image, base_y: int, max_h: int, outer: Color, inner: Color) -> void:
+	# Repeating flame tongues rising from row base_y (tileable for widths divisible by 8).
+	for x in img.get_width():
+		var ph := x % 8
+		var tri: float = absf(float(ph) - 3.5) / 3.5
+		var hgt := int(round(lerpf(float(max_h), float(max_h) * 0.3, tri)))
+		if int(x / 8.0) % 2 == 1:
+			hgt -= 2
+		hgt = maxi(hgt, 1)
+		_px(img, x, base_y - hgt + 1, 1, hgt, outer)
+		var ih := maxi(int(hgt * 0.5), 1)
+		_px(img, x, base_y - ih + 1, 1, ih, inner)
+
+
+func _paint_text(img: Image, text: String, center_x: int, y: int, c: Color) -> void:
+	var n := text.length()
+	if n == 0:
+		return
+	var total := n * 5 - 2
+	var x0 := int(center_x - total / 2.0)
+	for k in n:
+		var key := text.substr(k, 1)
+		if not FONT_3X5.has(key):
+			continue
+		var bits: String = FONT_3X5[key]
+		for r in 5:
+			for col in 3:
+				if bits.substr(r * 3 + col, 1) == "1":
+					_px(img, x0 + k * 5 + col, y + r, 1, 1, c)
+
+
+func _torso_texture(skin: Color) -> ImageTexture:
+	# 32x32 painted muscle shading: pecs, sternum, ab grid, darker lats and back.
+	var img := _new_img(32, 32, skin)
+	var dk := skin.darkened(0.14)
+	var dk2 := skin.darkened(0.26)
+	var lt := skin.lightened(0.08)
+	var back := skin.darkened(0.06)
+	_px(img, 0, 0, 6, 32, back)
+	_px(img, 26, 0, 6, 32, back)
+	_px(img, 0, 6, 1, 26, dk)           # spine (back seam)
+	_px(img, 31, 6, 1, 26, dk)
+	_px(img, 1, 9, 4, 1, dk)            # shoulder blades
+	_px(img, 27, 9, 4, 1, dk)
+	_px(img, 2, 10, 3, 3, dk.lerp(back, 0.5))
+	_px(img, 27, 10, 3, 3, dk.lerp(back, 0.5))
+	_px(img, 6, 8, 4, 24, dk)           # lats / flanks under the arms
+	_px(img, 22, 8, 4, 24, dk)
+	_px(img, 7, 18, 2, 14, dk2)
+	_px(img, 23, 18, 2, 14, dk2)
+	_px(img, 11, 6, 4, 1, dk)           # collarbones
+	_px(img, 17, 6, 4, 1, dk)
+	# pecs
+	_px(img, 10, 9, 6, 7, lt)
+	_px(img, 16, 9, 6, 7, lt)
+	_px(img, 10, 16, 6, 2, dk2)
+	_px(img, 16, 16, 6, 2, dk2)
+	_px(img, 10, 15, 1, 1, dk2)
+	_px(img, 21, 15, 1, 1, dk2)
+	_px(img, 15, 8, 2, 10, dk)          # sternum
+	# abs
+	_px(img, 12, 18, 8, 13, lt)
+	_px(img, 11, 18, 1, 13, dk)
+	_px(img, 20, 18, 1, 13, dk)
+	_px(img, 15, 18, 2, 13, dk)
+	_px(img, 12, 21, 8, 1, dk)
+	_px(img, 12, 25, 8, 1, dk)
+	_px(img, 15, 29, 2, 1, dk2)         # navel
+	return ImageTexture.create_from_image(img)
+
+
+func _trunks_texture(trunk: Color, gear: Color, pattern: String, initials: String) -> ImageTexture:
+	# 32x16: waistband, leg trim, side stripes or brick panels, initials on the front.
+	var img := _new_img(32, 16, trunk)
+	match pattern:
+		"bricks":
+			var mortar := Color(0.72, 0.7, 0.64)
+			for x0 in [3, 20]:
+				var xs: int = x0
+				_px(img, xs, 3, 9, 11, gear)
+				var course := 0
+				var y := 3
+				while y <= 13:
+					_px(img, xs, y, 9, 1, mortar)
+					var off := (course % 2) * 2
+					for x in range(xs, xs + 9):
+						if (x + off) % 4 == 0:
+							_px(img, x, y + 1, 1, 2, mortar)
+					y += 3
+					course += 1
+		"flames":
+			_paint_flames(img, 13, 7, gear, gear.lerp(Color(1.0, 0.95, 0.4), 0.6))
+		_:
+			_px(img, 7, 3, 2, 11, gear)
+			_px(img, 23, 3, 2, 11, gear)
+	_px(img, 0, 0, 32, 3, gear)                  # waistband
+	_px(img, 0, 1, 32, 1, gear.lightened(0.15))
+	_px(img, 0, 14, 32, 2, gear.darkened(0.2))   # leg trim
+	_paint_text(img, initials, 16, 5, gear.lightened(0.1))
+	return ImageTexture.create_from_image(img)
+
+
+func _tights_texture(base: Color, flame: Color) -> ImageTexture:
+	# 32x16 tights with flames licking up from the bottom (knee / boot) of each part.
+	var img := _new_img(32, 16, base)
+	_paint_flames(img, 15, 11, flame, flame.lerp(Color(1.0, 0.95, 0.4), 0.6))
+	return ImageTexture.create_from_image(img)
+
+
+func _boot_texture(boot: Color, trim: Color) -> ImageTexture:
+	# 16x16 boot shaft: top trim band, side stripes, lace panel with criss-cross laces.
+	var img := _new_img(16, 16, boot)
+	var lace := Color(0.95, 0.95, 0.9)
+	_px(img, 0, 0, 16, 2, trim)
+	_px(img, 0, 2, 16, 1, boot.darkened(0.3))
+	_px(img, 3, 3, 2, 13, trim)                   # side stripes (u = 0.25 / 0.75)
+	_px(img, 11, 3, 2, 13, trim)
+	_px(img, 6, 3, 4, 13, boot.darkened(0.3))     # lace panel (front)
+	for r in range(3, 16):
+		if r % 2 == 1:
+			_px(img, 6, r, 1, 1, lace)
+			_px(img, 9, r, 1, 1, lace)
+		else:
+			_px(img, 7, r, 2, 1, lace)
+	_px(img, 0, 15, 16, 1, boot.darkened(0.2))
+	return ImageTexture.create_from_image(img)
+
+
+func _head_texture(skin: Color, hair_c: Color, style: String) -> ImageTexture:
+	# 64x32 wrap-around head texture: face on the front (columns ~22..41), ears at the
+	# sides (u 0.25 / 0.75), hair or mask laces at the back seam.
 	var dark := Color(0.12, 0.07, 0.05)
-	var shade := skin_color.darkened(0.25)
+	var shade := skin.darkened(0.22)
 	if look.get("mask", false):
-		var mask: Color = look["mask_color"]
-		var trim: Color = look["mask_trim"]
-		img.fill(mask)
-		# flame-shaped trim around the eyes
-		_px(img, 1, 4, 6, 4, trim)
-		_px(img, 9, 4, 6, 4, trim)
-		_px(img, 2, 3, 2, 1, trim)
-		_px(img, 12, 3, 2, 1, trim)
-		_px(img, 7, 1, 2, 4, trim)
+		var mask_src: Color = look.get("mask_color", Color(0.12, 0.3, 0.85))
+		var trim_src: Color = look.get("mask_trim", Color(1.0, 0.55, 0.1))
+		var mask := _sat(mask_src)
+		var trim := _sat(trim_src)
+		var hot := trim.lerp(Color(1.0, 0.95, 0.4), 0.55)
+		var mimg := _new_img(64, 32, mask)
+		# crest stripe from the forehead over the crown to the back
+		_px(mimg, 30, 0, 4, 12, trim)
+		_px(mimg, 0, 0, 2, 9, trim)
+		_px(mimg, 62, 0, 2, 9, trim)
+		# flame-shaped trim around the eyes, tongues licking up the forehead
+		_px(mimg, 25, 12, 14, 8, trim)
+		_px(mimg, 26, 9, 2, 3, trim)
+		_px(mimg, 36, 9, 2, 3, trim)
+		_px(mimg, 28, 6, 1, 6, trim)
+		_px(mimg, 35, 6, 1, 6, trim)
+		_px(mimg, 24, 14, 1, 4, trim)
+		_px(mimg, 39, 14, 1, 4, trim)
+		_px(mimg, 31, 10, 2, 9, hot)
 		# eye holes
-		_px(img, 2, 5, 4, 2, Color.WHITE)
-		_px(img, 10, 5, 4, 2, Color.WHITE)
-		_px(img, 4, 5, 2, 2, dark)
-		_px(img, 10, 5, 2, 2, dark)
+		_px(mimg, 27, 14, 4, 3, Color.WHITE)
+		_px(mimg, 33, 14, 4, 3, Color.WHITE)
+		_px(mimg, 28, 14, 2, 3, dark)
+		_px(mimg, 34, 14, 2, 3, dark)
 		# mouth hole
-		_px(img, 5, 11, 6, 3, skin_color)
-		_px(img, 6, 12, 4, 1, dark)
-	else:
-		# brows, eyes, nose shading, stern mouth, stubble
-		_px(img, 2, 4, 5, 1, look["hair_color"])
-		_px(img, 9, 4, 5, 1, look["hair_color"])
-		_px(img, 3, 6, 3, 2, Color.WHITE)
-		_px(img, 10, 6, 3, 2, Color.WHITE)
-		_px(img, 4, 6, 2, 2, dark)
-		_px(img, 10, 6, 2, 2, dark)
-		_px(img, 7, 7, 2, 3, shade)
-		_px(img, 5, 12, 6, 1, dark)
-		_px(img, 4, 13, 8, 2, shade.lerp(look["hair_color"], 0.35))
+		_px(mimg, 29, 24, 6, 3, skin)
+		_px(mimg, 30, 25, 4, 1, dark)
+		# flames on both sides (seen from the camera)
+		var hts := [2, 4, 7, 5, 10, 10, 5, 7, 4, 2]
+		for cx in [16, 48]:
+			var c0: int = cx
+			for k in 10:
+				var hh: int = hts[k]
+				_px(mimg, c0 - 5 + k, 27 - hh, 1, hh + 1, trim)
+				_px(mimg, c0 - 5 + k, 27 - int(hh * 0.5), 1, int(hh * 0.5) + 1, hot)
+		# back lacing over the seam
+		var lace := Color(0.95, 0.95, 0.9)
+		_px(mimg, 63, 11, 1, 19, mask.darkened(0.45))
+		_px(mimg, 0, 11, 1, 19, mask.darkened(0.45))
+		for r in range(11, 30):
+			match r % 4:
+				0:
+					_px(mimg, 61, r, 1, 1, lace)
+					_px(mimg, 2, r, 1, 1, lace)
+				2:
+					_px(mimg, 63, r, 1, 1, lace)
+					_px(mimg, 0, r, 1, 1, lace)
+				_:
+					_px(mimg, 62, r, 1, 1, lace)
+					_px(mimg, 1, r, 1, 1, lace)
+		_px(mimg, 0, 30, 64, 2, trim)  # bottom hem
+		return ImageTexture.create_from_image(mimg)
+
+	var img := _new_img(64, 32, skin)
+	_px(img, 0, 28, 64, 4, skin.darkened(0.12))   # under the jaw
+	_px(img, 22, 17, 4, 10, skin.darkened(0.07))  # cheek shading
+	_px(img, 38, 17, 4, 10, skin.darkened(0.07))
+	if look.get("stubble", false):
+		_px(img, 25, 22, 14, 7, shade.lerp(hair_c, 0.35))
+	# brows, eyes, nose shading, stern mouth
+	_px(img, 26, 12, 5, 2, hair_c)
+	_px(img, 33, 12, 5, 2, hair_c)
+	_px(img, 27, 14, 4, 2, Color.WHITE)
+	_px(img, 33, 14, 4, 2, Color.WHITE)
+	_px(img, 28, 14, 2, 2, dark)
+	_px(img, 34, 14, 2, 2, dark)
+	_px(img, 27, 16, 4, 1, shade)
+	_px(img, 33, 16, 4, 1, shade)
+	_px(img, 30, 19, 1, 3, shade)
+	_px(img, 33, 19, 1, 3, shade)
+	_px(img, 29, 25, 6, 1, dark)
+	_px(img, 30, 26, 4, 1, shade)
+	var stubble_tone := skin.lerp(hair_c, 0.3)
+	match style:
+		"flattop":
+			_px(img, 0, 0, 64, 8, hair_c)
+			_px(img, 0, 0, 20, 18, hair_c)      # back half
+			_px(img, 44, 0, 20, 18, hair_c)
+			_px(img, 20, 0, 3, 19, hair_c)      # sideburns
+			_px(img, 41, 0, 3, 19, hair_c)
+			_px(img, 23, 7, 18, 1, hair_c.lightened(0.15))
+		"long":
+			_px(img, 0, 0, 64, 9, hair_c)
+			_px(img, 0, 0, 22, 32, hair_c)
+			_px(img, 42, 0, 22, 32, hair_c)
+			_px(img, 22, 0, 2, 27, hair_c)
+			_px(img, 40, 0, 2, 27, hair_c)
+		"mohawk":
+			_px(img, 0, 0, 64, 11, stubble_tone)
+			_px(img, 29, 0, 6, 11, hair_c)
+			_px(img, 0, 0, 3, 15, hair_c)
+			_px(img, 61, 0, 3, 15, hair_c)
 	return ImageTexture.create_from_image(img)
 
 
 # --- the model ------------------------------------------------------------------
 
 func _build_body() -> void:
-	var skin := _mat(skin_color)
-	var skin_dark := _mat(skin_color.darkened(0.15))
-	var gear := _mat(gear_color)
-	var trunks := _mat(trunk_color)
-	var boots := _mat(look.get("boot_color", gear_color))
-	var tape := _mat(Color(0.92, 0.92, 0.88))
-	var legs_mat := trunks if look.get("tights", false) else skin
-	var hair := _mat(look.get("hair_color", Color.BLACK))
+	var skin_c := _sat(skin_color, 1.12)
+	var gear_c := _sat(gear_color)
+	var trunk_c := _sat(trunk_color)
+	var boot_src: Color = look.get("boot_color", gear_color)
+	var boot_c := _sat(boot_src)
+	var trim_src: Color = look.get("boot_trim", gear_color)
+	var trim_c := _sat(trim_src)
+	var hair_c: Color = look.get("hair_color", Color(0.15, 0.1, 0.07))
+	var hair_style: String = look.get("hair", "none")
+	var is_mask: bool = look.get("mask", false)
+	var tights: bool = look.get("tights", false)
+	var tights_pattern: String = look.get("tights_pattern", "")
+	var trunk_pattern: String = look.get("trunk_pattern", "stripe")
+	var initials: String = look.get("initials", "")
+	var elbow_pads: bool = look.get("elbow_pads", false)
+	var wrist_tape: bool = look.get("wrist_tape", true)
+
+	var skin := _mat(skin_c)
+	var skin_dark := _mat(skin_c.darkened(0.12))
+	var gear := _mat(gear_c)
+	var tape := _mat(Color(0.93, 0.93, 0.88))
+	var hair := _mat(hair_c)
+	var boots_plain := _mat(boot_c)
+	var sole := _mat(boot_c.darkened(0.5))
+	var torso_mat := _mat(Color.WHITE, _torso_texture(skin_c))
+	var trunks_mat := _mat(Color.WHITE, _trunks_texture(trunk_c, gear_c, trunk_pattern, initials))
+	var boot_mat := _mat(Color.WHITE, _boot_texture(boot_c, trim_c))
+	var head_mat := _mat(Color.WHITE, _head_texture(skin_c, hair_c, hair_style))
+	var head_solid := skin
+	if is_mask:
+		var mask_src: Color = look.get("mask_color", trunk_color)
+		head_solid = _mat(_sat(mask_src))
+	var legs_mat := skin
+	if tights:
+		if tights_pattern == "flames":
+			legs_mat = _mat(Color.WHITE, _tights_texture(trunk_c, gear_c))
+		else:
+			legs_mat = _mat(trunk_c)
+	var pad_mat := gear
 
 	# Blob shadow (stays flat on the mat)
 	var sh := CylinderMesh.new()
@@ -226,84 +570,95 @@ func _build_body() -> void:
 	sh_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	_add_mesh(self, sh, Vector3(0, 0.03, 0), sh_mat)
 
-	pose_root = _pivot(self, Vector3.ZERO)
-	hips = _pivot(pose_root, Vector3(0, 0.95, 0))
+	# pose_root = pelvis. Everything rotates around it.
+	pose_root = _pivot(self, Vector3(0, STAND_Y, 0))
+	hips = _pivot(pose_root, Vector3.ZERO)
 
-	# Pelvis / trunks
-	_prism(hips, 0.27, 0.24, 0.3, Vector3(0, 0.0, 0), trunks, Vector3(1, 1, 0.72))
-	_prism(hips, 0.285, 0.285, 0.06, Vector3(0, 0.16, 0), gear, Vector3(1, 1, 0.74))  # waistband
+	# Pelvis / trunks (back of the trunks is 0.195 behind the pelvis)
+	_loft(hips, [
+		Vector4(0.17, 0.285, 0.19, 0.0), Vector4(0.12, 0.29, 0.195, 0.0), Vector4(0.0, 0.28, 0.195, 0.0),
+		Vector4(-0.1, 0.25, 0.18, 0.0), Vector4(-0.17, 0.16, 0.13, 0.0)], trunks_mat)
 
-	# Torso: V-shaped, wide lats and chest, big traps
-	torso = _pivot(hips, Vector3(0, 0.15, 0))
-	_prism(torso, 0.31, 0.26, 0.3, Vector3(0, 0.15, 0), skin, Vector3(1, 1, 0.7))         # abs
-	_prism(torso, 0.44, 0.31, 0.4, Vector3(0, 0.49, 0), skin, Vector3(1, 1, 0.6))         # chest/lats
-	_ball(torso, 0.14, Vector3(-0.13, 0.55, 0.19), skin_dark, Vector3(1.05, 0.7, 0.45), 6) # pecs
-	_ball(torso, 0.14, Vector3(0.13, 0.55, 0.19), skin_dark, Vector3(1.05, 0.7, 0.45), 6)
-	_box(torso, Vector3(0.05, 0.22, 0.04), Vector3(0, 0.2, 0.19), skin_dark)              # ab line
-	_ball(torso, 0.17, Vector3(-0.2, 0.7, -0.03), skin, Vector3(1.15, 0.6, 0.9), 6)       # traps
-	_ball(torso, 0.17, Vector3(0.2, 0.7, -0.03), skin, Vector3(1.15, 0.6, 0.9), 6)
+	# Torso: waist -> lats/ribs -> pecs -> shoulders -> traps (back reaches 0.205 behind)
+	torso = _pivot(hips, Vector3(0, 0.12, 0))
+	_loft(torso, [
+		Vector4(0.64, 0.11, 0.09, -0.01), Vector4(0.58, 0.27, 0.15, -0.02), Vector4(0.48, 0.37, 0.2, 0.0),
+		Vector4(0.34, 0.355, 0.215, 0.01), Vector4(0.2, 0.3, 0.19, 0.0), Vector4(0.0, 0.26, 0.17, 0.0)], torso_mat)
 
-	# Neck + head
-	_prism(torso, 0.1, 0.12, 0.16, Vector3(0, 0.76, 0), skin, Vector3.ONE, 6)
-	head = _pivot(torso, Vector3(0, 0.8, 0.0))
-	var head_mat := skin
-	if look.get("mask", false):
-		head_mat = _mat(look["mask_color"])
-	_ball(head, 0.17, Vector3(0, 0.15, 0), head_mat, Vector3(0.92, 1.12, 1.0), 8)
-	_ball(head, 0.05, Vector3(-0.155, 0.14, 0), head_mat, Vector3(0.6, 1.0, 0.8), 5)     # ears
-	_ball(head, 0.05, Vector3(0.155, 0.14, 0), head_mat, Vector3(0.6, 1.0, 0.8), 5)
-	var face := QuadMesh.new()
-	face.size = Vector2(0.27, 0.29)
-	_add_mesh(head, face, Vector3(0, 0.14, 0.182), _mat(Color.WHITE, _face_texture()))
-	_box(head, Vector3(0.06, 0.07, 0.06), Vector3(0, 0.12, 0.185), head_mat)              # nose
-	match look.get("hair", "none"):
-		"flattop":
-			_box(head, Vector3(0.31, 0.13, 0.33), Vector3(0, 0.31, -0.01), hair)
-			_box(head, Vector3(0.33, 0.12, 0.2), Vector3(0, 0.22, -0.08), hair)
-		"long":
-			_ball(head, 0.185, Vector3(0, 0.2, -0.01), hair, Vector3(1, 1, 1), 8, true)
-			_box(head, Vector3(0.34, 0.38, 0.12), Vector3(0, 0.02, -0.13), hair)
-		"mohawk":
-			_box(head, Vector3(0.07, 0.14, 0.34), Vector3(0, 0.33, -0.01), hair)
+	# Neck + head (head ~0.33 wide x 0.36 tall x 0.35 deep, top ~2.03 m when standing)
+	_loft(torso, [Vector4(0.72, 0.095, 0.095, 0.02), Vector4(0.52, 0.115, 0.11, 0.0)], skin, false, false)
+	head = _pivot(torso, Vector3(0, 0.6, 0.02))
+	_loft(head, [
+		Vector4(0.36, 0.075, 0.085, -0.01), Vector4(0.32, 0.15, 0.16, -0.005), Vector4(0.22, 0.165, 0.175, 0.0),
+		Vector4(0.12, 0.16, 0.172, 0.005), Vector4(0.05, 0.13, 0.15, 0.012), Vector4(0.0, 0.085, 0.1, 0.005)], head_mat)
+	_box(head, Vector3(0.05, 0.065, 0.05), Vector3(0, 0.145, 0.172), head_solid)       # nose
+	if hair_style != "long":
+		_box(head, Vector3(0.04, 0.08, 0.06), Vector3(-0.168, 0.17, -0.01), head_solid)  # ears
+		_box(head, Vector3(0.04, 0.08, 0.06), Vector3(0.168, 0.17, -0.01), head_solid)
+	if not is_mask:
+		match hair_style:
+			"flattop":
+				_box(head, Vector3(0.3, 0.09, 0.32), Vector3(0, 0.345, -0.005), hair)
+			"long":
+				_box(head, Vector3(0.3, 0.34, 0.07), Vector3(0, 0.13, -0.165), hair)
+				_box(head, Vector3(0.34, 0.06, 0.3), Vector3(0, 0.33, -0.02), hair)
+			"mohawk":
+				_box(head, Vector3(0.06, 0.1, 0.32), Vector3(0, 0.36, -0.01), hair)
 
 	# Arms: shoulder -> elbow -> fist
-	arm_l = _build_arm(-1, skin, skin_dark, tape)
-	arm_r = _build_arm(1, skin, skin_dark, tape)
+	var e_pad: Material = null
+	if elbow_pads:
+		e_pad = pad_mat
+	var t_mat: Material = null
+	if wrist_tape:
+		t_mat = tape
+	arm_l = _build_arm(-1, skin, skin_dark, t_mat, e_pad)
+	arm_r = _build_arm(1, skin, skin_dark, t_mat, e_pad)
 
 	# Legs: hip -> knee -> boot
-	leg_l = _build_leg(-1, legs_mat, gear, boots)
-	leg_r = _build_leg(1, legs_mat, gear, boots)
+	leg_l = _build_leg(-1, legs_mat, pad_mat, boot_mat, boots_plain, sole)
+	leg_r = _build_leg(1, legs_mat, pad_mat, boot_mat, boots_plain, sole)
 
 
-func _build_arm(side: int, skin: Material, skin_dark: Material, tape: Material) -> Node3D:
-	var sh := _pivot(torso, Vector3(0.47 * side, 0.63, 0))
-	_ball(sh, 0.15, Vector3(0, -0.02, 0), skin, Vector3(1.0, 0.95, 1.0), 6)               # deltoid
-	_prism(sh, 0.115, 0.09, 0.36, Vector3(0, -0.2, 0), skin)                             # upper arm
-	_ball(sh, 0.085, Vector3(0, -0.2, 0.06), skin_dark, Vector3(0.9, 1.4, 0.8), 5)        # bicep
-	var el := _pivot(sh, Vector3(0, -0.37, 0))
+func _build_arm(side: int, skin: Material, skin_dark: Material, tape: Material, pad: Material) -> Node3D:
+	var sh := _pivot(torso, Vector3(0.42 * side, 0.47, 0))
+	_ball(sh, 0.13, Vector3(0.01 * side, -0.01, 0), skin)                                 # deltoid
+	_loft(sh, [Vector4(0.03, 0.105, 0.105, 0.0), Vector4(-0.12, 0.115, 0.12, 0.01),
+		Vector4(-0.34, 0.08, 0.085, 0.0)], skin)                                            # upper arm
+	var el := _pivot(sh, Vector3(0, -0.32, 0))
 	if side < 0:
 		elbow_l = el
 	else:
 		elbow_r = el
-	_prism(el, 0.09, 0.075, 0.32, Vector3(0, -0.15, 0), skin)                            # forearm
-	_prism(el, 0.082, 0.082, 0.08, Vector3(0, -0.29, 0), tape)                           # wrist tape
-	_box(el, Vector3(0.15, 0.15, 0.16), Vector3(0, -0.39, 0.01), skin)                   # fist
+	if pad != null:
+		_loft(el, [Vector4(0.05, 0.1, 0.105, -0.005), Vector4(-0.05, 0.1, 0.105, -0.005)], pad)  # elbow pad
+	_loft(el, [Vector4(0.02, 0.085, 0.085, 0.0), Vector4(-0.09, 0.095, 0.09, 0.005),
+		Vector4(-0.27, 0.065, 0.065, 0.0)], skin)                                           # forearm
+	if tape != null:
+		_loft(el, [Vector4(-0.2, 0.08, 0.08, 0.0), Vector4(-0.28, 0.075, 0.075, 0.0)], tape)  # wrist tape
+	_box(el, Vector3(0.13, 0.12, 0.14), Vector3(0, -0.33, 0.005), skin)                   # fist
+	_box(el, Vector3(0.115, 0.035, 0.02), Vector3(0, -0.36, 0.08), skin_dark)            # knuckles
 	return sh
 
 
-func _build_leg(side: int, legs_mat: Material, gear: Material, boots: Material) -> Node3D:
-	var hp := _pivot(hips, Vector3(0.15 * side, -0.05, 0))
-	_prism(hp, 0.145, 0.11, 0.44, Vector3(0, -0.21, 0), legs_mat)                        # thigh
-	var kn := _pivot(hp, Vector3(0, -0.44, 0))
+func _build_leg(side: int, legs_mat: Material, pad: Material, boots: Material, boots_plain: Material, sole: Material) -> Node3D:
+	# hip pivot at 0.89 m, knee at 0.46 m, sole at 0.0 m when standing straight
+	var hp := _pivot(hips, Vector3(0.14 * side, -0.06, 0))
+	_loft(hp, [Vector4(0.07, 0.135, 0.14, 0.0), Vector4(-0.12, 0.14, 0.15, 0.005),
+		Vector4(-0.3, 0.115, 0.125, 0.005), Vector4(-0.45, 0.095, 0.1, 0.0)], legs_mat)    # thigh
+	var kn := _pivot(hp, Vector3(0, -0.43, 0))
 	if side < 0:
 		knee_l = kn
 	else:
 		knee_r = kn
-	_box(kn, Vector3(0.21, 0.15, 0.2), Vector3(0, -0.01, 0.03), gear)                    # kneepad
-	_prism(kn, 0.105, 0.085, 0.3, Vector3(0, -0.17, 0), legs_mat)                        # shin
-	_prism(kn, 0.11, 0.115, 0.17, Vector3(0, -0.33, 0), boots)                           # boot top
-	_box(kn, Vector3(0.19, 0.12, 0.3), Vector3(0, -0.44, 0.05), boots)                   # boot foot
-	_box(kn, Vector3(0.2, 0.03, 0.31), Vector3(0, -0.36, 0.05), gear)  # boot trim
+	_loft(kn, [Vector4(0.06, 0.112, 0.118, 0.012), Vector4(0.0, 0.122, 0.128, 0.016),
+		Vector4(-0.07, 0.108, 0.115, 0.012)], pad)                                         # knee pad
+	_loft(kn, [Vector4(0.0, 0.095, 0.1, 0.0), Vector4(-0.1, 0.1, 0.11, -0.01),
+		Vector4(-0.3, 0.075, 0.08, 0.0)], legs_mat)                                        # shin
+	_loft(kn, [Vector4(-0.16, 0.115, 0.122, 0.0), Vector4(-0.3, 0.102, 0.112, 0.0),
+		Vector4(-0.4, 0.104, 0.118, 0.01)], boots, true, false)                            # boot shaft
+	_box(kn, Vector3(0.17, 0.09, 0.27), Vector3(0, -0.405, 0.055), boots_plain)           # boot foot
+	_box(kn, Vector3(0.18, 0.02, 0.285), Vector3(0, -0.45, 0.055), sole)                  # sole (bottom -0.46)
 	return hp
 
 
@@ -766,7 +1121,7 @@ func _update_pose(delta: float) -> void:
 	var kn_l := 0.12  # knees: +x bends the shin back
 	var kn_r := 0.12
 	var root_x := 0.0
-	var root_y := 0.0
+	var root_y := STAND_Y  # pelvis height (pose_root sits at the pelvis)
 	var direct := false
 
 	match state:
@@ -852,7 +1207,7 @@ func _update_pose(delta: float) -> void:
 		S.THROWN:
 			var p: float = clamp(t / throw_time, 0.0, 1.0)
 			root_x = lerp(0.0, throw_end_angle, p)
-			root_y = sin(p * PI) * throw_height + 0.25 * p
+			root_y = lerpf(STAND_Y, LIE_Y, p) + sin(p * PI) * throw_height
 			al.z = -1.3
 			ar.z = 1.3
 			el_l.x = -0.3
@@ -862,7 +1217,7 @@ func _update_pose(delta: float) -> void:
 			direct = true
 		S.DOWN, S.PINNED, S.LOSE:
 			root_x = -PI / 2
-			root_y = 0.25
+			root_y = LIE_Y
 			al = Vector3(0, 0, -0.7)
 			ar = Vector3(0, 0, 0.7)
 			ll.z = -0.2
@@ -877,7 +1232,7 @@ func _update_pose(delta: float) -> void:
 		S.GETTING_UP:
 			var p: float = clamp(t / 0.7, 0.0, 1.0)
 			root_x = lerp(-PI / 2, 0.0, p * p)
-			root_y = lerp(0.25, 0.0, p)
+			root_y = lerpf(LIE_Y, STAND_Y, p)
 			al.x = -0.8
 			ar.x = -0.8
 			ll.x = lerp(-1.2, 0.0, p)
@@ -887,7 +1242,7 @@ func _update_pose(delta: float) -> void:
 			direct = true
 		S.PINNING:
 			root_x = PI / 2 * 0.95
-			root_y = 0.55
+			root_y = PIN_Y
 			al.x = -0.6
 			ar.x = -0.6
 			el_l.x = -0.9
@@ -902,7 +1257,7 @@ func _update_pose(delta: float) -> void:
 			el_r = Vector3(0, 0, 1.6)
 			kn_l = 0.25
 			kn_r = 0.25
-			root_y = abs(sin(t * 6.0)) * 0.15
+			root_y = STAND_Y + abs(sin(t * 6.0)) * 0.15
 			hip.y = sin(t * 3.0) * 0.3
 
 	var k: float = clamp(delta * 14.0, 0.0, 1.0)
