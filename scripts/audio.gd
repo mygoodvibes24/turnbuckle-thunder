@@ -14,7 +14,8 @@ extends Node
 ## Sound names: "punch", "kick", "thud", "big_thud", "rope", "bell", "count",
 ##              "whoosh", "pop", "ooh", "boo",
 ##              backyard/hardcore: "chair", "metal", "wood", "crack", "whoa",
-##              "cheer_small", "climb", "dive_whoosh", "thud_concrete" (slam on the patio)
+##              "cheer_small", "climb", "dive_whoosh", "thud_concrete" (slam on the patio),
+##              style system: "trick", "combo_bank", "letter", "brawl_mode"
 ##              (plus "crowd_loop", used internally: a small backyard crowd + crickets).
 ##
 ## All clips are 16-bit mono 22050 Hz AudioStreamWAV, lightly bit-crushed for a
@@ -148,6 +149,11 @@ func _build_clips() -> void:
 	clips["dive_whoosh"] = _to_wav(_synth_dive_whoosh(0.7), false)
 	clips["crowd_loop"] = _to_wav(_synth_crowd_loop(3.0), true)
 	clips["thud_concrete"] = _to_wav(_synth_concrete_slam(0.45), false)
+	# style system (appended last so the clips above keep their seeded noise)
+	clips["trick"] = _to_wav(_synth_chime(PackedFloat32Array([1568.0, 2093.0]), 0.055, 0.16, 0.25), false)
+	clips["letter"] = _to_wav(_synth_chime(PackedFloat32Array([659.0, 880.0, 1319.0]), 0.09, 0.22, 0.55), false)
+	clips["combo_bank"] = _to_wav(_synth_register(0.75), false)
+	clips["brawl_mode"] = _to_wav(_synth_brawl(1.8), false)
 	_cache = clips
 
 
@@ -760,6 +766,102 @@ func _synth_dive_whoosh(dur: float) -> PackedFloat32Array:
 
 
 ## Normalize, soft-clip, light bit-crush, encode as 16-bit little-endian PCM.
+## Bright arcade chime: notes start `gap` s apart, each a pulse+sine blip decaying over `ring` s.
+## `square` 0..1 blends in a hollow pulse wave for a more "video game" tone.
+func _synth_chime(notes: PackedFloat32Array, gap: float, ring: float, square: float) -> PackedFloat32Array:
+	var dur: float = gap * float(notes.size()) + ring + 0.05
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var sr: float = float(MIX_RATE)
+	for k in range(notes.size()):
+		var f: float = notes[k]
+		var t0: float = gap * float(k)
+		var i0: int = int(t0 * sr)
+		var last: bool = k == notes.size() - 1
+		var dec: float = (2.5 if last else 5.0) / ring
+		for i in range(i0, n):
+			var age: float = float(i - i0) / sr
+			var env: float = minf(age / 0.004, 1.0) * exp(-age * dec)
+			if env < 0.001 and age > 0.02:
+				break
+			var ph: float = fposmod(f * age, 1.0)
+			var sine: float = sin(TAU * ph) + 0.3 * sin(TAU * ph * 2.0)
+			var pulse: float = 1.0 if ph < 0.25 else -0.35
+			buf[i] += (sine * (1.0 - square) + pulse * square) * env * (1.0 if last else 0.8)
+	return buf
+
+
+## Cash-register "ka-ching": a mechanical clack, a quick rising arpeggio and a bell ding.
+func _synth_register(dur: float) -> PackedFloat32Array:
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var sr: float = float(MIX_RATE)
+	var lp: float = 0.0
+	var a_lp: float = _coef(3000.0)
+	var notes: PackedFloat32Array = PackedFloat32Array([1047.0, 1319.0, 1568.0, 2093.0])
+	for i in range(n):
+		var t: float = float(i) / sr
+		var v: float = 0.0
+		# clack: two short noise bursts
+		var nz: float = _noise()
+		lp += a_lp * (nz - lp)
+		for c in [0.0, 0.06]:
+			var ca: float = t - float(c)
+			if ca >= 0.0 and ca < 0.04:
+				v += (nz - lp) * exp(-ca * 120.0) * 0.9
+		# arpeggio
+		for k in range(notes.size()):
+			var age: float = t - 0.07 - 0.045 * float(k)
+			if age >= 0.0:
+				v += sin(TAU * notes[k] * age) * minf(age / 0.003, 1.0) * exp(-age * 18.0) * 0.45
+		# bell ding (inharmonic partials)
+		var ba: float = t - 0.25
+		if ba >= 0.0:
+			var be: float = minf(ba / 0.003, 1.0) * exp(-ba * 4.5)
+			v += (sin(TAU * 2637.0 * ba) + 0.5 * sin(TAU * 2637.0 * 2.76 * ba) + 0.3 * sin(TAU * 2637.0 * 5.4 * ba) * exp(-ba * 10.0)) * be * 0.6
+		buf[i] = v
+	return buf
+
+
+## BRAWL MODE: a big rising detuned-saw sweep with a filtered noise riser, a final stab,
+## and a crowd roar under it.
+func _synth_brawl(dur: float) -> PackedFloat32Array:
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var sr: float = float(MIX_RATE)
+	var crowd: PackedFloat32Array = _synth_cheer_small(dur)
+	var p1: float = 0.0
+	var p2: float = 0.0
+	var p3: float = 0.0
+	var lp: float = 0.0
+	var nlp: float = 0.0
+	var nhp: float = 0.0
+	var rise: float = 1.0  # seconds of sweep
+	for i in range(n):
+		var t: float = float(i) / sr
+		var u: float = clampf(t / rise, 0.0, 1.0)
+		var f: float = 90.0 * pow(8.0, u * u)  # 90 Hz -> 720 Hz, accelerating
+		if t > rise:
+			f = 720.0
+		p1 += f / sr
+		p2 += f * 1.007 / sr
+		p3 += f * 0.5 * 0.996 / sr
+		var saw: float = (fposmod(p1, 1.0) + fposmod(p2, 1.0) + fposmod(p3, 1.0)) * 2.0 / 3.0 - 1.0
+		lp += _coef(400.0 + 5000.0 * u) * (saw - lp)
+		var env: float = minf(t / 0.05, 1.0)
+		if t > rise:
+			env = exp(-(t - rise) * 3.0) * 1.3  # the stab at the top, ringing out
+		var nz: float = _noise()
+		nlp += _coef(600.0 + 7000.0 * u) * (nz - nlp)
+		nhp += _coef(300.0) * (nlp - nhp)
+		var riser: float = (nlp - nhp) * u * u * (1.0 if t <= rise else exp(-(t - rise) * 8.0))
+		buf[i] = lp * env * 0.8 + riser * 0.6 + crowd[i] * minf(t / 0.6, 1.0) * 0.7
+	return buf
+
+
 func _to_wav(buf: PackedFloat32Array, loop: bool) -> AudioStreamWAV:
 	var n: int = buf.size()
 	var peak: float = 0.0001

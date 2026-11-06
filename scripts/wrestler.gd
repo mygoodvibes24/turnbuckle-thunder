@@ -173,6 +173,11 @@ var drop_to := Vector3.ZERO
 var taunt_cooldown := 0.0
 var taunt_bonus := false
 var special_timer := 0.0       # > 0 while SPECIAL (full spirit) is lit; drains to 80 at 0
+# STYLE (driven by scripts/style.gd, a child Node; hype mirrors spirit)
+var style_letters := 0         # 0..5 letters of B-R-A-W-L earned
+var hype := 0.0                # 0..100 style meter (== spirit)
+var combo_mult := 1            # current combo multiplier (x1..x8)
+var combo_points := 0          # running (unbanked) combo points
 var reversal_window := 0.0     # > 0 while a timed-reversal window is open on us (HUD: "REVERSE!")
 var reversal_kind := ""        # "grapple", "strong", "whip", "punch" or "lariat"
 var reversal_age := 0.0
@@ -1239,7 +1244,38 @@ func is_standing() -> bool:
 
 
 func is_special_ready() -> bool:
-	return spirit >= 100.0
+	return spirit >= 100.0 or brawl_mode
+
+
+## STYLE: trick points for a MOVES entry, scaled by tier.
+func _trick_pts(m: Dictionary) -> int:
+	var dmg: float = m.get("dmg", 8.0)
+	var tier: String = m.get("tier", "weak")
+	var kind: String = m.get("kind", "throw")
+	if tier == "finisher":
+		return 2000
+	if kind == "dive":
+		return clampi(int(400.0 + dmg * 50.0), 500, 1500)
+	if tier == "reversal":
+		return 300
+	if tier == "strong":
+		return clampi(int(300.0 + dmg * 18.0), 300, 600)
+	if kind == "strike" or kind == "ground" or tier == "strike" or tier == "ground":
+		return clampi(int(30.0 + dmg * 10.0), 50, 150)
+	return clampi(int(150.0 + dmg * 18.0), 200, 450)
+
+
+## STYLE: trick kind for a MOVES entry.
+func _trick_kind(m: Dictionary) -> String:
+	if m.get("tier", "") == "finisher":
+		return "super"
+	var kind: String = m.get("kind", "throw")
+	match kind:
+		"dive":
+			return "aerial"
+		"strike", "ground":
+			return "strike"
+	return "grapple"
 
 
 func _flat_to_opponent() -> Vector3:
@@ -1296,6 +1332,7 @@ func gain_spirit(v: float) -> void:
 
 
 func take_damage(d: float) -> void:
+	if opponent != null and opponent.brawl_mode: d *= 1.15  # style hook: BRAWL MODE hits a bit harder (supers already scale up)
 	health = max(0.0, health - d)
 	spirit = max(0.0, spirit - d * 0.4)
 	if d > 0.0:
@@ -1590,6 +1627,7 @@ func _run(delta: float) -> void:
 		_hf_on_rope_bounce()  # high flying hook: opens the springboard window
 		impact.emit(0.15)
 		sfx.emit("thud", 0.35, global_position + Vector3(0, 1.2, 0))  # off the fence
+		if not whipped: trick.emit("Rebound", 50, "movement")  # style hook
 		if not whipped and _hf_rope_buffered_launch():
 			return  # high flying hook: rope launch pressed just before the ropes
 		if rope_bounces > (1 if whipped else 3):
@@ -1995,6 +2033,7 @@ func _start_whip(dir: Vector3, label: String) -> void:
 	opponent.start_whipped(dir)
 	announce.emit(label)
 	sfx.emit("whoosh", 0.5, _chest())
+	trick.emit(label, 300 if label.begins_with("REVERSAL") else 100, "grapple")  # style hook
 
 
 func start_whipped(dir: Vector3) -> void:
@@ -2095,6 +2134,7 @@ func _taunt() -> void:
 	if state_time > TAUNT_TIME:
 		gain_spirit(30.0 if taunt_bonus else 20.0)
 		announce.emit("%s is fired up!" % display_name)
+		trick.emit("Showboat" if taunt_bonus else "Crowd Pleaser", 250 if taunt_bonus else 150, "movement")  # style hook
 		set_state(S.IDLE)
 
 
@@ -2143,6 +2183,7 @@ func _pinned(delta: float) -> void:
 		else:
 			announce.emit("KICK OUT!")
 		last_hit_tier = ""  # that move's effect is spent
+		trick.emit("Near-Fall Kick Out" if near_fall else "Kick Out", 500 if near_fall else 200, "movement")  # style hook
 		opponent.set_state(S.STUNNED)
 		opponent.stun_time = 0.7
 		opponent.position += opponent.facing * 1.0
@@ -3136,6 +3177,7 @@ func _swing_connect() -> void:
 				announce.emit(_item_call(kind, "run" if swing_running else "hit"))
 	if not hit:
 		return
+	trick.emit(_item_call(kind, "run" if swing_running else "hit"), 300, "weapon")  # style hook
 	var op: Vector3 = opponent.global_position
 	sfx.emit(_item_sfx(kind), 1.0, op + Vector3(0, 1.2, 0))
 	if items != null:
@@ -3190,6 +3232,7 @@ func _thrown_item_arrives() -> void:
 		dmg = d
 	if opponent.receive_strike(self, dmg, true):
 		announce.emit(_item_call(kind, "throw"))
+		trick.emit(_item_call(kind, "throw"), 300, "weapon")  # style hook
 		var og: Vector3 = opponent.global_position
 		sfx.emit(_item_sfx(kind), 0.9, og + Vector3(0, 1.5, 0))
 		if _item_ok(it) and items != null:
@@ -3270,6 +3313,7 @@ func crash_through_table(attacker: Node3D, dmg: float, emit_sfx := true) -> void
 	take_damage(dmg + TABLE_BREAK_DMG)
 	if attacker != null:
 		attacker.gain_spirit((dmg + TABLE_BREAK_DMG) * 1.5)
+		attacker.trick.emit("Through The Table", 800, "weapon")  # style hook
 	set_state(S.DOWN)
 	down_duration = TABLE_DOWN_TIME + (1.0 - health / 100.0) * 1.5
 	last_hit_tier = "strong"
@@ -3315,6 +3359,7 @@ func _weapons_check_table_landing() -> void:
 	items.break_table(t)
 	take_damage(TABLE_BREAK_DMG)
 	opponent.gain_spirit(15.0)
+	opponent.trick.emit("Through The Table", 800, "weapon")  # style hook
 	down_duration = maxf(down_duration, TABLE_DOWN_TIME)
 	if last_hit_tier != "finisher":
 		last_hit_tier = "strong"
@@ -6079,6 +6124,7 @@ func _hf_start_climb(mode: String) -> void:
 				announce.emit("%s is climbing onto the SHED ROOF!" % display_name)
 			else:
 				announce.emit("%s is going up on the %s!" % [display_name, _perch_name(hf_perch)])
+			trick.emit("Going Up Top", 100, "movement")  # style hook
 		"down":
 			hf_to = _perch_approach(hf_perch)
 			hf_time = 0.3 + 0.22 * h
@@ -6453,6 +6499,7 @@ func _hf_land_resolve() -> void:
 				opponent.receive_ground_hit(self, dmg, key)
 			if key != "gutter_star":
 				announce.emit(name_txt)
+			trick.emit(name_txt, _trick_pts(m), _trick_kind(m))  # style hook
 			opponent.last_hit_tier = tier
 			var ost: float = opponent.state_time
 			var odd: float = opponent.down_duration
@@ -6554,6 +6601,7 @@ func _hf_super_drop() -> void:
 	sfx.emit("whoosh", 0.7, _chest())
 	sfx.emit("whoa", 0.8, _chest())
 	gain_spirit(dmg * 1.5)
+	trick.emit(name_txt, _trick_pts(m), "grapple")  # style hook
 	set_state(S.THROWING)
 	current_move_key = "suplex"  # reuses the suplex animation, hauled off the fence
 	throw_time = m["time"]
