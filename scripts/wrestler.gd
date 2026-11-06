@@ -12,22 +12,63 @@ signal won()
 signal sfx(kind: String, strength: float, where: Vector3)
 
 enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THROWING, THROWN,
-	DOWN, GETTING_UP, PINNING, PINNED, TAUNT, WIN, LOSE }
+	DOWN, GETTING_UP, PINNING, PINNED, TAUNT, WIN, LOSE,
+	# --- appended states (keep the order above: the HUD refers to states by name) ---
+	WHIFF,        # missed grab: short off-balance recovery (not the "got hit" stagger)
+	GRAB_WINDUP,  # GRAB pressed, reaching out: release = weak lock-up, hold 0.3 s = strong
+	WHIPPING,     # just Irish-whipped the opponent, waiting for them to come off the ropes
+	STOMP,        # stomping a downed opponent
+	GROUND_DROP,  # running elbow / knee drop onto a downed opponent (then lies DOWN briefly)
+	PICKUP,       # hauling a downed opponent back to their feet
+	LIFTED }      # being hauled up (ends dazed and STUNNED in front of the attacker)
 
-const RING_HALF := 3.5
+const RING_HALF := 3.5        # throws always land inside this
+const ROPE_BOUNCE := 3.75     # runners rebound here (the ropes are at 4.15)
+const RING_CLAMP := 3.8       # hard limit for any wrestler position
 const WALK_SPEED := 2.7
 const RUN_SPEED := 6.2
 const PIN_COUNT_TIME := 0.85
 const PIN_ESCAPE_NEEDED := 6.0
+const LOCKUP_DIST := 1.05     # pelvis-to-pelvis spacing in a lock-up (no head clipping)
+const STRONG_GRAB_HOLD := 0.3 # hold GRAB this long for a strong lock-up
+const REVERSAL_WINDOW := 0.25 # defender's timing window after a weak-grapple commit
+const STRONG_REVERSAL_WINDOW := 0.35  # strong grapples are slower, so easier to read
+const REVERSAL_LOCKOUT := 0.5 # pressing too early locks reversals out for this long
+const PUNCH_HIT := 0.18       # punch contact time (also its reversal window)
+const PUNCH_END := 0.42
+const TAUNT_TIME := 1.1
+const TAUNT_COOLDOWN := 6.0
+const SPECIAL_TIME := 15.0    # full spirit lasts this long before draining
+const SPECIAL_DRAIN_TO := 80.0
+const NEAR_FALL_CALLS := ["TWO AND A HALF!", "SO CLOSE!", "NEAR FALL!", "KICKED OUT AT 2.9!"]
 
 # Grapple move list. "land" = landing distance along the thrower's facing (negative = behind).
+# "tier" feeds pin kick-out difficulty: weak / strong / finisher / reversal / ground / strike.
 const MOVES := {
-	"knee": {"name": "Knee Lift", "dmg": 6.0, "kind": "strike"},
-	"slam": {"name": "Body Slam", "dmg": 10.0, "kind": "throw", "time": 1.0, "height": 1.6, "land": 1.3, "flip": false},
-	"suplex": {"name": "Suplex!", "dmg": 13.0, "kind": "throw", "time": 1.1, "height": 2.1, "land": -1.2, "flip": true},
-	"ddt": {"name": "DDT!", "dmg": 14.0, "kind": "throw", "time": 0.7, "height": 0.5, "land": 0.7, "flip": false},
-	"finisher": {"name": "THUNDER DRIVER!!", "dmg": 26.0, "kind": "throw", "time": 1.4, "height": 2.6, "land": 0.9, "flip": true},
-	"armdrag": {"name": "REVERSAL! Arm Drag", "dmg": 7.0, "kind": "throw", "time": 0.8, "height": 1.1, "land": 1.5, "flip": true},
+	# weak lock-up (tap GRAB)
+	"knee": {"name": "Knee Lift", "dmg": 6.0, "kind": "strike", "tier": "weak"},
+	"slam": {"name": "Body Slam", "dmg": 10.0, "kind": "throw", "tier": "weak", "time": 1.0, "height": 1.6, "land": 1.3, "flip": false},
+	"suplex": {"name": "Suplex!", "dmg": 13.0, "kind": "throw", "tier": "weak", "time": 1.1, "height": 2.1, "land": -1.2, "flip": true},
+	"ddt": {"name": "DDT!", "dmg": 14.0, "kind": "throw", "tier": "weak", "time": 0.7, "height": 0.5, "land": 0.7, "flip": false},
+	# strong lock-up (hold GRAB)
+	"piledriver": {"name": "THUNDER TOMBSTONE!", "dmg": 18.0, "kind": "throw", "tier": "strong", "time": 1.2, "height": 1.3, "land": 0.8, "flip": true},
+	"powerbomb": {"name": "Storm Powerbomb!", "dmg": 17.0, "kind": "throw", "tier": "strong", "time": 1.3, "height": 2.4, "land": 1.1, "flip": false},
+	"spinebuster": {"name": "Spinebuster!", "dmg": 15.0, "kind": "throw", "tier": "strong", "time": 0.8, "height": 0.9, "land": 1.2, "flip": false},
+	"neckbreaker": {"name": "Swinging Neckbreaker!", "dmg": 13.0, "kind": "throw", "tier": "strong", "time": 0.8, "height": 0.6, "land": -0.6, "flip": false},
+	# special (full spirit, STICK + GRAB in either lock-up)
+	"finisher": {"name": "THUNDER DRIVER!!", "dmg": 26.0, "kind": "throw", "tier": "finisher", "time": 1.4, "height": 2.6, "land": 0.9, "flip": true},
+	# Irish-whip follow-ups
+	"clothesline": {"name": "Clothesline!", "dmg": 12.0, "kind": "strike", "tier": "strike"},
+	"backdrop": {"name": "Back Body Drop!", "dmg": 12.0, "kind": "throw", "tier": "weak", "time": 1.0, "height": 2.2, "land": -1.4, "flip": true},
+	"powerslam": {"name": "Running Powerslam!", "dmg": 14.0, "kind": "throw", "tier": "strong", "time": 0.8, "height": 1.0, "land": 1.0, "flip": false},
+	# reversals
+	"armdrag": {"name": "REVERSAL! Arm Drag", "dmg": 7.0, "kind": "throw", "tier": "reversal", "time": 0.8, "height": 1.1, "land": 1.5, "flip": true},
+	"hiptoss": {"name": "REVERSAL! Hip Toss", "dmg": 9.0, "kind": "throw", "tier": "reversal", "time": 0.8, "height": 1.3, "land": 1.4, "flip": true},
+	"rev_backdrop": {"name": "REVERSAL! Back Body Drop", "dmg": 10.0, "kind": "throw", "tier": "reversal", "time": 1.0, "height": 2.0, "land": -1.4, "flip": true},
+	# ground attacks
+	"stomp": {"name": "Stomp", "dmg": 4.0, "kind": "ground", "tier": "ground"},
+	"elbow_drop": {"name": "Flying Elbow Drop!", "dmg": 10.0, "kind": "ground", "tier": "ground"},
+	"knee_drop": {"name": "Running Knee Drop!", "dmg": 9.0, "kind": "ground", "tier": "ground"},
 }
 
 var display_name := "Wrestler"
@@ -56,22 +97,57 @@ var throw_time := 1.0
 var throw_height := 1.5
 var throw_end_angle := -PI / 2
 var pending_damage := 0.0
-var reversal_tried := false
 var pin_escape := 0.0
 var pin_count_value := 0
 
-# Controller inputs (one-shot buttons are cleared after every tick).
+# Gameplay detail (readable by HUD / FX / animation)
+var current_move_key := ""     # what the current state is doing: "punch", "knee", "clothesline",
+                               # "stomp", "elbow_drop", a MOVES key while throwing/thrown, ...
+var last_hit_tier := ""        # tier of the last big hit taken (pin kick-out difficulty)
+var tie_strong := false        # current lock-up is a strong one (both wrestlers know)
+var tie_free := false          # lock-up on a dazed opponent: no reversal window
+var committed_move := ""       # lock-up move chosen, executes when commit_timer runs out
+var commit_timer := 0.0
+var commit_dir := Vector3.ZERO # Irish whip direction
+var whipped := false           # running because we were whipped: the game steers, not us
+var dazed := false             # STUNNED after being picked up: free lock-up for the attacker
+var whiff_time := 0.45
+var ground_hits := 0           # hits taken in the current DOWN (caps the down-time extension)
+var drop_from := Vector3.ZERO
+var drop_to := Vector3.ZERO
+var taunt_cooldown := 0.0
+var taunt_bonus := false
+var special_timer := 0.0       # > 0 while SPECIAL (full spirit) is lit; drains to 80 at 0
+var reversal_window := 0.0     # > 0 while a timed-reversal window is open on us (HUD: "REVERSE!")
+var reversal_kind := ""        # "grapple", "strong", "whip", "punch" or "lariat"
+var reversal_age := 0.0
+var reversal_lockout := 0.0    # > 0 after pressing too early (anti-mash)
+var since_press := 10.0        # seconds since we last pressed STRIKE/GRAB
+
+# Controller inputs (one-shot buttons are cleared after every tick; in_grapple_held is a level).
 var in_move := Vector2.ZERO
 var in_strike := false
 var in_grapple := false
+var in_grapple_held := false
 var in_run := false
 var in_pin := false
 var any_pressed := false
 
 # AI
+var ai_skill := 0.5            # 0..1: reaction speed, reversal rate, pin kick-out strength
 var ai_timer := 0.0
 var ai_backoff := 0.0
 var ai_tie_delay := 0.5
+var ai_react := 0.0
+var ai_seen_state := -1
+var ai_strong_grab := false
+var ai_rev_decided := false
+var ai_rev_go := false
+var ai_rev_at := 0.0
+var ai_strafe_time := 0.0
+var ai_strafe_dir := 1.0
+var ai_whip_roll := 2.0
+var ai_whip_trigger := 1.5
 
 # Body parts
 var pose_root: Node3D
@@ -672,13 +748,25 @@ func set_state(s: int) -> void:
 	state = s
 	state_time = 0.0
 	hit_landed = false
+	current_move_key = ""
+	# Leaving the "free" states closes any reversal window that was open on us.
+	if s != S.IDLE and s != S.WALK:
+		reversal_window = 0.0
+	if s != S.RUN:
+		whipped = false
+	if s != S.STUNNED:
+		dazed = false
+	if s != S.TIEUP_ATK:
+		committed_move = ""
+	if s == S.DOWN:
+		ground_hits = 0
 	if s == S.TIEUP_ATK or s == S.TIEUP_DEF:
-		reversal_tried = false
-		ai_tie_delay = randf_range(0.35, 0.85)
+		ai_tie_delay = randf_range(0.35, 0.85) * (1.5 - ai_skill)
 
 
 func is_standing() -> bool:
-	return state in [S.IDLE, S.WALK, S.RUN, S.PUNCH, S.RUN_ATTACK, S.STUNNED, S.TAUNT]
+	return state in [S.IDLE, S.WALK, S.RUN, S.PUNCH, S.RUN_ATTACK, S.STUNNED, S.TAUNT,
+		S.WHIFF, S.GRAB_WINDUP, S.WHIPPING, S.STOMP]
 
 
 func is_special_ready() -> bool:
@@ -701,6 +789,17 @@ func _in_front(max_dist: float) -> bool:
 	return facing.dot(d / dist) > 0.25
 
 
+func _opp_state() -> int:
+	var os: int = opponent.state
+	return os
+
+
+## True when the opponent is in a neutral stance and can time a counter to our strike.
+func _opp_can_counter() -> bool:
+	var os := _opp_state()
+	return os == S.IDLE or os == S.WALK
+
+
 func _set_facing_angle(a: float) -> void:
 	rotation.y = a
 	facing = Vector3(sin(a), 0, cos(a))
@@ -719,6 +818,10 @@ func _snap_face_opponent() -> void:
 		_set_facing_angle(atan2(d.x, d.z))
 
 
+func _chest() -> Vector3:
+	return global_position + Vector3(0, 1.4, 0)
+
+
 func gain_spirit(v: float) -> void:
 	spirit = clamp(spirit + v, 0.0, 100.0)
 
@@ -733,8 +836,8 @@ func _down_time() -> float:
 
 
 func _clamp_ring() -> void:
-	position.x = clamp(position.x, -RING_HALF, RING_HALF)
-	position.z = clamp(position.z, -RING_HALF, RING_HALF)
+	position.x = clamp(position.x, -RING_CLAMP, RING_CLAMP)
+	position.z = clamp(position.z, -RING_CLAMP, RING_CLAMP)
 	position.y = 0.0
 
 
@@ -750,6 +853,21 @@ func _separate() -> void:
 		opponent.position -= push
 
 
+## Full spirit lights SPECIAL for SPECIAL_TIME seconds; unused, it drains back to 80.
+func _update_special(delta: float) -> void:
+	if spirit < 100.0:
+		special_timer = 0.0
+		return
+	if special_timer <= 0.0:
+		special_timer = SPECIAL_TIME
+		announce.emit("%s is SUPERCHARGED!" % display_name)
+		sfx.emit("taunt", 0.8, _chest())
+	special_timer -= delta
+	if special_timer <= 0.0:
+		special_timer = 0.0
+		spirit = SPECIAL_DRAIN_TO
+
+
 # ---------------------------------------------------------------- main update
 
 func tick(delta: float) -> void:
@@ -759,9 +877,15 @@ func tick(delta: float) -> void:
 		combo_timer -= delta
 	else:
 		combo_hits = 0
+	taunt_cooldown = maxf(0.0, taunt_cooldown - delta)
+	reversal_lockout = maxf(0.0, reversal_lockout - delta)
+	since_press += delta
+	_update_special(delta)
 
 	if is_cpu:
 		_ai(delta)
+
+	_handle_reversal_input(delta)
 
 	match state:
 		S.IDLE, S.WALK:
@@ -775,11 +899,19 @@ func tick(delta: float) -> void:
 		S.STUNNED:
 			if state_time > stun_time:
 				set_state(S.IDLE)
+		S.WHIFF:
+			if state_time > whiff_time:
+				set_state(S.IDLE)
+		S.GRAB_WINDUP:
+			_grab_windup(delta)
 		S.TIEUP_ATK:
-			_tieup_attacker()
+			_tieup_attacker(delta)
 		S.TIEUP_DEF:
-			if (in_grapple or in_strike) and not reversal_tried:
-				_attempt_reversal()
+			# Safety net: the attacker left the hold without taking us with them.
+			if _opp_state() != S.TIEUP_ATK and state_time > 0.05:
+				set_state(S.IDLE)
+		S.WHIPPING:
+			_whipping(delta)
 		S.THROWING:
 			if state_time >= throw_time + 0.15:
 				set_state(S.IDLE)
@@ -788,18 +920,25 @@ func tick(delta: float) -> void:
 		S.DOWN:
 			if state_time > down_duration:
 				set_state(S.GETTING_UP)
+				last_hit_tier = ""  # back up: the last move no longer affects pins
 		S.GETTING_UP:
 			if state_time > 0.7:
 				set_state(S.IDLE)
+		S.STOMP:
+			_stomp()
+		S.GROUND_DROP:
+			_ground_drop()
+		S.PICKUP:
+			_pickup()
+		S.LIFTED:
+			if state_time > 1.5:
+				set_state(S.IDLE)  # safety: the lifter got interrupted
 		S.PINNING:
 			_pinning()
 		S.PINNED:
 			_pinned(delta)
 		S.TAUNT:
-			if state_time > 1.1:
-				gain_spirit(22.0)
-				announce.emit("%s is fired up!" % display_name)
-				set_state(S.IDLE)
+			_taunt()
 
 	_separate()
 	_clamp_ring()
@@ -811,6 +950,86 @@ func tick(delta: float) -> void:
 	in_pin = false
 	any_pressed = false
 
+
+# ---------------------------------------------------------------- timed reversals
+# An attacker that commits to a lock-up move, a punch or a running lariat opens a short
+# window on the defender (open_reversal_window). Pressing GRAB/STRIKE inside it reverses
+# (near-certain); pressing in a lock-up before it opens, or mashing right before it opens,
+# locks reversals out for REVERSAL_LOCKOUT seconds.
+
+func open_reversal_window(dur: float, kind: String) -> void:
+	reversal_window = dur
+	reversal_kind = kind
+	reversal_age = 0.0
+	ai_rev_decided = false
+	if since_press < 0.2:
+		reversal_lockout = maxf(reversal_lockout, REVERSAL_LOCKOUT)  # caught mashing
+
+
+func _handle_reversal_input(delta: float) -> void:
+	var pressed := in_grapple or in_strike
+	if reversal_window > 0.0:
+		reversal_age += delta
+		if pressed:
+			_attempt_timed_reversal()
+			in_grapple = false
+			in_strike = false
+		else:
+			reversal_window = maxf(0.0, reversal_window - delta)
+	elif state == S.TIEUP_DEF and pressed:
+		# Too early: the attacker hasn't committed to anything yet.
+		reversal_lockout = REVERSAL_LOCKOUT
+		in_grapple = false
+		in_strike = false
+	if pressed:
+		since_press = 0.0
+
+
+func _attempt_timed_reversal() -> void:
+	var kind := reversal_kind
+	reversal_window = 0.0
+	if reversal_lockout > 0.0:
+		return  # still locked out from mashing: the press is wasted
+	var opp_hp: float = opponent.health
+	var chance := 0.9
+	match kind:
+		"strong":
+			chance = 0.97
+		"whip":
+			chance = 0.88
+		"punch":
+			chance = 0.85
+		"lariat":
+			chance = 0.8
+	chance += (health - opp_hp) / 600.0
+	if randf() >= chance:
+		reversal_lockout = REVERSAL_LOCKOUT
+		if not is_cpu:
+			announce.emit("Reversal failed!")
+		return
+	var os := _opp_state()
+	var dist := _flat_to_opponent().length()
+	match kind:
+		"grapple", "strong":
+			if state == S.TIEUP_DEF and os == S.TIEUP_ATK:
+				_snap_face_opponent()
+				_do_move("hiptoss" if kind == "strong" else "armdrag")
+		"whip":
+			if state == S.TIEUP_DEF and os == S.TIEUP_ATK:
+				_snap_face_opponent()
+				sfx.emit("reversal", 0.6, _chest())
+				_start_whip(facing, "REVERSAL! Whip reversed")
+		"punch":
+			if os == S.PUNCH and dist < 1.9:
+				_snap_face_opponent()
+				_do_move("armdrag")
+		"lariat":
+			if os == S.RUN_ATTACK and dist < 2.6:
+				_snap_face_opponent()
+				_do_move("rev_backdrop")
+
+
+# ---------------------------------------------------------------- standing / running
 
 func _free_move(delta: float) -> void:
 	var dir := Vector3(in_move.x, 0, in_move.y)
@@ -824,48 +1043,86 @@ func _free_move(delta: float) -> void:
 		set_state(S.IDLE)
 	_face_opponent(delta)
 
+	var opp_down := _opp_state() == S.DOWN
+	var opp_dist := _flat_to_opponent().length()
 	if in_run:
 		run_dir = dir.normalized() if dir.length() > 0.3 else facing
 		rope_bounces = 0
 		set_state(S.RUN)
 	elif in_strike:
-		set_state(S.PUNCH)
+		if opp_down and opp_dist < 1.7:
+			_start_stomp()
+		else:
+			_start_punch()
 	elif in_grapple:
-		_try_grapple()
+		if opp_down and opp_dist < 1.6:
+			_start_pickup()
+		else:
+			set_state(S.GRAB_WINDUP)  # tap vs hold decides weak / strong
 	elif in_pin:
 		_try_pin_or_taunt()
 
 
 func _run(delta: float) -> void:
-	if in_move.length() > 0.3:
+	if not whipped and in_move.length() > 0.3:
 		var want := Vector3(in_move.x, 0, in_move.y).normalized()
 		run_dir = run_dir.lerp(want, clamp(delta * 2.5, 0.0, 1.0)).normalized()
+	elif whipped and rope_bounces >= 1:
+		# Coming off the ropes after a whip: run back at whoever whipped us.
+		var back := _flat_to_opponent()
+		if back.length() > 0.6:
+			var nd := run_dir.lerp(back.normalized(), clampf(delta * 6.0, 0.0, 1.0))
+			if nd.length() > 0.1:
+				run_dir = nd.normalized()
 	position += run_dir * RUN_SPEED * delta
 	_set_facing_angle(atan2(run_dir.x, run_dir.z))
 
+	# Rebound off the ropes (visually touching them; the clamp stops us at RING_CLAMP).
 	var bounced := false
-	if abs(position.x) >= RING_HALF - 0.02 and sign(position.x) == sign(run_dir.x):
+	if absf(position.x) >= ROPE_BOUNCE and signf(position.x) == signf(run_dir.x):
 		run_dir.x = -run_dir.x
 		bounced = true
-	if abs(position.z) >= RING_HALF - 0.02 and sign(position.z) == sign(run_dir.z):
+	if absf(position.z) >= ROPE_BOUNCE and signf(position.z) == signf(run_dir.z):
 		run_dir.z = -run_dir.z
 		bounced = true
 	if bounced:
 		rope_bounces += 1
 		impact.emit(0.15)
-		sfx.emit("rope", 0.4, global_position + Vector3(0, 1.2, 0))
-		if rope_bounces > 2:
+		sfx.emit("rope", 0.5, global_position + Vector3(0, 1.2, 0))
+		if rope_bounces > (1 if whipped else 2):
 			set_state(S.IDLE)
 			return
 
+	if whipped:
+		# Game-controlled run: no inputs. If nobody meets us, we bump into the whipper.
+		if rope_bounces >= 1 and _flat_to_opponent().length() < 0.95:
+			_whip_bump()
+		elif state_time > 4.0:
+			set_state(S.IDLE)
+		return
+
+	var opp_down := _opp_state() == S.DOWN
+	var dist := _flat_to_opponent().length()
 	if in_strike:
-		set_state(S.RUN_ATTACK)
+		if opp_down and dist < 2.6:
+			_start_ground_drop("elbow_drop")
+		else:
+			_start_run_attack()
+	elif in_grapple and opp_down and dist < 2.6:
+		_start_ground_drop("knee_drop")
 	elif in_run or in_grapple or state_time > 4.0:
 		set_state(S.IDLE)
 
 
+func _start_punch() -> void:
+	set_state(S.PUNCH)
+	current_move_key = "punch"
+	if _opp_can_counter() and _in_front(1.6):
+		opponent.open_reversal_window(PUNCH_HIT, "punch")
+
+
 func _punch() -> void:
-	if state_time >= 0.14 and not hit_landed:
+	if state_time >= PUNCH_HIT and not hit_landed:
 		hit_landed = true
 		if _in_front(1.35):
 			combo_hits += 1
@@ -874,14 +1131,21 @@ func _punch() -> void:
 			if opponent.receive_strike(self, 8.0 if knock else 4.0, knock) and knock:
 				announce.emit("3-Hit Combo!")
 				combo_hits = 0
-	if state_time >= 0.38:
+	if state_time >= PUNCH_END:
 		set_state(S.IDLE)
+
+
+func _start_run_attack() -> void:
+	set_state(S.RUN_ATTACK)
+	current_move_key = "lariat"
+	if _opp_can_counter() and _in_front(2.6):
+		opponent.open_reversal_window(0.14, "lariat")
 
 
 func _run_attack(delta: float) -> void:
 	var speed: float = lerp(RUN_SPEED, 0.0, clamp(state_time / 0.45, 0.0, 1.0))
 	position += run_dir * speed * delta
-	if not hit_landed and state_time > 0.05 and state_time < 0.35:
+	if not hit_landed and state_time > 0.12 and state_time < 0.35:
 		var d := _flat_to_opponent()
 		if d.length() < 1.45 and (d.length() < 0.01 or facing.dot(d.normalized()) > 0.0):
 			hit_landed = true
@@ -895,6 +1159,7 @@ func _run_attack(delta: float) -> void:
 func receive_strike(attacker: Node3D, dmg: float, knockdown: bool) -> bool:
 	if not is_standing():
 		return false
+	var was_taunting := state == S.TAUNT
 	take_damage(dmg)
 	attacker.gain_spirit(dmg * 1.5)
 	var away := position - attacker.position
@@ -904,6 +1169,7 @@ func receive_strike(attacker: Node3D, dmg: float, knockdown: bool) -> bool:
 	if knockdown:
 		set_state(S.DOWN)
 		down_duration = _down_time()
+		last_hit_tier = "strike"
 		impact.emit(0.5)
 		sfx.emit("kick", 0.7, global_position + Vector3(0, 1.4, 0))
 	else:
@@ -911,38 +1177,177 @@ func receive_strike(attacker: Node3D, dmg: float, knockdown: bool) -> bool:
 		stun_time = 0.35
 		impact.emit(0.1)
 		sfx.emit("punch", 0.35, global_position + Vector3(0, 1.5, 0))
+	if was_taunting:
+		announce.emit("Taunt cut short!")
 	return true
 
 
-func _try_grapple() -> void:
-	if _in_front(1.45) and opponent.state in [S.IDLE, S.WALK, S.STUNNED, S.PUNCH, S.TAUNT]:
-		set_state(S.TIEUP_ATK)
-		opponent.position = position + facing * 0.95
-		opponent.set_state(S.TIEUP_DEF)
-		opponent._snap_face_opponent()
-	else:
-		set_state(S.STUNNED)  # whiffed grab: brief recovery
-		stun_time = 0.3
+# ---------------------------------------------------------------- ground attacks
+
+func _start_stomp() -> void:
+	set_state(S.STOMP)
+	current_move_key = "stomp"
+	_snap_face_opponent()
 
 
-func _tieup_attacker() -> void:
-	if opponent.state != S.TIEUP_DEF:
-		if state == S.TIEUP_ATK:
-			set_state(S.IDLE)
+func _stomp() -> void:
+	if state_time >= 0.22 and not hit_landed:
+		hit_landed = true
+		if _opp_state() == S.DOWN and _flat_to_opponent().length() < 1.9:
+			var m: Dictionary = MOVES["stomp"]
+			var dmg: float = m["dmg"]
+			opponent.receive_ground_hit(self, dmg, "stomp")
+	if state_time >= 0.5:
+		set_state(S.IDLE)
+
+
+func _start_ground_drop(key: String) -> void:
+	set_state(S.GROUND_DROP)
+	current_move_key = key
+	drop_from = position
+	var to := _flat_to_opponent()
+	var target: Vector3 = opponent.position
+	if to.length() > 0.4:
+		target -= to.normalized() * 0.35
+	drop_to = Vector3(target.x, 0.0, target.z)
+	_snap_face_opponent()
+	sfx.emit("whoosh", 0.45, _chest())
+
+
+func _ground_drop() -> void:
+	var t := clampf(state_time / 0.5, 0.0, 1.0)
+	position = drop_from.lerp(drop_to, t)
+	if t < 1.0:
 		return
-	if state_time < 0.3:
+	var key := current_move_key
+	var m: Dictionary = MOVES.get(key, MOVES["elbow_drop"])
+	var dmg: float = m["dmg"]
+	var landed := _opp_state() == S.DOWN and _flat_to_opponent().length() < 1.3
+	if landed:
+		opponent.receive_ground_hit(self, dmg, key)
+		announce.emit(m["name"])
+	else:
+		take_damage(3.0)
+		announce.emit("Missed!")
+		impact.emit(0.2)
+		sfx.emit("thud", 0.5, global_position + Vector3(0, 0.3, 0))
+	# The dropper ends up on their own back for a moment either way.
+	set_state(S.DOWN)
+	last_hit_tier = ""
+	down_duration = 0.6 if landed else 1.0
+
+
+## Called on a downed defender by stomps / drops. Returns true if it connected.
+func receive_ground_hit(attacker: Node3D, dmg: float, key: String) -> bool:
+	if state != S.DOWN:
+		return false
+	take_damage(dmg)
+	attacker.gain_spirit(dmg * 1.5)
+	last_hit_tier = "ground"
+	current_move_key = key  # what just hit us, so the body can jolt
+	if ground_hits < 3:
+		ground_hits += 1
+		down_duration = maxf(down_duration, state_time + 0.8)
+	var big := dmg >= 8.0
+	impact.emit(0.4 if big else 0.15)
+	sfx.emit("big_thud" if big else "thud", 0.9 if big else 0.45, global_position + Vector3(0, 0.3, 0))
+	return true
+
+
+func _start_pickup() -> void:
+	set_state(S.PICKUP)
+	current_move_key = "pickup"
+	_snap_face_opponent()
+	# Stand at lock-up distance so the lifted wrestler rises right in front of us.
+	var op: Vector3 = opponent.position
+	position = op - facing * LOCKUP_DIST
+	opponent.set_state(S.LIFTED)
+	sfx.emit("grab", 0.4, _chest())
+
+
+func _pickup() -> void:
+	if _opp_state() != S.LIFTED:
+		set_state(S.IDLE)
+		return
+	if state_time >= 0.6:
+		opponent.position = position + facing * LOCKUP_DIST
+		opponent.set_state(S.STUNNED)
+		opponent.stun_time = 1.2
+		opponent.dazed = true
+		opponent._snap_face_opponent()
+		set_state(S.IDLE)
+
+
+# ---------------------------------------------------------------- grapples
+
+func _grab_windup(delta: float) -> void:
+	_face_opponent(delta)
+	if in_grapple_held:
+		if state_time >= STRONG_GRAB_HOLD:
+			_try_grapple(true)
+	elif state_time >= 0.06:
+		_try_grapple(false)
+
+
+func _try_grapple(strong: bool) -> void:
+	var os := _opp_state()
+	var grabbable: bool = os in [S.IDLE, S.WALK, S.STUNNED, S.PUNCH, S.TAUNT, S.WHIFF, S.GRAB_WINDUP, S.STOMP]
+	if _in_front(1.5) and grabbable:
+		var free_lock: bool = opponent.dazed
+		set_state(S.TIEUP_ATK)
+		tie_strong = strong
+		tie_free = free_lock
+		current_move_key = "lockup_strong" if strong else "lockup"
+		opponent.position = position + facing * LOCKUP_DIST
+		opponent.set_state(S.TIEUP_DEF)
+		opponent.tie_strong = strong
+		opponent._snap_face_opponent()
+		sfx.emit("grab", 0.7 if strong else 0.45, _chest())
+	else:
+		# Whiffed grab: off balance for a moment (longer for a committed strong grab).
+		set_state(S.WHIFF)
+		whiff_time = 0.6 if strong else 0.42
+		current_move_key = "whiff_strong" if strong else "whiff"
+		sfx.emit("whoosh", 0.25, _chest())
+
+
+func _tieup_attacker(delta: float) -> void:
+	if _opp_state() != S.TIEUP_DEF:
+		set_state(S.IDLE)
+		return
+	if committed_move != "":
+		# Move chosen: the defender's reversal window is running; then it happens.
+		commit_timer -= delta
+		if commit_timer <= 0.0:
+			var k := committed_move
+			committed_move = ""
+			if k == "whip":
+				_start_whip(commit_dir, "Irish Whip!")
+			else:
+				_do_move(k)
+		return
+	if state_time < (0.45 if tie_strong else 0.3):
 		return  # collar-and-elbow struggle
 	var dir_held := in_move.length() > 0.5
 	var move := ""
-	if in_grapple:
+	if in_run:
+		move = "whip"
+		commit_dir = Vector3(in_move.x, 0, in_move.y).normalized() if dir_held else facing
+	elif in_grapple:
 		if dir_held:
-			move = "finisher" if is_special_ready() else "ddt"
+			if is_special_ready():
+				move = "finisher"
+			else:
+				move = "neckbreaker" if tie_strong else "ddt"
 		else:
-			move = "slam"
+			move = "spinebuster" if tie_strong else "slam"
 	elif in_strike:
-		move = "suplex" if dir_held else "knee"
+		if dir_held:
+			move = "powerbomb" if tie_strong else "suplex"
+		else:
+			move = "piledriver" if tie_strong else "knee"
 	if move != "":
-		_do_move(move)
+		_commit(move)
 	elif state_time > 2.4:
 		# nobody committed: break the hold
 		set_state(S.IDLE)
@@ -950,44 +1355,54 @@ func _tieup_attacker() -> void:
 		opponent.position += facing * 0.4
 
 
-func _attempt_reversal() -> void:
-	reversal_tried = true
-	var chance: float = 0.38 + (health - opponent.health) / 300.0
-	if randf() < chance:
-		_do_move("armdrag")
-	elif not is_cpu:
-		announce.emit("Reversal failed!")
+func _commit(move: String) -> void:
+	committed_move = move
+	commit_timer = STRONG_REVERSAL_WINDOW if tie_strong else REVERSAL_WINDOW
+	current_move_key = move
+	if not tie_free:
+		var kind := "whip" if move == "whip" else ("strong" if tie_strong else "grapple")
+		opponent.open_reversal_window(commit_timer, kind)
 
 
 func _do_move(key: String) -> void:
 	var m: Dictionary = MOVES[key]
+	var tier: String = m.get("tier", "weak")
+	var kind: String = m["kind"]
+	var dmg: float = m["dmg"]
 	announce.emit(m["name"])
 	if key == "finisher":
-		sfx.emit("finisher", 1.0, global_position + Vector3(0, 1.5, 0))
-	elif key == "armdrag":
-		sfx.emit("reversal", 0.6, global_position + Vector3(0, 1.5, 0))
-	elif m["kind"] == "throw":
-		sfx.emit("whoosh", 0.5, global_position + Vector3(0, 1.5, 0))
+		sfx.emit("finisher", 1.0, _chest())
+	elif tier == "reversal":
+		sfx.emit("reversal", 0.6, _chest())
+	elif kind == "throw":
+		sfx.emit("whoosh", 0.5, _chest())
 	if key == "finisher":
 		spirit = 0.0
-	gain_spirit(float(m["dmg"]) * 1.5)
-	if m["kind"] == "strike":
-		opponent.take_damage(m["dmg"])
+		special_timer = 0.0
+	gain_spirit(dmg * 1.5)
+	opponent.reversal_window = 0.0
+	if kind == "strike":
+		# Knee lift: a lock-up strike (PUNCH state, current_move_key tells the animation).
+		opponent.take_damage(dmg)
 		opponent.set_state(S.STUNNED)
 		opponent.stun_time = 0.7
 		opponent.position += facing * 0.4
 		impact.emit(0.25)
 		sfx.emit("kick", 0.5, opponent.global_position + Vector3(0, 1.2, 0))
 		set_state(S.PUNCH)
+		current_move_key = key
 		hit_landed = true
 		return
 	set_state(S.THROWING)
+	current_move_key = key
 	throw_time = m["time"]
-	opponent.start_thrown(position + facing * float(m["land"]), m)
+	opponent.start_thrown(position + facing * float(m["land"]), m, key)
 
 
-func start_thrown(land_pos: Vector3, m: Dictionary) -> void:
+func start_thrown(land_pos: Vector3, m: Dictionary, key := "") -> void:
 	set_state(S.THROWN)
+	current_move_key = key
+	last_hit_tier = m.get("tier", "weak")
 	throw_from = position
 	throw_to = Vector3(clamp(land_pos.x, -RING_HALF, RING_HALF), 0, clamp(land_pos.z, -RING_HALF, RING_HALF))
 	throw_time = m["time"]
@@ -1000,29 +1415,122 @@ func _thrown() -> void:
 	var t: float = clamp(state_time / throw_time, 0.0, 1.0)
 	position = throw_from.lerp(throw_to, t)
 	if t >= 1.0:
+		var key := current_move_key
 		take_damage(pending_damage)
 		set_state(S.DOWN)
+		current_move_key = key  # landed from this move (animation may vary the bump)
 		down_duration = _down_time()
 		pose_root.rotation.x = -PI / 2
 		impact.emit(clamp(pending_damage / 20.0, 0.3, 1.2))
 		sfx.emit("big_thud" if pending_damage >= 20.0 else "thud", clamp(pending_damage / 20.0, 0.3, 1.3), global_position + Vector3(0, 0.3, 0))
 
 
+# ---------------------------------------------------------------- Irish whip
+
+## Sends the opponent running toward the ropes in `dir`; we wait in WHIPPING for the rebound.
+func _start_whip(dir: Vector3, label: String) -> void:
+	set_state(S.WHIPPING)
+	current_move_key = "whip"
+	ai_whip_roll = randf()
+	ai_whip_trigger = randf_range(1.2, 1.75)
+	opponent.start_whipped(dir)
+	announce.emit(label)
+	sfx.emit("whoosh", 0.5, _chest())
+
+
+func start_whipped(dir: Vector3) -> void:
+	set_state(S.RUN)
+	whipped = true
+	rope_bounces = 0
+	var d := Vector3(dir.x, 0, dir.z)
+	run_dir = d.normalized() if d.length() > 0.01 else facing
+	_set_facing_angle(atan2(run_dir.x, run_dir.z))
+
+
+func _whipping(delta: float) -> void:
+	var ws: bool = opponent.whipped
+	if _opp_state() != S.RUN or not ws:
+		set_state(S.IDLE)
+		return
+	_face_opponent(delta)
+	var dist := _flat_to_opponent().length()
+	var rb: int = opponent.rope_bounces
+	var coming := rb >= 1
+	if in_strike or in_grapple:
+		if coming and dist < 2.2:
+			if in_strike:
+				_whip_clothesline()
+			else:
+				_do_move("powerslam" if in_move.length() > 0.5 else "backdrop")
+		elif in_strike:
+			_start_punch()  # swung too early
+		else:
+			set_state(S.WHIFF)
+			whiff_time = 0.42
+			current_move_key = "whiff"
+	elif state_time > 4.5:
+		set_state(S.IDLE)
+
+
+func _whip_clothesline() -> void:
+	var m: Dictionary = MOVES["clothesline"]
+	var dmg: float = m["dmg"]
+	set_state(S.PUNCH)
+	current_move_key = "clothesline"
+	hit_landed = true
+	if opponent.receive_strike(self, dmg, true):
+		announce.emit(m["name"])
+
+
+## A whipped runner met nobody's move: both wrestlers stagger.
+func _whip_bump() -> void:
+	var other_up: bool = opponent.is_standing()
+	set_state(S.STUNNED)
+	stun_time = 0.5
+	if other_up:
+		opponent.take_damage(2.0)
+		opponent.set_state(S.STUNNED)
+		opponent.stun_time = 0.35
+		var d := _flat_to_opponent()
+		if d.length() > 0.01:
+			opponent.position += d.normalized() * 0.3
+	impact.emit(0.2)
+	var op: Vector3 = opponent.global_position
+	sfx.emit("thud", 0.5, (global_position + op) * 0.5 + Vector3(0, 1.2, 0))
+	announce.emit("Collision!")
+
+
+# ---------------------------------------------------------------- pins & taunts
+
 func _try_pin_or_taunt() -> void:
-	if opponent.state == S.DOWN and _flat_to_opponent().length() < 2.0:
+	var os := _opp_state()
+	if os == S.DOWN and _flat_to_opponent().length() < 2.0:
 		set_state(S.PINNING)
+		current_move_key = "cover"
 		position = opponent.position
 		_set_facing_angle(opponent.rotation.y + PI / 2)
 		pin_count_value = 0
 		opponent.set_state(S.PINNED)
 		opponent.pin_escape = 0.0
 		announce.emit("COVER!")
-	else:
+	elif taunt_cooldown <= 0.0:
+		taunt_bonus = os == S.DOWN or os == S.GETTING_UP
 		set_state(S.TAUNT)
+		current_move_key = "taunt"
+		taunt_cooldown = TAUNT_COOLDOWN
+		sfx.emit("taunt", 0.6, _chest())
+
+
+func _taunt() -> void:
+	if state_time > TAUNT_TIME:
+		gain_spirit(30.0 if taunt_bonus else 20.0)
+		announce.emit("%s is fired up!" % display_name)
+		set_state(S.IDLE)
 
 
 func _pinning() -> void:
-	if opponent.state != S.PINNED:
+	if _opp_state() != S.PINNED:
+		set_state(S.IDLE)  # safety: the cover was broken some other way
 		return
 	var c := int(state_time / PIN_COUNT_TIME)
 	if c > pin_count_value:
@@ -1035,93 +1543,242 @@ func _pinning() -> void:
 			won.emit()
 
 
+## How much escape effort a kick-out takes: more when hurt, much more after a finisher.
+func _pin_escape_needed() -> float:
+	var need := PIN_ESCAPE_NEEDED * (1.0 + (1.0 - health / 100.0) * 0.8)
+	match last_hit_tier:
+		"finisher":
+			need += PIN_ESCAPE_NEEDED * 1.3
+		"strong":
+			need += PIN_ESCAPE_NEEDED * 0.35
+		"ground", "strike":
+			need += PIN_ESCAPE_NEEDED * 0.1
+	return need
+
+
 func _pinned(delta: float) -> void:
 	if is_cpu:
-		pin_escape += delta * (health / 100.0) * 10.0 * randf_range(0.5, 1.5)
+		pin_escape += delta * (health / 100.0) * 10.0 * randf_range(0.5, 1.5) * (0.8 + 0.4 * ai_skill)
 	elif any_pressed:
 		pin_escape += 0.3 + 0.9 * (health / 100.0)
-	if pin_escape >= PIN_ESCAPE_NEEDED and opponent.state == S.PINNING:
-		announce.emit("KICK OUT!")
+	if pin_escape >= _pin_escape_needed() and _opp_state() == S.PINNING:
+		var count: int = opponent.pin_count_value
+		var near_fall := count >= 2
+		if near_fall:
+			announce.emit(NEAR_FALL_CALLS[randi() % NEAR_FALL_CALLS.size()])
+			gain_spirit(8.0)  # the crowd rallies behind a near fall
+		else:
+			announce.emit("KICK OUT!")
+		last_hit_tier = ""  # that move's effect is spent
 		opponent.set_state(S.STUNNED)
 		opponent.stun_time = 0.7
 		opponent.position += opponent.facing * 1.0
 		set_state(S.DOWN)
 		down_duration = 0.4
-		impact.emit(0.2)
-		sfx.emit("kickout", 0.6, global_position + Vector3(0, 0.6, 0))
+		impact.emit(0.35 if near_fall else 0.2)
+		sfx.emit("kickout", 1.0 if near_fall else 0.6, global_position + Vector3(0, 0.6, 0))
 
 
 # ---------------------------------------------------------------- CPU AI
+# The CPU fills the same in_* fields a human would. ai_skill (0..1) scales reaction delay,
+# reversal rate and pin kick-out strength. Decisions are paced by ai_timer and ai_react so
+# the CPU never mashes.
 
 func _ai(delta: float) -> void:
 	ai_timer -= delta
 	ai_backoff -= delta
+	ai_react -= delta
+	ai_strafe_time -= delta
 	in_move = Vector2.ZERO
+	in_grapple_held = false
 	var d := _flat_to_opponent()
 	var dist := d.length()
 	var toward := Vector2(d.x, d.z).normalized() if dist > 0.01 else Vector2.ZERO
+	var os := _opp_state()
+	var opp_hp: float = opponent.health
+	var opp_standing: bool = opponent.is_standing()
+
+	# Human-like reaction delay whenever the opponent's situation changes
+	# (0 = on their feet, 1 = down, 2 = anything else; walking/punching don't count).
+	var situation := 1 if os == S.DOWN else (0 if opp_standing else 2)
+	if situation != ai_seen_state:
+		ai_seen_state = situation
+		ai_react = randf_range(0.12, 0.4) * (1.6 - ai_skill)
+
+	# Timed reversal: decide once per window, then press at a random moment inside it.
+	if reversal_window > 0.0:
+		if not ai_rev_decided:
+			ai_rev_decided = true
+			ai_rev_go = randf() < _ai_reversal_chance()
+			ai_rev_at = randf_range(0.03, maxf(0.04, reversal_window - 0.05))
+		if ai_rev_go and reversal_age >= ai_rev_at:
+			ai_rev_go = false
+			in_grapple = true
+		return
 
 	match state:
-		S.TIEUP_DEF:
-			if not reversal_tried and state_time > 0.12:
-				reversal_tried = true
-				if randf() < 0.3:
-					_attempt_reversal()
+		S.TIEUP_DEF, S.PINNED, S.LIFTED, S.PINNING:
+			return
+		S.GRAB_WINDUP:
+			in_grapple_held = ai_strong_grab
 			return
 		S.TIEUP_ATK:
-			if state_time > ai_tie_delay:
-				var r := randf()
-				if is_special_ready() or r < 0.25:
-					in_grapple = true
-					in_move = toward
-				elif r < 0.5:
-					in_grapple = true
-				elif r < 0.75:
+			if committed_move == "" and state_time > ai_tie_delay:
+				_ai_lockup_move(toward)
+			return
+		S.WHIPPING:
+			var rb: int = opponent.rope_bounces
+			if ai_whip_roll <= 1.0 and rb >= 1 and dist < ai_whip_trigger:
+				if ai_whip_roll < 0.45:
 					in_strike = true
-					in_move = toward
-				else:
-					in_strike = true
+				elif ai_whip_roll < 0.85:
+					in_grapple = true
+					if randf() < 0.5:
+						in_move = toward
+				ai_whip_roll = 2.0  # decided (>= 0.85: just wait for the collision)
 			return
 		S.RUN:
-			if dist < 1.9 and opponent.is_standing():
+			if whipped:
+				return
+			if os == S.DOWN:
+				if dist < 2.3:
+					if randf() < 0.4:
+						in_grapple = true  # knee drop
+					else:
+						in_strike = true   # elbow drop
+				else:
+					in_move = toward
+			elif dist < 1.9 and opp_standing:
 				in_strike = true
+			elif rope_bounces >= 1:
+				in_move = toward  # off the ropes: home in
 			return
 
 	if state != S.IDLE and state != S.WALK:
 		return
+	var can_act := ai_react <= 0.0 and ai_timer <= 0.0
 
-	if opponent.state == S.DOWN:
-		if opponent.health < 60.0 and dist > 1.5:
+	if os == S.DOWN:
+		_ai_vs_downed(dist, toward, opp_hp, can_act)
+		return
+	if not opp_standing:
+		# Getting up, flying through the air, ...: line up, press nothing.
+		if dist > 1.8:
 			in_move = toward
-		elif ai_timer <= 0.0:
-			ai_timer = 0.5
-			if dist < 1.9 and opponent.health < 60.0 and randf() < 0.75:
-				in_pin = true
-			elif dist > 2.2 and randf() < 0.35:
-				in_pin = true  # far away -> taunt
 		return
-	if not opponent.is_standing() and opponent.state != S.TIEUP_DEF:
-		return
-
 	if ai_backoff > 0.0:
 		in_move = -toward
 		return
+	if dist > 1.3:
+		_ai_approach(dist, toward, can_act)
+		return
+	if can_act:
+		ai_timer = randf_range(0.45, 1.0) * (1.4 - 0.6 * ai_skill)
+		var r := randf()
+		if r < 0.28:
+			in_grapple = true
+			ai_strong_grab = false
+		elif r < 0.46:
+			in_grapple = true
+			ai_strong_grab = true
+		elif r < 0.8:
+			in_strike = true
+		elif r < 0.9:
+			ai_backoff = 0.45
+		else:
+			_ai_start_strafe()
 
-	if dist > 1.25:
+
+func _ai_approach(dist: float, toward: Vector2, can_act: bool) -> void:
+	if ai_strafe_time > 0.0 and dist < 3.4:
+		# Circle the opponent instead of beelining.
+		var perp := Vector2(-toward.y, toward.x) * ai_strafe_dir
+		in_move = (toward * 0.3 + perp).normalized() * 0.85
+	else:
 		in_move = toward
-		if dist > 4.0 and ai_timer <= 0.0:
-			ai_timer = 1.0
-			if randf() < 0.3:
-				in_run = true
-	elif ai_timer <= 0.0:
-		ai_timer = randf_range(0.35, 0.9)
+	if not can_act:
+		return
+	ai_timer = randf_range(0.5, 1.1)
+	var r := randf()
+	if dist > 3.6 and r < 0.25:
+		in_run = true  # charge in for a lariat
+		in_move = toward
+	elif dist > 1.6 and dist < 3.4 and r < 0.4:
+		_ai_start_strafe()
+	elif dist > 1.6 and dist < 3.0 and r < 0.5:
+		in_run = true  # hit the ropes behind us and come back
+		in_move = -toward
+
+
+func _ai_start_strafe() -> void:
+	ai_strafe_time = randf_range(0.6, 1.3)
+	ai_strafe_dir = -1.0 if randf() < 0.5 else 1.0
+
+
+func _ai_vs_downed(dist: float, toward: Vector2, opp_hp: float, can_act: bool) -> void:
+	var tier: String = opponent.last_hit_tier
+	var pin_worthy := opp_hp < 55.0 or tier == "finisher"
+	if pin_worthy:
+		if dist > 1.6:
+			in_move = toward
+		elif can_act:
+			ai_timer = 0.4
+			if randf() < 0.55 + 0.4 * ai_skill:
+				in_pin = true
+			else:
+				in_strike = true  # one more stomp first
+		return
+	if dist > 3.0:
+		if can_act:
+			ai_timer = randf_range(0.6, 1.0)
+			var r := randf()
+			if r < 0.4 and taunt_cooldown <= 0.0:
+				in_pin = true  # far away: taunt to the crowd
+			elif r < 0.65:
+				in_run = true  # charge in for an elbow / knee drop
+				in_move = toward
+			else:
+				in_move = toward
+		else:
+			in_move = toward * 0.7
+		return
+	if dist > 1.5:
+		in_move = toward
+		return
+	if can_act:
+		ai_timer = randf_range(0.45, 0.85)
 		var r := randf()
 		if r < 0.45:
-			in_grapple = true
-		elif r < 0.82:
-			in_strike = true
-		else:
-			ai_backoff = 0.45
+			in_strike = true   # stomp
+		elif r < 0.75:
+			in_grapple = true  # pick them up for more punishment
+		elif r < 0.85:
+			in_pin = true      # cheeky early cover
+
+
+func _ai_lockup_move(toward: Vector2) -> void:
+	var r := randf()
+	if is_special_ready() and r < 0.75:
+		in_grapple = true
+		in_move = toward  # finisher
+		return
+	if r < 0.2:
+		in_run = true  # Irish whip
+	elif r < 0.5:
+		in_grapple = true
+		if randf() < 0.5:
+			in_move = toward
+	else:
+		in_strike = true
+		if randf() < 0.5:
+			in_move = toward
+
+
+func _ai_reversal_chance() -> float:
+	var c := 0.1 + 0.5 * ai_skill
+	if reversal_kind == "strong":
+		c += 0.1
+	return clampf(c, 0.0, 0.95)
 
 
 # ---------------------------------------------------------------- procedural animation
@@ -1175,7 +1832,7 @@ func _update_pose(delta: float) -> void:
 			kn_r = 0.2 + max(0.0, -s) * 1.4
 			hip.x = 0.3
 		S.PUNCH:
-			var p: float = clamp(t / 0.14, 0.0, 1.0) if t < 0.14 else clamp(1.0 - (t - 0.14) / 0.24, 0.0, 1.0)
+			var p: float = clamp(t / PUNCH_HIT, 0.0, 1.0) if t < PUNCH_HIT else clamp(1.0 - (t - PUNCH_HIT) / (PUNCH_END - PUNCH_HIT), 0.0, 1.0)
 			ar.x = lerp(-0.6, -1.65, p)
 			al.x = -0.6
 			el_r.x = lerp(-1.4, -0.05, p)
@@ -1276,6 +1933,81 @@ func _update_pose(delta: float) -> void:
 			kn_r = 0.25
 			root_y = STAND_Y + abs(sin(t * 6.0)) * 0.15
 			hip.y = sin(t * 3.0) * 0.3
+		# ---- minimal poses for the gameplay states added later (animation pass will refine)
+		S.GRAB_WINDUP:
+			# reaching forward for the collar-and-elbow
+			al = Vector3(-1.3, 0, 0.2)
+			ar = Vector3(-1.3, 0, -0.2)
+			el_l.x = -0.5
+			el_r.x = -0.5
+			hip.x = 0.3
+			ll.x = 0.3
+			lr.x = -0.3
+			kn_l = 0.45
+			kn_r = 0.35
+		S.WHIFF:
+			# lunged at nothing: stumbling forward
+			hip.x = 0.6
+			al = Vector3(-1.0, 0, -0.3)
+			ar = Vector3(-1.0, 0, 0.3)
+			el_l.x = -0.1
+			el_r.x = -0.1
+			ll.x = 0.5
+			lr.x = -0.2
+			kn_l = 0.6
+			kn_r = 0.3
+		S.WHIPPING:
+			# right arm extended after flinging the opponent away
+			ar = Vector3(-1.4, 0, 0.2)
+			el_r.x = 0.0
+			al.x = -0.5
+			el_l.x = -1.0
+			hip.x = 0.15
+			kn_l = 0.35
+			kn_r = 0.35
+		S.STOMP:
+			var p: float = sin(clamp(t / 0.4, 0.0, 1.0) * PI)
+			lr.x = -1.2 * p
+			kn_r = 0.2 + 1.3 * p
+			kn_l = 0.3
+			al.z = -0.4
+			ar.z = 0.4
+			hip.x = 0.25
+		S.GROUND_DROP:
+			# leap and come down across the opponent, elbow / knee first
+			var p: float = clamp(t / 0.5, 0.0, 1.0)
+			root_x = lerp(0.0, -PI / 2 * 0.8, p)
+			root_y = lerpf(STAND_Y, LIE_Y + 0.15, p) + sin(p * PI) * 0.6
+			ar = Vector3(0, 0, 1.6)
+			el_r = Vector3(-2.0, 0, 0)
+			al = Vector3(-0.6, 0, -0.5)
+			ll.x = -0.6
+			kn_l = 1.2
+			kn_r = 0.4
+			direct = true
+		S.PICKUP:
+			# bent over grabbing the head, then straightening up
+			var p: float = clamp(t / 0.6, 0.0, 1.0)
+			hip.x = lerp(0.9, 0.2, p)
+			al.x = lerp(-1.5, -1.2, p)
+			ar.x = lerp(-1.5, -1.2, p)
+			el_l.x = -0.6
+			el_r.x = -0.6
+			kn_l = lerp(0.8, 0.3, p)
+			kn_r = lerp(0.8, 0.3, p)
+		S.LIFTED:
+			# hauled from the mat to a limp standing position
+			var p: float = clamp(t / 0.6, 0.0, 1.0)
+			root_x = lerp(-PI / 2, 0.0, p * p)
+			root_y = lerpf(LIE_Y, STAND_Y - 0.05, p)
+			al = Vector3(0.2, 0, -0.3)
+			ar = Vector3(0.2, 0, 0.3)
+			el_l.x = -0.2
+			el_r.x = -0.2
+			hip.x = 0.35
+			kn_l = lerp(1.2, 0.4, p)
+			kn_r = lerp(1.0, 0.4, p)
+			direct = true
 
 	var k: float = clamp(delta * 14.0, 0.0, 1.0)
 	arm_l.rotation = arm_l.rotation.lerp(al, k)

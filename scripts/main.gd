@@ -1430,21 +1430,45 @@ func _restart() -> void:
 
 func _hint_text() -> String:
 	var st: int = p1.state
+	var opp: int = p2.state
+	var special: bool = p1.is_special_ready()
+	var rev: float = p1.reversal_window
+	var lockout: float = p1.reversal_lockout
+	var a: Vector3 = p1.position
+	var b: Vector3 = p2.position
+	var near := Vector2(a.x - b.x, a.z - b.z).length() < 1.7
+	if rev > 0.0:
+		return "REVERSE!  Tap GRAB or STRIKE NOW!"
 	if st == Wrestler.S.TIEUP_ATK:
-		var fin := "THUNDER DRIVER!" if p1.is_special_ready() else "DDT"
-		return "STRIKE: Knee      STICK + STRIKE: Suplex\nGRAB: Slam      STICK + GRAB: " + fin
+		var strong: bool = p1.tie_strong
+		if strong:
+			var fin_s := "THUNDER DRIVER!" if special else "Neckbreaker"
+			return "STRONG LOCK-UP   STRIKE: Tombstone   STICK+STRIKE: Powerbomb\nGRAB: Spinebuster   STICK+GRAB: " + fin_s + "   RUN: Irish Whip"
+		var fin := "THUNDER DRIVER!" if special else "DDT"
+		return "STRIKE: Knee   STICK+STRIKE: Suplex\nGRAB: Slam   STICK+GRAB: " + fin + "   RUN: Irish Whip"
 	if st == Wrestler.S.TIEUP_DEF:
-		return "CAUGHT!  Tap GRAB or STRIKE to reverse"
+		if lockout > 0.0:
+			return "TOO EARLY!  Wait for the move..."
+		return "CAUGHT!  Tap GRAB or STRIKE the moment he moves to reverse"
 	if st == Wrestler.S.PINNED:
 		return "MASH ANY BUTTON TO KICK OUT!"
+	if st == Wrestler.S.GRAB_WINDUP:
+		return "Keep holding GRAB for a STRONG lock-up..."
+	if st == Wrestler.S.WHIPPING:
+		return "Here he comes!  STRIKE: Clothesline\nGRAB: Back Body Drop   STICK+GRAB: Powerslam"
 	if st == Wrestler.S.RUN:
+		if opp == Wrestler.S.DOWN:
+			return "STRIKE: Elbow Drop      GRAB: Knee Drop"
 		return "STRIKE: Clothesline      RUN: Stop"
-	if p2.state == Wrestler.S.DOWN:
-		return "He's down!  Get close and PIN"
-	if p1.is_special_ready():
-		return "SPECIAL READY!  Lock up, then STICK + GRAB"
+	if opp == Wrestler.S.DOWN:
+		if near:
+			return "STRIKE: Stomp   GRAB: Pick up   PIN: Cover"
+		return "He's down!  Get close and PIN, or TAUNT from afar"
+	if special:
+		var secs: float = p1.special_timer
+		return "SPECIAL READY! (%ds)  Lock up, then STICK + GRAB" % int(ceil(secs))
 	if hud_clock < 6.0:
-		return "Walk up and GRAB to lock up!"
+		return "Tap GRAB to lock up  -  HOLD GRAB for a strong lock-up"
 	return ""
 
 
@@ -1455,27 +1479,57 @@ func _update_touch_labels() -> void:
 	var st: int = p1.state
 	var opp: int = p2.state
 	var special: bool = p1.is_special_ready()
+	var rev: float = p1.reversal_window
 	var mv: Vector2 = p1.in_move
 	var dir_held := mv.length() > 0.5
+	var a: Vector3 = p1.position
+	var b: Vector3 = p2.position
+	var near := Vector2(a.x - b.x, a.z - b.z).length() < 1.7
 	var glow := "grapple" if special else ""
 	if match_over:
 		touch.set_labels("", "", "", "")
 		glow = ""
+	elif rev > 0.0:
+		touch.set_labels("REVERSE!", "REVERSE!", "", "")
+		glow = "all"
 	elif st == Wrestler.S.PINNED:
 		touch.set_labels("MASH!", "MASH!", "MASH!", "MASH!")
 		glow = "all"
 	elif st == Wrestler.S.TIEUP_ATK:
-		var grab_move := ("FINISH!" if special else "DDT") if dir_held else "SLAM"
-		touch.set_labels("SUPLEX" if dir_held else "KNEE", grab_move, "", "")
+		var strong: bool = p1.tie_strong
+		var grab_move: String
+		var strike_move: String
+		if strong:
+			grab_move = ("FINISH!" if special else "NECKBRKR") if dir_held else "SPINEBSTR"
+			strike_move = "P.BOMB" if dir_held else "TOMBSTONE"
+		else:
+			grab_move = ("FINISH!" if special else "DDT") if dir_held else "SLAM"
+			strike_move = "SUPLEX" if dir_held else "KNEE"
+		touch.set_labels(strike_move, grab_move, "WHIP", "")
 		if not (special and dir_held):
 			glow = ""
 	elif st == Wrestler.S.TIEUP_DEF:
-		touch.set_labels("REVERSE", "REVERSE", "", "")
-		glow = "all"
+		touch.set_labels("WAIT...", "WAIT...", "", "")
+		glow = ""
+	elif st == Wrestler.S.GRAB_WINDUP:
+		touch.set_labels("", "HOLD!", "", "")
+		glow = "grapple"
+	elif st == Wrestler.S.WHIPPING:
+		touch.set_labels("LARIAT", "P.SLAM" if dir_held else "BACKDROP", "", "")
+		glow = ""
 	elif st == Wrestler.S.RUN:
-		touch.set_labels("LARIAT", "STOP", "STOP", "")
+		if opp == Wrestler.S.DOWN:
+			touch.set_labels("ELBOW", "KNEE", "STOP", "")
+		else:
+			touch.set_labels("LARIAT", "STOP", "STOP", "")
+	elif opp == Wrestler.S.DOWN and near:
+		touch.set_labels("STOMP", "LIFT", "RUN", "PIN")
+		if not special:
+			glow = "pin"
 	else:
-		touch.set_labels("PUNCH", "GRAB", "RUN", "PIN" if opp == Wrestler.S.DOWN else "TAUNT")
+		var cd: float = p1.taunt_cooldown
+		var pin_lbl := "PIN" if opp == Wrestler.S.DOWN else ("TAUNT" if cd <= 0.0 else "")
+		touch.set_labels("PUNCH", "GRAB", "RUN", pin_lbl)
 		if opp == Wrestler.S.DOWN and not special:
 			glow = "pin"
 	touch.set_highlight(glow)
@@ -1505,6 +1559,7 @@ func _physics_process(delta: float) -> void:
 		else:
 			p1.in_strike = js or buf_strike
 			p1.in_grapple = jg or buf_grapple
+			p1.in_grapple_held = Input.is_action_pressed("grapple")
 			p1.in_run = jr or buf_run
 			p1.in_pin = jp or buf_pin
 			p1.any_pressed = p1.in_strike or p1.in_grapple or p1.in_run or p1.in_pin
