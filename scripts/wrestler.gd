@@ -505,15 +505,44 @@ func _ao(img: Image, mode: String) -> void:
 ## broad ambient / fold shading and a photo-ish fabric grain, mipmaps it.
 ## grain: "cotton" | "denim" (diagonal twill + fades) | "flannel" (cross weave) | "knit"
 ## (fleece ribs) | "leather" | "none".
-func _finish(img: Image, mode := "plain", grain := "cotton") -> ImageTexture:
+func _finish(img: Image, mode := "plain", grain := "cotton", plaid := false) -> ImageTexture:
 	var w := img.get_width()
 	var h := img.get_height()
 	img.resize(w * 8, h * 8, Image.INTERPOLATE_BILINEAR)
 	img.resize(w * 4, h * 4, Image.INTERPOLATE_BILINEAR)
+	if plaid:
+		_plaid_hi(img)
 	_ao(img, mode)
 	_grain(img, grain)
 	img.generate_mipmaps()
 	return ImageTexture.create_from_image(img)
+
+
+## Flannel plaid painted at full resolution as a tint over everything already painted
+## (pockets, placket, folds keep showing): dark bands of the base hue crossing every 16 px,
+## a darker square where they cross, a thin pale thread line, soft band edges.
+func _plaid_hi(img: Image) -> void:
+	var w := img.get_width()
+	var h := img.get_height()
+	for y in h:
+		var by := _plaid_band(float(y))
+		var ty := _plaid_thread(float(y))
+		for x in w:
+			var bx := _plaid_band(float(x))
+			var tx := _plaid_thread(float(x))
+			var f := (1.0 - 0.36 * bx) * (1.0 - 0.36 * by) * (1.0 + 0.22 * maxf(tx, ty) * (1.0 - maxf(bx, by)))
+			var c := img.get_pixel(x, y)
+			img.set_pixel(x, y, Color(c.r * f, c.g * f, c.b * f * 0.98, c.a))
+
+
+func _plaid_band(p: float) -> float:
+	var m := fposmod(p, 16.0)
+	return smoothstep(0.0, 1.2, m) * (1.0 - smoothstep(5.0, 6.2, m))
+
+
+func _plaid_thread(p: float) -> float:
+	var m := fposmod(p, 16.0)
+	return 1.0 - smoothstep(0.0, 0.9, absf(m - 11.0))
 
 
 func _grain(img: Image, grain: String) -> void:
@@ -604,7 +633,8 @@ func _top_texture(top: String, base: Color, pattern: String, accent: Color, skin
 	var img := _new_img(32, 32, base)
 	var dk := base.darkened(0.15)
 	var lt := base.lightened(0.1)
-	_paint_pattern(img, pattern, base, accent)
+	if pattern != "plaid":
+		_paint_pattern(img, pattern, base, accent)
 	if pattern == "logo":
 		# generic garage-band print on the chest: a ring, a jagged bolt, blocky letters
 		var acc := base.lerp(accent, 0.75)
@@ -680,13 +710,14 @@ func _top_texture(top: String, base: Color, pattern: String, accent: Color, skin
 	if top != "hoodie":
 		_px(img, 0, 30, 32, 2, dk)              # hem
 	var gr := "flannel" if top == "flannel" else ("knit" if top == "hoodie" else "cotton")
-	return _finish(img, "torso", gr)
+	return _finish(img, "torso", gr, pattern == "plaid")
 
 
 func _sleeve_texture(base: Color, pattern: String, accent: Color, cuff: bool) -> ImageTexture:
 	# 16x16 sleeve: pattern, a crease, and a hem (or ribbed cuff) at the bottom.
 	var img := _new_img(16, 16, base)
-	_paint_pattern(img, pattern, base, accent)
+	if pattern != "plaid":
+		_paint_pattern(img, pattern, base, accent)
 	var dk := base.darkened(0.15)
 	img.set_pixel(7, 6, base.darkened(0.1))
 	img.set_pixel(8, 7, base.darkened(0.1))
@@ -697,7 +728,7 @@ func _sleeve_texture(base: Color, pattern: String, accent: Color, cuff: bool) ->
 			_px(img, x, 12, 1, 4, base.darkened(0.22))
 	else:
 		_px(img, 0, 14, 16, 2, dk)
-	return _finish(img, "limb", "flannel" if pattern == "plaid" else ("knit" if cuff else "cotton"))
+	return _finish(img, "limb", "flannel" if pattern == "plaid" else ("knit" if cuff else "cotton"), pattern == "plaid")
 
 
 func _bottoms_texture(kind: String, base: Color, accent: Color) -> ImageTexture:
@@ -932,8 +963,8 @@ func _paint_eyes(img: Image, skin: Color, brow_c: Color, sockets: bool) -> void:
 			_dab(img, s, ex, 28.4, 2.6, 2.0, shade, 0.65, 0.9)            # eye socket
 			_dab(img, s, ex + 0.4 * e, 25.4, 2.4, 0.75, brow_c, 0.85, 0.6)  # brow (outer end)
 			_dab(img, s, ex - 0.9 * e, 25.9, 1.5, 0.7, brow_c, 0.85, 0.6)  # brow (inner end, low: a scowl)
-		_dab(img, s, ex, 28.7, 1.35, 0.62, white, 0.95, 0.45)            # eye white
-		_dab(img, s, ex - 0.15 * e, 28.75, 0.6, 0.6, iris, 0.95, 0.4)    # iris
+		_dab(img, s, ex, 28.7, 1.45, 0.7, white, 0.95, 0.45)             # eye white
+		_dab(img, s, ex - 0.15 * e, 28.75, 0.62, 0.62, iris, 0.95, 0.4)  # iris
 		_dab(img, s, ex, 28.05, 1.5, 0.35, lid, 0.7, 0.5)                # upper lid
 	_dab(img, s, 32.0, 26.6, 1.0, 1.4, shade, 0.25, 0.9)                 # frown crease
 
@@ -1209,7 +1240,7 @@ func _costume_mask_texture(base: Color, trim: Color) -> ImageTexture:
 		var ex: float = 32.0 + 6.5 * float(sd)
 		_diamond(img, s, ex, 29.5, 6.8, 11.0, hot, 1.0, 0.15)
 		_diamond(img, s, ex, 29.5, 5.6, 9.4, Color(0.96, 0.95, 0.9), 1.0, 0.15)
-		_dab(img, s, ex, 26.5, 4.0, 2.9, clear, 1.0, 0.25)          # oversized eye hole
+		_dab(img, s, ex, 25.6, 4.2, 3.4, clear, 1.0, 0.25)          # oversized eye hole
 	_dab(img, s, 32.0, 39.0, 2.0, 2.5, base.lightened(0.15), 0.6, 0.8)   # moulded nose sheen
 	_dab(img, s, 30.9, 41.0, 0.6, 0.5, clear, 1.0, 0.3)          # nostril holes
 	_dab(img, s, 33.1, 41.0, 0.6, 0.5, clear, 1.0, 0.3)
@@ -1411,7 +1442,7 @@ func _build_body() -> void:
 			_loft(torso, [Vector4(0.685, neck_r + 0.012, neck_r + 0.008, 0.0),
 				Vector4(0.64, 0.19 * kx + lx + 0.012, 0.125 * kz + lz + 0.01, -0.012)], top_dark, false, false)
 		"flannel":
-			_loft(torso, [Vector4(0.72, neck_r + 0.02, neck_r + 0.014, 0.0), Vector4(0.68, neck_r + 0.03, neck_r + 0.022, -0.004),
+			_loft(torso, [Vector4(0.685, neck_r + 0.014, neck_r + 0.01, 0.0), Vector4(0.665, neck_r + 0.03, neck_r + 0.02, -0.006),
 				Vector4(0.635, 0.2 * kx + lx + 0.016, 0.125 * kz + lz + 0.014, -0.016)], top_dark, false, false)
 		"hoodie":
 			_loft(torso, [Vector4(0.71, neck_r + 0.03, neck_r + 0.025, -0.02),
