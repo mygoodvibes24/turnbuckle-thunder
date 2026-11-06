@@ -26,6 +26,9 @@ const CROWD_SILENT_DB: float = -60.0
 const BELL_GAP: float = 0.35
 
 var clips: Dictionary = {}
+# Synthesized clips survive scene reloads (REMATCH), so the ~216k-sample synthesis
+# runs once per launch instead of on every reload.
+static var _cache: Dictionary = {}
 
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()      # deterministic synthesis noise
 var _play_rng: RandomNumberGenerator = RandomNumberGenerator.new() # runtime pitch variation
@@ -72,16 +75,16 @@ func _process(delta: float) -> void:
 
 # ------------------------------------------------------------------ public API
 
-func play(name: String, volume_db: float = 0.0, pitch_variation: float = 0.08) -> void:
-	if not clips.has(name) or _pool.is_empty():
-		if not _warned.has(name):
-			_warned[name] = true
-			push_warning("audio.gd: unknown sound '%s'" % name)
+func play(sound: String, volume_db: float = 0.0, pitch_variation: float = 0.08) -> void:
+	if not clips.has(sound) or _pool.is_empty():
+		if not _warned.has(sound):
+			_warned[sound] = true
+			push_warning("audio.gd: unknown sound '%s'" % sound)
 		return
 	var p: AudioStreamPlayer = _pool[_next_player]
 	_next_player = (_next_player + 1) % _pool.size()
 	p.stop()
-	p.stream = clips[name]
+	p.stream = clips[sound]
 	p.volume_db = volume_db
 	var v: float = absf(pitch_variation)
 	p.pitch_scale = maxf(0.05, 1.0 + _play_rng.randf_range(-v, v))
@@ -116,6 +119,9 @@ func stop_crowd() -> void:
 # ------------------------------------------------------------------ synthesis
 
 func _build_clips() -> void:
+	if not _cache.is_empty():
+		clips = _cache
+		return
 	clips["punch"] = _to_wav(_synth_hit(0.06, 180.0, 120.0, 0.55, 2600.0), false)
 	clips["kick"] = _to_wav(_synth_hit(0.09, 130.0, 80.0, 0.7, 1800.0), false)
 	clips["thud"] = _to_wav(_synth_slam(0.35, 70.0, 48.0, 0.5), false)
@@ -128,6 +134,7 @@ func _build_clips() -> void:
 	clips["ooh"] = _to_wav(_synth_ooh(1.0, 210.0, 0.85), false)
 	clips["boo"] = _to_wav(_synth_ooh(1.1, 150.0, 0.7), false)
 	clips["crowd_loop"] = _to_wav(_synth_crowd_loop(3.0), true)
+	_cache = clips
 
 
 func _noise() -> float:

@@ -31,10 +31,12 @@ const PIN_COUNT_TIME := 0.85
 const PIN_ESCAPE_NEEDED := 6.0
 const LOCKUP_DIST := 1.05     # pelvis-to-pelvis spacing in a lock-up (no head clipping)
 const STRONG_GRAB_HOLD := 0.3 # hold GRAB this long for a strong lock-up
-const REVERSAL_WINDOW := 0.25 # defender's timing window after a weak-grapple commit
-const STRONG_REVERSAL_WINDOW := 0.35  # strong grapples are slower, so easier to read
+const REVERSAL_WINDOW := 0.4  # defender's timing window after a weak-grapple commit
+const STRONG_REVERSAL_WINDOW := 0.5  # strong grapples are slower, so easier to read
 const REVERSAL_LOCKOUT := 0.5 # pressing too early locks reversals out for this long
-const PUNCH_HIT := 0.18       # punch contact time (also its reversal window)
+const PUNCH_HIT := 0.18       # punch contact time (also its reversal window, CPU defenders only)
+const LARIAT_REVERSAL_WINDOW := 0.35  # human defender's window against a running lariat
+const REVERSAL_EARLY := 0.15  # a press this soon before a window opens counts as mashing
 const PUNCH_END := 0.42
 const TAUNT_TIME := 1.1
 const TAUNT_COOLDOWN := 6.0
@@ -163,6 +165,7 @@ var elbow_r: Node3D
 var knee_l: Node3D
 var knee_r: Node3D
 var look := {}
+var rev_tell: Label3D  # "!" over our head while a reversal window is open on us
 
 
 func setup(p_name: String, p_look: Dictionary, p_cpu: bool) -> void:
@@ -173,6 +176,26 @@ func setup(p_name: String, p_look: Dictionary, p_cpu: bool) -> void:
 	skin_color = look.get("skin", Color(0.86, 0.64, 0.48))
 	is_cpu = p_cpu
 	_build_body()
+	_build_rev_tell()
+
+
+## The visible tell for timed reversals: a bold yellow "!" ~0.6 m above the head.
+func _build_rev_tell() -> void:
+	rev_tell = Label3D.new()
+	rev_tell.text = "!"
+	var bold := FontVariation.new()
+	bold.variation_embolden = 1.2
+	rev_tell.font = bold
+	rev_tell.font_size = 96
+	rev_tell.pixel_size = 0.006
+	rev_tell.modulate = Color(1.0, 0.9, 0.1)
+	rev_tell.outline_modulate = Color(0.1, 0.05, 0.0)
+	rev_tell.outline_size = 18
+	rev_tell.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	rev_tell.no_depth_test = true
+	rev_tell.position = Vector3(0, 2.65, 0)
+	rev_tell.visible = false
+	add_child(rev_tell)
 
 
 # ---------------------------------------------------------------- body building
@@ -655,15 +678,17 @@ func _build_body() -> void:
 	hips = _pivot(pose_root, Vector3.ZERO)
 
 	# Pelvis / trunks (back of the trunks is 0.195 behind the pelvis)
-	_loft(hips, [
+	var trunks_mi := _loft(hips, [
 		Vector4(0.17, 0.285, 0.19, 0.0), Vector4(0.12, 0.29, 0.195, 0.0), Vector4(0.0, 0.28, 0.195, 0.0),
 		Vector4(-0.1, 0.25, 0.18, 0.0), Vector4(-0.17, 0.16, 0.13, 0.0)], trunks_mat)
+	trunks_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 
 	# Torso: waist -> lats/ribs -> pecs -> shoulders -> traps (back reaches 0.205 behind)
 	torso = _pivot(hips, Vector3(0, 0.12, 0))
-	_loft(torso, [
+	var torso_mi := _loft(torso, [
 		Vector4(0.64, 0.11, 0.09, -0.01), Vector4(0.58, 0.27, 0.15, -0.02), Vector4(0.48, 0.37, 0.2, 0.0),
 		Vector4(0.34, 0.355, 0.215, 0.01), Vector4(0.2, 0.3, 0.19, 0.0), Vector4(0.0, 0.26, 0.17, 0.0)], torso_mat)
+	torso_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 
 	# Neck + head (head ~0.33 wide x 0.36 tall x 0.35 deep, top ~2.03 m when standing)
 	_loft(torso, [Vector4(0.72, 0.095, 0.095, 0.02), Vector4(0.52, 0.115, 0.11, 0.0)], skin, false, false)
@@ -724,8 +749,9 @@ func _build_arm(side: int, skin: Material, skin_dark: Material, tape: Material, 
 func _build_leg(side: int, legs_mat: Material, pad: Material, boots: Material, boots_plain: Material, sole: Material) -> Node3D:
 	# hip pivot at 0.89 m, knee at 0.46 m, sole at 0.0 m when standing straight
 	var hp := _pivot(hips, Vector3(0.14 * side, -0.06, 0))
-	_loft(hp, [Vector4(0.07, 0.135, 0.14, 0.0), Vector4(-0.12, 0.14, 0.15, 0.005),
+	var thigh := _loft(hp, [Vector4(0.07, 0.135, 0.14, 0.0), Vector4(-0.12, 0.14, 0.15, 0.005),
 		Vector4(-0.3, 0.115, 0.125, 0.005), Vector4(-0.45, 0.095, 0.1, 0.0)], legs_mat)    # thigh
+	thigh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	var kn := _pivot(hp, Vector3(0, -0.43, 0))
 	if side < 0:
 		knee_l = kn
@@ -733,8 +759,9 @@ func _build_leg(side: int, legs_mat: Material, pad: Material, boots: Material, b
 		knee_r = kn
 	_loft(kn, [Vector4(0.06, 0.112, 0.118, 0.012), Vector4(0.0, 0.122, 0.128, 0.016),
 		Vector4(-0.07, 0.108, 0.115, 0.012)], pad)                                         # knee pad
-	_loft(kn, [Vector4(0.0, 0.095, 0.1, 0.0), Vector4(-0.1, 0.1, 0.11, -0.01),
+	var shin := _loft(kn, [Vector4(0.0, 0.095, 0.1, 0.0), Vector4(-0.1, 0.1, 0.11, -0.01),
 		Vector4(-0.3, 0.075, 0.08, 0.0)], legs_mat)                                        # shin
+	shin.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	_loft(kn, [Vector4(-0.16, 0.115, 0.122, 0.0), Vector4(-0.3, 0.102, 0.112, 0.0),
 		Vector4(-0.4, 0.104, 0.118, 0.01)], boots, true, false)                            # boot shaft
 	_box(kn, Vector3(0.17, 0.09, 0.27), Vector3(0, -0.405, 0.055), boots_plain)           # boot foot
@@ -886,6 +913,8 @@ func tick(delta: float) -> void:
 		_ai(delta)
 
 	_handle_reversal_input(delta)
+	# Punch windows are CPU-only and too short to read, so they get no tell.
+	rev_tell.visible = reversal_window > 0.0 and reversal_kind != "punch"
 
 	match state:
 		S.IDLE, S.WALK:
@@ -954,15 +983,15 @@ func tick(delta: float) -> void:
 # ---------------------------------------------------------------- timed reversals
 # An attacker that commits to a lock-up move, a punch or a running lariat opens a short
 # window on the defender (open_reversal_window). Pressing GRAB/STRIKE inside it reverses
-# (near-certain); pressing in a lock-up before it opens, or mashing right before it opens,
-# locks reversals out for REVERSAL_LOCKOUT seconds.
+# (near-certain); pressing within REVERSAL_EARLY before it opens (mashing) locks
+# reversals out for REVERSAL_LOCKOUT seconds.
 
 func open_reversal_window(dur: float, kind: String) -> void:
 	reversal_window = dur
 	reversal_kind = kind
 	reversal_age = 0.0
 	ai_rev_decided = false
-	if since_press < 0.2:
+	if since_press < REVERSAL_EARLY:
 		reversal_lockout = maxf(reversal_lockout, REVERSAL_LOCKOUT)  # caught mashing
 
 
@@ -977,8 +1006,8 @@ func _handle_reversal_input(delta: float) -> void:
 		else:
 			reversal_window = maxf(0.0, reversal_window - delta)
 	elif state == S.TIEUP_DEF and pressed:
-		# Too early: the attacker hasn't committed to anything yet.
-		reversal_lockout = REVERSAL_LOCKOUT
+		# Too early: the attacker hasn't committed yet. The press is wasted; it only
+		# locks reversals out if it lands within REVERSAL_EARLY of the commit.
 		in_grapple = false
 		in_strike = false
 	if pressed:
@@ -1117,7 +1146,9 @@ func _run(delta: float) -> void:
 func _start_punch() -> void:
 	set_state(S.PUNCH)
 	current_move_key = "punch"
-	if _opp_can_counter() and _in_front(1.6):
+	# Only a CPU defender gets a punch-reversal window: for a human it is below
+	# reaction time and just flickers "REVERSE!" on every jab.
+	if opponent.is_cpu and _opp_can_counter() and _in_front(1.6):
 		opponent.open_reversal_window(PUNCH_HIT, "punch")
 
 
@@ -1139,7 +1170,7 @@ func _start_run_attack() -> void:
 	set_state(S.RUN_ATTACK)
 	current_move_key = "lariat"
 	if _opp_can_counter() and _in_front(2.6):
-		opponent.open_reversal_window(0.14, "lariat")
+		opponent.open_reversal_window(0.14 if opponent.is_cpu else LARIAT_REVERSAL_WINDOW, "lariat")
 
 
 func _run_attack(delta: float) -> void:
@@ -1557,6 +1588,9 @@ func _pinning() -> void:
 		sfx.emit("count", 0.6, global_position + Vector3(0, 0.2, 0))
 		if c >= 3:
 			set_state(S.WIN)
+			# Stand up beside the loser, not inside their torso.
+			position -= Vector3(facing.x, 0.0, facing.z) * 0.8
+			_clamp_ring()
 			opponent.set_state(S.LOSE)
 			won.emit()
 
@@ -1623,6 +1657,9 @@ func _ai(delta: float) -> void:
 		ai_seen_state = situation
 		ai_react = randf_range(0.12, 0.4) * (1.6 - ai_skill)
 
+	if state == S.GRAB_WINDUP:
+		in_grapple_held = ai_strong_grab  # set before any early return, or strong grabs turn weak
+
 	# Timed reversal: decide once per window, then press at a random moment inside it.
 	if reversal_window > 0.0:
 		if not ai_rev_decided:
@@ -1638,7 +1675,6 @@ func _ai(delta: float) -> void:
 		S.TIEUP_DEF, S.PINNED, S.LIFTED, S.PINNING:
 			return
 		S.GRAB_WINDUP:
-			in_grapple_held = ai_strong_grab
 			return
 		S.TIEUP_ATK:
 			if committed_move == "" and state_time > ai_tie_delay:
@@ -1796,6 +1832,8 @@ func _ai_reversal_chance() -> float:
 	var c := 0.1 + 0.5 * ai_skill
 	if reversal_kind == "strong":
 		c += 0.1
+	elif reversal_kind == "punch":
+		c = 0.05 + 0.15 * ai_skill
 	return clampf(c, 0.0, 0.95)
 
 
@@ -3153,10 +3191,10 @@ func _pose_ground_drop() -> void:
 		else:
 			pt_kn_l = 1.4
 			pt_kn_r = lerpf(2.2, 2.0, v)
-		var impact := _seg(v, 0.85, 1.0)
-		pt_tor = Vector3(0.3 * crouch - 0.1 * v + 0.55 * impact, 0.0, 0.0)
-		pt_hd = Vector3(0.2 + 0.2 * impact, 0.0, 0.0)
-		pt_al = Vector3(lerpf(0.4 * crouch - 0.6, -2.5, _smooth(_seg(v, 0.0, 0.4))) + 1.8 * impact, 0.0, -0.4)
+		var hit_k := _seg(v, 0.85, 1.0)
+		pt_tor = Vector3(0.3 * crouch - 0.1 * v + 0.55 * hit_k, 0.0, 0.0)
+		pt_hd = Vector3(0.2 + 0.2 * hit_k, 0.0, 0.0)
+		pt_al = Vector3(lerpf(0.4 * crouch - 0.6, -2.5, _smooth(_seg(v, 0.0, 0.4))) + 1.8 * hit_k, 0.0, -0.4)
 		pt_ar = Vector3(pt_al.x, 0.0, 0.4)
 		pt_el_l = Vector3(-0.4, 0.0, 0.0)
 		pt_el_r = Vector3(-0.4, 0.0, 0.0)

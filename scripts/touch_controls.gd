@@ -11,6 +11,7 @@ extends Control
 ##   layout_changed                  -> emitted after the safe area / layout is recomputed
 ##   set_labels(strike, grapple, run, pin) -> context-sensitive button captions ("" = idle)
 ##   set_highlight(action)           -> make one button glow ("all" pulses every button)
+##   free_band()                     -> x range at the bottom between stick and buttons
 
 signal layout_changed
 
@@ -90,6 +91,17 @@ func set_labels(strike: String, grapple: String, run: String, pin: String) -> vo
 
 func set_highlight(action: String) -> void:
 	_highlight = action
+
+
+## Horizontal band (x from, x to) along the bottom of the screen that is free of the
+## stick and the button cluster: HUD text placed there never sits under a thumb.
+func free_band() -> Vector2:
+	var left := _joy_home().x + JOY_RADIUS + 16.0
+	var right := get_viewport_rect().size.x - safe_right
+	for i in _btn_centers.size():
+		var r: float = BTN_MAIN_R if bool(BUTTONS[i]["main"]) else BTN_R
+		right = minf(right, _btn_centers[i].x - r - 16.0)
+	return Vector2(left, right)
 
 
 func safe_rect() -> Rect2:

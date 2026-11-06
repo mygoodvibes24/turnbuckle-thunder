@@ -356,7 +356,7 @@ func _build_environment() -> void:
 	env.fog_enabled = true
 	env.fog_light_color = Color(0.13, 0.06, 0.2)
 	env.fog_light_energy = 1.0
-	env.fog_density = 0.03
+	env.fog_density = 0.012
 	env.fog_sky_affect = 0.0
 	var we := WorldEnvironment.new()
 	we.environment = env
@@ -889,6 +889,9 @@ var hud_font_italic: FontVariation
 var bar_canvas: Control
 var hint_panel: PanelContainer
 var hint_style: StyleBoxFlat
+var hint_max_w := 760.0  # widest the hint text may get (set by _layout_hud)
+const HINT_FONT := 24
+const REVERSE_MIN_WINDOW := 0.25  # shorter reversal windows get no "REVERSE!" prompt
 var help_button: Button
 var help_panel: PanelContainer
 var win_banner: Panel
@@ -1032,7 +1035,8 @@ func _build_hud() -> void:
 	hint_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
 	hint_panel.visible = false
 	hud.add_child(hint_panel)
-	hint_label = _big_label(30)
+	hint_label = _big_label(HINT_FONT)
+	hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint_label.add_theme_constant_override("outline_size", 5)
 	hint_label.add_theme_constant_override("line_spacing", 2)
 	hint_panel.add_child(hint_label)
@@ -1109,9 +1113,9 @@ func _build_help_panel() -> PanelContainer:
 		], false],
 		["REVERSALS", [
 			["REVERSE!", "Press GRAB or STRIKE right then"],
-			["", "Counters lock-ups, whips, punches"],
+			["", "Counters lock-ups, whips, lariats"],
 			["", "Arm Drag / Hip Toss / Back Body Drop"],
-			["TOO EARLY", "Early presses lock you out"],
+			["TOO EARLY", "Mashing just before locks you out"],
 		], false],
 		["PINS", [
 			["PIN", "3-count wins; big moves are harder"],
@@ -1245,7 +1249,15 @@ func _layout_hud() -> void:
 	# Announcer sits just below the bars; hint panel at the bottom center above the
 	# safe-area bottom; "?" button at the top center between the two bars.
 	_place(announce_label, 0.5, 0.0, Rect2(-520, sr.position.y + 108, 1040, 120))
-	_place(hint_panel, 0.5, 1.0, Rect2(0, -(get_viewport().get_visible_rect().size.y - sr.end.y) - 14, 0, 0))
+	# The hint is centered in the free band between the stick and the button cluster
+	# and wraps (see _fit_hint) so it never sits under either.
+	var band := Vector2(sr.position.x + 220.0, sr.end.x - 260.0)
+	if touch != null:
+		band = touch.free_band()
+	hint_max_w = maxf(320.0, band.y - band.x) - hint_style.content_margin_left - hint_style.content_margin_right
+	var hint_y := -(get_viewport().get_visible_rect().size.y - sr.end.y) - 14
+	_place(hint_panel, 0.0, 1.0, Rect2((band.x + band.y) * 0.5, hint_y, 0, 0))
+	_fit_hint()
 	_place(help_button, 0.5, 0.0, Rect2(-30, sr.position.y + 12, 60, 60))
 	if bar_canvas != null:
 		bar_canvas.queue_redraw()
@@ -1263,8 +1275,21 @@ func _on_help_panel_input(event: InputEvent) -> void:
 			help_panel.accept_event()
 
 
+## Sizes the hint label to its natural width, capped at hint_max_w (then it word-wraps).
+func _fit_hint() -> void:
+	var w := 0.0
+	for line in hint_label.text.split("\n"):
+		w = maxf(w, hud_font.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, HINT_FONT).x + 12.0)
+	hint_label.custom_minimum_size = Vector2(minf(w, hint_max_w), 0)
+
+
 func _pop(c: Control, from_scale: float, from_rot: float, secs: float) -> Tween:
-	c.pivot_offset = c.size * 0.5
+	# Before the first layout pass size is still zero; fall back to the placed rect so
+	# the pop pivots around the center, not the top-left corner.
+	var sz := c.size
+	if sz.x < 1.0 or sz.y < 1.0:
+		sz = Vector2(c.offset_right - c.offset_left, c.offset_bottom - c.offset_top).max(c.get_combined_minimum_size())
+	c.pivot_offset = sz * 0.5
 	c.scale = Vector2(from_scale, from_scale)
 	c.rotation = from_rot
 	var tw := create_tween()
@@ -1500,28 +1525,35 @@ func _restart() -> void:
 	get_tree().reload_current_scene()
 
 
+## True while a reversal window the player can actually react to is open on p1
+## (total length >= REVERSE_MIN_WINDOW; window + age stays equal to its full length).
+func _show_reverse() -> bool:
+	var rev: float = p1.reversal_window
+	var age: float = p1.reversal_age
+	return rev > 0.0 and rev + age >= REVERSE_MIN_WINDOW
+
+
 func _hint_text() -> String:
 	var st: int = p1.state
 	var opp: int = p2.state
 	var special: bool = p1.is_special_ready()
-	var rev: float = p1.reversal_window
 	var lockout: float = p1.reversal_lockout
 	var a: Vector3 = p1.position
 	var b: Vector3 = p2.position
 	var near := Vector2(a.x - b.x, a.z - b.z).length() < 1.7
-	if rev > 0.0:
+	if _show_reverse():
 		return "REVERSE!  Tap GRAB or STRIKE NOW!"
 	if st == Wrestler.S.TIEUP_ATK:
 		var strong: bool = p1.tie_strong
 		if strong:
 			var fin_s := "THUNDER DRIVER!" if special else "Neckbreaker"
-			return "STRONG LOCK-UP   STRIKE: Tombstone   STICK+STRIKE: Powerbomb\nGRAB: Spinebuster   STICK+GRAB: " + fin_s + "   RUN: Irish Whip"
+			return "STRONG LOCK-UP!   RUN: Irish Whip\nSTRIKE: Tombstone   STICK+STRIKE: Powerbomb\nGRAB: Spinebuster   STICK+GRAB: " + fin_s
 		var fin := "THUNDER DRIVER!" if special else "DDT"
-		return "STRIKE: Knee   STICK+STRIKE: Suplex\nGRAB: Slam   STICK+GRAB: " + fin + "   RUN: Irish Whip"
+		return "LOCK-UP!   RUN: Irish Whip\nSTRIKE: Knee   STICK+STRIKE: Suplex\nGRAB: Slam   STICK+GRAB: " + fin
 	if st == Wrestler.S.TIEUP_DEF:
 		if lockout > 0.0:
 			return "TOO EARLY!  Wait for the move..."
-		return "CAUGHT!  Tap GRAB or STRIKE the moment he moves to reverse"
+		return "CAUGHT!  Tap GRAB or STRIKE when the \"!\" appears to reverse"
 	if st == Wrestler.S.PINNED:
 		return "MASH ANY BUTTON TO KICK OUT!"
 	if st == Wrestler.S.GRAB_WINDUP:
@@ -1551,7 +1583,6 @@ func _update_touch_labels() -> void:
 	var st: int = p1.state
 	var opp: int = p2.state
 	var special: bool = p1.is_special_ready()
-	var rev: float = p1.reversal_window
 	var mv: Vector2 = p1.in_move
 	var dir_held := mv.length() > 0.5
 	var a: Vector3 = p1.position
@@ -1561,7 +1592,7 @@ func _update_touch_labels() -> void:
 	if match_over:
 		touch.set_labels("", "", "", "")
 		glow = ""
-	elif rev > 0.0:
+	elif _show_reverse():
 		touch.set_labels("REVERSE!", "REVERSE!", "", "")
 		glow = "all"
 	elif st == Wrestler.S.PINNED:
@@ -1716,6 +1747,7 @@ func _update_hud(delta: float) -> void:
 	var hint := "" if match_over else _hint_text()
 	if hint != hint_label.text:
 		hint_label.text = hint
+		_fit_hint()
 		hint_panel.visible = hint != ""
 		# The panel re-sizes around the text by itself (zero offsets + grow); give it a pop.
 		if hint != "":
