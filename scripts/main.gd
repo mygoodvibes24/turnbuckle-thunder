@@ -1644,12 +1644,19 @@ func _update_feel(delta: float) -> void:
 
 # ---------------------------------------------------------------- HUD
 
-const HUD_GOLD := Color(1.0, 0.82, 0.18)
-const HUD_HP_HIGH := Color(0.25, 0.9, 0.3)
-const HUD_HP_MID := Color(1.0, 0.75, 0.1)
-const HUD_HP_LOW := Color(0.95, 0.18, 0.12)
-const HUD_SLANT := 12.0
-const HUD_BADGE := 62.0
+# AKI-era palette: flat, slightly muted console colors.
+const HUD_GOLD := Color(1.0, 0.84, 0.25)
+const HUD_INK := Color(0.04, 0.03, 0.06, 0.95)   # outlines and strokes
+const HUD_HP_HIGH := Color(0.36, 0.82, 0.32)
+const HUD_HP_MID := Color(0.95, 0.74, 0.18)
+const HUD_HP_LOW := Color(0.9, 0.22, 0.16)
+const HUD_SPIRIT := Color(0.32, 0.62, 0.95)
+const HUD_PLATE_W := 300.0       # max width of one name plate
+const HUD_NAME_FONT := 18
+const HUD_HP_H := 9.0
+const HUD_SP_H := 7.0
+const HUD_ANNOUNCE_FONT := 34
+const HUD_ANNOUNCE_SECS := 0.9
 
 var hud_font: FontVariation
 var hud_font_italic: FontVariation
@@ -1657,7 +1664,7 @@ var bar_canvas: Control
 var hint_panel: PanelContainer
 var hint_style: StyleBoxFlat
 var hint_max_w := 760.0  # widest the hint text may get (set by _layout_hud)
-const HINT_FONT := 24
+const HINT_FONT := 21
 const REVERSE_MIN_WINDOW := 0.25  # shorter reversal windows get no "REVERSE!" prompt
 var help_button: Button
 var help_panel: PanelContainer
@@ -1698,8 +1705,8 @@ func _big_label(size: int) -> Label:
 	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	l.add_theme_font_override("font", hud_font)
 	l.add_theme_font_size_override("font_size", size)
-	l.add_theme_color_override("font_outline_color", Color.BLACK)
-	l.add_theme_constant_override("outline_size", 12)
+	l.add_theme_color_override("font_outline_color", HUD_INK)
+	l.add_theme_constant_override("outline_size", 8)
 	l.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	l.grow_vertical = Control.GROW_DIRECTION_BOTH
 	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1712,7 +1719,7 @@ func _hud_box(bg: Color, border: Color, radius: int, border_w: int) -> StyleBoxF
 	sb.border_color = border
 	sb.set_border_width_all(border_w)
 	sb.set_corner_radius_all(radius)
-	sb.anti_aliasing = true
+	sb.anti_aliasing = radius > 0
 	return sb
 
 
@@ -1724,13 +1731,11 @@ func _hud_button(text: String, font_size: int, color: Color, radius: int) -> But
 	btn.add_theme_color_override("font_color", Color.WHITE)
 	btn.add_theme_color_override("font_pressed_color", Color(1, 1, 0.8))
 	btn.add_theme_color_override("font_hover_color", Color.WHITE)
-	btn.add_theme_color_override("font_outline_color", Color.BLACK)
-	btn.add_theme_constant_override("outline_size", 6)
-	var normal := _hud_box(color, Color(1, 1, 1, 0.9), radius, 4)
-	normal.shadow_color = Color(0, 0, 0, 0.5)
-	normal.shadow_size = 6
-	normal.shadow_offset = Vector2(0, 4)
-	var pressed := _hud_box(color.darkened(0.3), HUD_GOLD, radius, 4)
+	btn.add_theme_color_override("font_outline_color", HUD_INK)
+	btn.add_theme_constant_override("outline_size", 4)
+	# Flat console button: solid face, 2 px dark outline, no shadow or gloss.
+	var normal := _hud_box(color, HUD_INK, radius, 2)
+	var pressed := _hud_box(color.lightened(0.2), HUD_INK, radius, 2)
 	btn.add_theme_stylebox_override("normal", normal)
 	btn.add_theme_stylebox_override("hover", normal)
 	btn.add_theme_stylebox_override("pressed", pressed)
@@ -1776,26 +1781,28 @@ func _build_hud() -> void:
 	bar_canvas.draw.connect(_draw_hud_bars)
 	hud.add_child(bar_canvas)
 
-	announce_label = _big_label(66)
+	# Move-name callouts: bold italic console text with a 4 px dark outline.
+	announce_label = _big_label(HUD_ANNOUNCE_FONT)
 	announce_label.add_theme_font_override("font", hud_font_italic)
 	announce_label.add_theme_color_override("font_color", HUD_GOLD)
-	announce_label.add_theme_color_override("font_outline_color", Color(0.45, 0.02, 0.05))
-	announce_label.add_theme_constant_override("outline_size", 16)
+	announce_label.add_theme_color_override("font_outline_color", HUD_INK)
+	announce_label.add_theme_constant_override("outline_size", 8)
 	hud.add_child(announce_label)
 
-	count_label = _big_label(200)
+	# Pin count: big, flat white numeral with a dark outline.
+	count_label = _big_label(150)
 	count_label.add_theme_font_override("font", hud_font_italic)
-	count_label.add_theme_constant_override("outline_size", 22)
-	_place(count_label, 0.5, 0.5, Rect2(-260, -200, 520, 290))
+	count_label.add_theme_constant_override("outline_size", 14)
+	_place(count_label, 0.5, 0.5, Rect2(-220, -170, 440, 230))
 	hud.add_child(count_label)
 
-	# Context hint: dark rounded panel at the bottom center, between stick and buttons.
+	# Context hint: flat translucent strip at the bottom center, between stick and buttons.
 	hint_panel = PanelContainer.new()
-	hint_style = _hud_box(Color(0.03, 0.03, 0.08, 0.8), Color(HUD_GOLD.r, HUD_GOLD.g, HUD_GOLD.b, 0.9), 16, 3)
-	hint_style.content_margin_left = 22
-	hint_style.content_margin_right = 22
-	hint_style.content_margin_top = 8
-	hint_style.content_margin_bottom = 10
+	hint_style = _hud_box(Color(0.0, 0.0, 0.0, 0.5), HUD_INK, 0, 0)
+	hint_style.content_margin_left = 16
+	hint_style.content_margin_right = 16
+	hint_style.content_margin_top = 3
+	hint_style.content_margin_bottom = 5
 	hint_panel.add_theme_stylebox_override("panel", hint_style)
 	hint_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hint_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -1804,12 +1811,12 @@ func _build_hud() -> void:
 	hud.add_child(hint_panel)
 	hint_label = _big_label(HINT_FONT)
 	hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	hint_label.add_theme_constant_override("outline_size", 5)
-	hint_label.add_theme_constant_override("line_spacing", 2)
+	hint_label.add_theme_constant_override("outline_size", 4)
+	hint_label.add_theme_constant_override("line_spacing", 0)
 	hint_panel.add_child(hint_label)
 
 	# "?" button toggles the HOW TO PLAY panel (the match keeps running).
-	help_button = _hud_button("?", 34, Color(0.1, 0.1, 0.18, 0.85), 30)
+	help_button = _hud_button("?", 26, Color(0.12, 0.12, 0.16, 0.6), 4)
 	help_button.pressed.connect(_toggle_help)
 	hud.add_child(help_button)
 	help_panel = _build_help_panel()
@@ -1823,7 +1830,7 @@ func _build_hud() -> void:
 
 func _build_help_panel() -> PanelContainer:
 	var panel := PanelContainer.new()
-	var sb := _hud_box(Color(0.02, 0.02, 0.06, 0.92), HUD_GOLD, 20, 3)
+	var sb := _hud_box(Color(0.03, 0.03, 0.06, 0.9), Color(0.55, 0.55, 0.6), 2, 2)
 	sb.content_margin_left = 24
 	sb.content_margin_right = 24
 	sb.content_margin_top = 10
@@ -1839,11 +1846,11 @@ func _build_help_panel() -> PanelContainer:
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	col.add_theme_constant_override("separation", 4)
 	panel.add_child(col)
-	var title := _big_label(32)
+	var title := _big_label(28)
 	title.text = "CITY 2 CITY WRESTLING — HOW TO PLAY"
 	title.add_theme_font_override("font", hud_font_italic)
 	title.add_theme_color_override("font_color", HUD_GOLD)
-	title.add_theme_constant_override("outline_size", 8)
+	title.add_theme_constant_override("outline_size", 6)
 	col.add_child(title)
 
 	# Three columns of sections: [header, rows, first_row_is_column_header].
@@ -1934,7 +1941,7 @@ func _build_help_panel() -> PanelContainer:
 			head.text = header_text
 			head.add_theme_font_override("font", hud_font_italic)
 			head.add_theme_font_size_override("font_size", 22)
-			head.add_theme_color_override("font_color", Color(0.45, 0.8, 1.0))
+			head.add_theme_color_override("font_color", Color(0.55, 0.78, 0.95))
 			head.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			vbox.add_child(head)
 			var first: Array = rows[0]
@@ -1988,47 +1995,47 @@ func _build_win_panel() -> void:
 	win_panel.visible = false
 	hud.add_child(win_panel)
 	var dim := ColorRect.new()
-	dim.color = Color(0, 0, 0, 0.5)
+	dim.color = Color(0, 0, 0, 0.4)
 	dim.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	win_panel.add_child(dim)
 
-	# Full-width slanted banner across the middle of the screen.
+	# Classic flat banner: a straight full-width strip with thin rules top and bottom.
 	win_banner = Panel.new()
 	win_banner.anchor_left = 0.0
 	win_banner.anchor_right = 1.0
 	win_banner.anchor_top = 0.5
 	win_banner.anchor_bottom = 0.5
-	win_banner.offset_left = -80
-	win_banner.offset_right = 80
-	win_banner.offset_top = -190
-	win_banner.offset_bottom = 10
+	win_banner.offset_left = 0
+	win_banner.offset_right = 0
+	win_banner.offset_top = -150
+	win_banner.offset_bottom = -10
 	win_banner.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	var sb := _hud_box(Color(0.5, 0.05, 0.08, 0.95), HUD_GOLD, 0, 0)
-	sb.border_width_top = 7
-	sb.border_width_bottom = 7
-	sb.skew = Vector2(0.25, 0.0)
+	var sb := _hud_box(Color(0.06, 0.06, 0.1, 0.88), Color(0.85, 0.85, 0.9, 0.9), 0, 0)
+	sb.border_width_top = 2
+	sb.border_width_bottom = 2
 	win_banner.add_theme_stylebox_override("panel", sb)
 	win_panel.add_child(win_banner)
 
-	win_header = _big_label(36)
+	win_header = _big_label(26)
+	win_header.add_theme_font_override("font", hud_font_italic)
 	win_header.set_anchors_preset(Control.PRESET_FULL_RECT)
-	win_header.offset_top = 10
-	win_header.offset_bottom = -120
-	win_header.add_theme_color_override("font_color", Color.WHITE)
-	win_header.add_theme_constant_override("outline_size", 8)
+	win_header.offset_top = 12
+	win_header.offset_bottom = -94
+	win_header.add_theme_color_override("font_color", Color(0.85, 0.85, 0.9))
+	win_header.add_theme_constant_override("outline_size", 6)
 	win_banner.add_child(win_header)
 
-	win_label = _big_label(84)
+	win_label = _big_label(64)
 	win_label.add_theme_font_override("font", hud_font_italic)
 	win_label.set_anchors_preset(Control.PRESET_FULL_RECT)
-	win_label.offset_top = 50
-	win_label.offset_bottom = -6
-	win_label.add_theme_constant_override("outline_size", 16)
+	win_label.offset_top = 40
+	win_label.offset_bottom = -8
+	win_label.add_theme_constant_override("outline_size", 10)
 	win_banner.add_child(win_label)
 
-	win_button = _hud_button("REMATCH", 46, Color(0.85, 0.12, 0.14), 22)
-	_place(win_button, 0.5, 0.5, Rect2(-180, 50, 360, 104))
+	win_button = _hud_button("REMATCH", 36, Color(0.72, 0.14, 0.14), 4)
+	_place(win_button, 0.5, 0.5, Rect2(-150, 40, 300, 80))
 	win_button.pressed.connect(_restart)
 	win_panel.add_child(win_button)
 
@@ -2037,17 +2044,19 @@ func _layout_hud() -> void:
 	var sr := _hud_safe_rect()
 	# Announcer sits just below the bars; hint panel at the bottom center above the
 	# safe-area bottom; "?" button at the top center between the two bars.
-	_place(announce_label, 0.5, 0.0, Rect2(-520, sr.position.y + 108, 1040, 120))
+	# Move names pop up at ~22% of the screen height, well clear of the name plates.
+	var ann_y := maxf(sr.position.y + 80.0, get_viewport().get_visible_rect().size.y * 0.22)
+	_place(announce_label, 0.5, 0.0, Rect2(-520, ann_y - 30.0, 1040, 60))
 	# The hint is centered in the free band between the stick and the button cluster
 	# and wraps (see _fit_hint) so it never sits under either.
 	var band := Vector2(sr.position.x + 220.0, sr.end.x - 260.0)
 	if touch != null:
 		band = touch.free_band()
 	hint_max_w = maxf(320.0, band.y - band.x) - hint_style.content_margin_left - hint_style.content_margin_right
-	var hint_y := -(get_viewport().get_visible_rect().size.y - sr.end.y) - 14
+	var hint_y := -(get_viewport().get_visible_rect().size.y - sr.end.y) - 12
 	_place(hint_panel, 0.0, 1.0, Rect2((band.x + band.y) * 0.5, hint_y, 0, 0))
 	_fit_hint()
-	_place(help_button, 0.5, 0.0, Rect2(-30, sr.position.y + 12, 60, 60))
+	_place(help_button, 0.5, 0.0, Rect2(-22, sr.position.y + 12, 44, 44))
 	if bar_canvas != null:
 		bar_canvas.queue_redraw()
 
@@ -2083,8 +2092,9 @@ func _pop(c: Control, from_scale: float, from_rot: float, secs: float) -> Tween:
 	c.rotation = from_rot
 	var tw := create_tween()
 	tw.set_parallel(true)
-	tw.tween_property(c, "scale", Vector2.ONE, secs).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_property(c, "rotation", from_rot * 0.25, secs).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	# Simple console-style pop: a quick ease-out, no overshoot.
+	tw.tween_property(c, "scale", Vector2.ONE, secs).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(c, "rotation", 0.0, secs).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	return tw
 
 
@@ -2092,45 +2102,37 @@ func _announce(text: String, secs: float) -> void:
 	if match_over and text != "":
 		return
 	announce_label.text = text
-	announce_timer = secs
+	# Move names flash by quickly; longer calls (e.g. "FIGHT!") keep their own time.
+	announce_timer = secs if secs > 1.3 else HUD_ANNOUNCE_SECS
 	if text == "":
 		return
 	var up := text.to_upper()
-	var col := HUD_GOLD
-	var outline := Color(0.45, 0.02, 0.05)
+	var col := Color(1.0, 0.92, 0.45)
 	if up.contains("REVERSAL") or up.contains("KICK"):
-		col = Color(0.45, 0.95, 1.0)
-		outline = Color(0.02, 0.1, 0.4)
+		col = Color(0.6, 0.9, 1.0)
 	elif up.contains("!!") or up.contains("FIGHT"):
-		col = Color(1.0, 0.55, 0.15)
-		outline = Color(0.3, 0.0, 0.0)
+		col = Color(1.0, 0.62, 0.25)
 	announce_label.add_theme_color_override("font_color", col)
-	announce_label.add_theme_color_override("font_outline_color", outline)
+	announce_label.add_theme_color_override("font_outline_color", HUD_INK)
 	announce_label.modulate.a = 1.0
 	if announce_tween != null and announce_tween.is_valid():
 		announce_tween.kill()
-	var tilt := -0.12 if randf() < 0.5 else 0.12
-	announce_tween = _pop(announce_label, 1.6, tilt, 0.28)
+	announce_tween = _pop(announce_label, 1.25, 0.0, 0.12)
 
 
 func _on_pin_count(c: int) -> void:
 	count_label.text = str(c) + ("!" if c >= 3 else "")
-	count_label.add_theme_color_override("font_color", Color(1, 0.25, 0.15) if c >= 3 else Color.WHITE)
-	count_label.add_theme_color_override("font_outline_color", Color(0.35, 0.0, 0.0) if c >= 3 else Color(0.05, 0.1, 0.45))
+	# Flat white numeral with a dark outline (the winning "3!" in gold).
+	count_label.add_theme_color_override("font_color", HUD_GOLD if c >= 3 else Color.WHITE)
+	count_label.add_theme_color_override("font_outline_color", HUD_INK)
 	count_label.modulate.a = 1.0
 	count_timer = 0.7 if c < 3 else 2.5
 	cam_shake = max(cam_shake, 0.25)
-	# Slam in: drop from huge to slightly small, then settle.
+	# Quick, simple scale-in.
 	if count_tween != null and count_tween.is_valid():
 		count_tween.kill()
-	count_label.pivot_offset = count_label.size * 0.5
-	count_label.scale = Vector2(3.0, 3.0)
-	count_label.rotation = randf_range(-0.2, 0.2)
-	count_tween = create_tween()
-	count_tween.set_parallel(true)
-	count_tween.tween_property(count_label, "scale", Vector2(0.88, 0.88), 0.12).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	count_tween.tween_property(count_label, "rotation", 0.0, 0.12)
-	count_tween.chain().tween_property(count_label, "scale", Vector2.ONE, 0.1).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	count_label.rotation = 0.0
+	count_tween = _pop(count_label, 1.5, 0.0, 0.1)
 
 
 func _on_win(w: Node3D) -> void:
@@ -2140,12 +2142,12 @@ func _on_win(w: Node3D) -> void:
 	var cpu: bool = w.is_cpu
 	var gear: Color = w.gear_color
 	win_label.text = "%s WINS!" % nm
-	win_label.add_theme_color_override("font_color", gear.lightened(0.45))
-	win_header.text = "DEFEAT..." if cpu else "WINNER!"
+	win_label.add_theme_color_override("font_color", gear.lightened(0.5))
+	win_header.text = "DEFEAT..." if cpu else "WINNER"
 	var sb := win_banner.get_theme_stylebox("panel") as StyleBoxFlat
 	if sb != null:
-		var bg := gear.darkened(0.55)
-		sb.bg_color = Color(bg.r, bg.g, bg.b, 0.95)
+		var bg := gear.darkened(0.72)
+		sb.bg_color = Color(bg.r, bg.g, bg.b, 0.9)
 	help_panel.visible = false
 	get_tree().create_timer(1.2).timeout.connect(_show_win)
 
@@ -2158,32 +2160,22 @@ func _show_win() -> void:
 	win_banner.pivot_offset = win_banner.size * 0.5
 	win_banner.scale = Vector2(1.0, 0.0)
 	var tw := create_tween()
-	tw.tween_property(win_banner, "scale", Vector2.ONE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	_pop(win_label, 1.8, -0.1, 0.4)
-	win_button.pivot_offset = win_button.size * 0.5
-	win_button.scale = Vector2.ZERO
+	tw.tween_property(win_banner, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	_pop(win_label, 1.3, 0.0, 0.2)
+	win_button.modulate.a = 0.0
 	var tb := create_tween()
 	tb.tween_interval(0.35)
-	tb.tween_property(win_button, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tb.tween_property(win_button, "modulate:a", 1.0, 0.2)
 
 
-# ---- console-style bars (drawn on bar_canvas)
+# ---- AKI-era name plates (drawn on bar_canvas): small italic name, thin flat meters
 
-func _para(x0: float, dir: float, u0: float, u1: float, y: float, h: float, s_top: float, s_bot: float) -> PackedVector2Array:
-	# Slanted quad measured along "u" from the outer screen edge x0 (dir = +1 left side, -1 right).
-	var pts := PackedVector2Array()
-	pts.append(Vector2(x0 + dir * (u0 + s_top), y))
-	pts.append(Vector2(x0 + dir * (u1 + s_top), y))
-	pts.append(Vector2(x0 + dir * (u1 + s_bot), y + h))
-	pts.append(Vector2(x0 + dir * (u0 + s_bot), y + h))
-	return pts
-
-
-func _fill_para(x0: float, dir: float, u0: float, u1: float, y: float, h: float, slant: float, top: Color, bottom: Color) -> void:
-	if u1 - u0 < 1.0:
+func _flat_strip(x0: float, dir: float, u0: float, u1: float, y: float, h: float, col: Color) -> void:
+	# Flat rectangle measured along "u" from the outer screen edge x0 (dir = +1 left side, -1 right).
+	if u1 - u0 < 0.5:
 		return
-	var pts := _para(x0, dir, u0, u1, y, h, slant, 0.0)
-	bar_canvas.draw_polygon(pts, PackedColorArray([top, top, bottom, bottom]))
+	var x := (x0 + u0) if dir > 0.0 else (x0 - u1)
+	bar_canvas.draw_rect(Rect2(x, y, u1 - u0, h), col)
 
 
 func _text_u(x0: float, dir: float, u: float, width: float, y: float, text: String, size: int, col: Color, font: Font, outline: int) -> void:
@@ -2191,35 +2183,22 @@ func _text_u(x0: float, dir: float, u: float, width: float, y: float, text: Stri
 	var pos := Vector2(x0 + u, y) if dir > 0.0 else Vector2(x0 - u - width, y)
 	var align := HORIZONTAL_ALIGNMENT_LEFT if dir > 0.0 else HORIZONTAL_ALIGNMENT_RIGHT
 	if outline > 0:
-		bar_canvas.draw_string_outline(font, pos, text, align, width, size, outline, Color(0, 0, 0, 0.9))
+		bar_canvas.draw_string_outline(font, pos, text, align, width, size, outline, HUD_INK)
 	bar_canvas.draw_string(font, pos, text, align, width, size, col)
 
 
-## Largest font size <= size (down to 14) at which text fits in width.
+## Largest font size <= size (down to 12) at which text fits in width.
 func _fit_font_size(font: Font, text: String, size: int, width: float) -> int:
 	var w: float = font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x
 	if w <= width or w <= 0.0:
 		return size
-	return maxi(14, int(floor(float(size) * width / w)))
-
-
-func _initials(n: String) -> String:
-	var out := ""
-	for part in n.split(" ", false):
-		if part == "THE" or out.length() >= 2:
-			continue
-		out += part.substr(0, 1)
-	if out.length() < 2:
-		var words := n.split(" ", false)
-		var last: String = words[words.size() - 1] if words.size() > 0 else n
-		out = last.substr(0, 2)
-	return out
+	return maxi(12, int(floor(float(size) * width / w)))
 
 
 func _draw_hud_bars() -> void:
 	var sr := _hud_safe_rect()
-	var gap := 110.0  # room for the "?" button
-	var side_w: float = clampf((sr.size.x - gap) * 0.5 - 10.0, 300.0, 540.0)
+	var gap := 90.0  # room for the "?" button
+	var side_w: float = clampf((sr.size.x - gap) * 0.5 - 20.0, 180.0, HUD_PLATE_W)
 	for w in [p1, p2]:
 		var d: Dictionary = bars[w]
 		_draw_player_bar(w, d, sr, side_w)
@@ -2228,8 +2207,8 @@ func _draw_hud_bars() -> void:
 func _draw_player_bar(w: Node3D, d: Dictionary, sr: Rect2, side_w: float) -> void:
 	var right: bool = d["right"]
 	var dir := -1.0 if right else 1.0
-	var x0 := (sr.end.x - 8.0) if right else (sr.position.x + 8.0)
-	var top := sr.position.y + 10.0
+	var x0 := (sr.end.x - 16.0) if right else (sr.position.x + 16.0)
+	var top := sr.position.y + 12.0
 	var gear: Color = w.gear_color
 	var nm: String = w.display_name
 	var cpu: bool = w.is_cpu
@@ -2238,82 +2217,48 @@ func _draw_player_bar(w: Node3D, d: Dictionary, sr: Rect2, side_w: float) -> voi
 	var sp: float = d["sp"]
 	var flash: float = d["flash"]
 	var special: bool = w.is_special_ready()
-	var blink := int(hud_clock * 7.0) % 2 == 0
+	var blink := int(hud_clock * 4.0) % 2 == 0
 
-	# Portrait badge with initials.
-	var bx := x0 if not right else x0 - HUD_BADGE
-	var badge := _hud_box(gear.darkened(0.25), Color.WHITE if flash < 0.5 else HUD_HP_LOW, 10, 4)
-	badge.shadow_color = Color(0, 0, 0, 0.5)
-	badge.shadow_size = 4
-	bar_canvas.draw_style_box(badge, Rect2(bx, top, HUD_BADGE, HUD_BADGE))
-	var shine := gear.lightened(0.35)
-	bar_canvas.draw_rect(Rect2(bx + 6, top + 6, HUD_BADGE - 12, 10), Color(shine.r, shine.g, shine.b, 0.5))
-	bar_canvas.draw_string_outline(hud_font_italic, Vector2(bx, top + 44), _initials(nm), HORIZONTAL_ALIGNMENT_CENTER, HUD_BADGE, 30, 6, Color.BLACK)
-	bar_canvas.draw_string(hud_font_italic, Vector2(bx, top + 44), _initials(nm), HORIZONTAL_ALIGNMENT_CENTER, HUD_BADGE, 30, Color.WHITE)
-
-	var u0 := HUD_BADGE + 8.0
-	var u1 := side_w
-	var plate_w := u1 - u0
-	# Name plate.
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1 - 30.0, top, 26.0, HUD_SLANT, 0.0), Color(0, 0, 0, 0.7))
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1 - 30.0, top + 23.0, 3.0, HUD_SLANT * 0.12, 0.0), gear.lightened(0.2))
-	var name_w := plate_w - 110.0
-	_text_u(x0, dir, u0 + 12.0, name_w, top + 21.0, nm, _fit_font_size(hud_font_italic, nm, 22, name_w), gear.lightened(0.5), hud_font_italic, 5)
+	# Name line: small italic name (gear tint), tiny 1P/CPU tag at the inner end.
 	var tag := "CPU" if cpu else "1P"
-	var tag_w := 50.0
-	var tag_u := u1 - 30.0 - tag_w - 6.0
-	var tag_x := (x0 + tag_u) if not right else (x0 - tag_u - tag_w)
-	bar_canvas.draw_style_box(_hud_box(gear if not cpu else Color(0.35, 0.35, 0.4), Color.WHITE, 6, 2), Rect2(tag_x, top + 3, tag_w, 20))
-	bar_canvas.draw_string(hud_font, Vector2(tag_x, top + 19), tag, HORIZONTAL_ALIGNMENT_CENTER, tag_w, 16, Color.WHITE)
+	var tag_w: float = hud_font_italic.get_string_size(tag, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x + 4.0
+	var name_w := side_w - tag_w - 10.0
+	var name_col := gear.lightened(0.55)
+	_text_u(x0, dir, 0.0, name_w, top + 17.0, nm, _fit_font_size(hud_font_italic, nm, HUD_NAME_FONT, name_w), name_col, hud_font_italic, 4)
+	_text_u(x0, dir, side_w - tag_w, tag_w, top + 16.0, tag, 14, Color(0.82, 0.82, 0.86) if cpu else HUD_GOLD, hud_font_italic, 4)
 
-	# Health bar: black frame, dark well, white damage chip, gradient fill, gloss, ticks.
-	var hy := top + 30.0
-	var hh := 24.0
-	var blen := u1 - u0
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0 - 4.0, u1 + 4.0, hy - 4.0, hh + 8.0, HUD_SLANT + 1.0, -1.0), Color(0, 0, 0, 0.85))
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1, hy, hh, HUD_SLANT, 0.0), Color(0.16, 0.04, 0.05, 0.9))
-	var chip_col := Color(1, 1, 1) if blink else Color(1, 0.85, 0.5)
-	_fill_para(x0, dir, u0, u0 + blen * clampf(chip / 100.0, 0.0, 1.0), hy, hh, HUD_SLANT, chip_col, chip_col.darkened(0.2))
+	# Health strip: 2 px dark outline, flat dark well, subtle damage chip, flat fill.
+	var hy := top + 24.0
+	var hh := HUD_HP_H
+	_flat_strip(x0, dir, -2.0, side_w + 2.0, hy - 2.0, hh + 4.0, HUD_INK)
+	_flat_strip(x0, dir, 0.0, side_w, hy, hh, Color(0.13, 0.1, 0.12, 0.92))
+	var chip_u := side_w * clampf(chip / 100.0, 0.0, 1.0)
+	_flat_strip(x0, dir, 0.0, chip_u, hy, hh, Color(0.85, 0.72, 0.62, 0.55))
 	var hcol := HUD_HP_HIGH
 	if hp < 30.0:
 		hcol = HUD_HP_LOW
 		if hp < 20.0 and blink:
-			hcol = hcol.lightened(0.3)
+			hcol = hcol.lightened(0.25)
 	elif hp < 60.0:
 		hcol = HUD_HP_MID
-	var hp_u := u0 + blen * clampf(hp / 100.0, 0.0, 1.0)
-	_fill_para(x0, dir, u0, hp_u, hy, hh, HUD_SLANT, hcol.lightened(0.35), hcol.darkened(0.35))
-	if hp_u - u0 > 2.0:
-		var gloss := _para(x0, dir, u0, hp_u, hy + 2.0, hh * 0.3, HUD_SLANT * 0.92, HUD_SLANT * 0.62)
-		bar_canvas.draw_colored_polygon(gloss, Color(1, 1, 1, 0.35))
-	for k in range(1, 10):
-		var tu := u0 + blen * float(k) / 10.0
-		bar_canvas.draw_line(Vector2(x0 + dir * (tu + HUD_SLANT), hy), Vector2(x0 + dir * tu, hy + hh), Color(0, 0, 0, 0.3), 2.0)
+	var hp_u := side_w * clampf(hp / 100.0, 0.0, 1.0)
+	_flat_strip(x0, dir, 0.0, hp_u, hy, hh, hcol)
 	if flash > 0.0:
-		bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u1, hy, hh, HUD_SLANT, 0.0), Color(1, 1, 1, 0.35 * flash))
+		_flat_strip(x0, dir, 0.0, side_w, hy, hh, Color(1, 1, 1, 0.22 * flash))
 
-	# Spirit bar + SPECIAL! badge.
-	var sy := hy + hh + 8.0
-	var sh := 12.0
-	var s_len := blen * 0.72
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0 - 3.0, u0 + s_len + 3.0, sy - 3.0, sh + 6.0, 7.0, -1.0), Color(0, 0, 0, 0.85))
-	bar_canvas.draw_colored_polygon(_para(x0, dir, u0, u0 + s_len, sy, sh, 6.0, 0.0), Color(0.1, 0.08, 0.2, 0.9))
-	var scol := Color(0.3, 0.75, 1.0)
+	# Spirit meter: same flat style, a touch thinner.
+	var sy := hy + hh + 4.0
+	var sh := HUD_SP_H
+	_flat_strip(x0, dir, -2.0, side_w + 2.0, sy - 2.0, sh + 4.0, HUD_INK)
+	_flat_strip(x0, dir, 0.0, side_w, sy, sh, Color(0.08, 0.09, 0.14, 0.92))
+	var scol := HUD_SPIRIT
 	if special:
-		scol = Color(1, 1, 1) if blink else HUD_GOLD
-	_fill_para(x0, dir, u0, u0 + s_len * clampf(sp / 100.0, 0.0, 1.0), sy, sh, 6.0, scol.lightened(0.3), scol.darkened(0.3))
-	if special:
-		var bw := 130.0
-		var bu := u0 + s_len + 14.0
-		var bxx := (x0 + bu) if not right else (x0 - bu - bw)
-		var pulse := 1.0 + 0.08 * sin(hud_clock * 12.0)
-		var rect := Rect2(bxx, sy - 9.0, bw, 30.0)
-		rect = rect.grow((pulse - 1.0) * 40.0)
-		var badge_sp := _hud_box(Color(0.85, 0.1, 0.1) if blink else Color(0.95, 0.5, 0.05), Color.WHITE, 8, 3)
-		badge_sp.skew = Vector2(-0.2 * dir, 0.0)
-		bar_canvas.draw_style_box(badge_sp, rect)
-		bar_canvas.draw_string_outline(hud_font_italic, Vector2(rect.position.x, rect.position.y + 23.0), "SPECIAL!", HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 22, 5, Color.BLACK)
-		bar_canvas.draw_string(hud_font_italic, Vector2(rect.position.x, rect.position.y + 23.0), "SPECIAL!", HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 22, Color(1, 1, 0.6))
+		scol = HUD_GOLD if blink else Color(1.0, 0.97, 0.85)
+	_flat_strip(x0, dir, 0.0, side_w * clampf(sp / 100.0, 0.0, 1.0), sy, sh, scol)
+
+	# Full meter: flashing "SPECIAL" tag under the meter.
+	if special and blink:
+		_text_u(x0, dir, 0.0, side_w, sy + sh + 18.0, "SPECIAL", 17, HUD_GOLD, hud_font_italic, 4)
 
 
 func _restart() -> void:
@@ -2697,7 +2642,7 @@ func _update_hud(delta: float) -> void:
 
 	if announce_timer > 0.0:
 		announce_timer -= delta
-		announce_label.modulate.a = clamp(announce_timer * 3.0, 0.0, 1.0)
+		announce_label.modulate.a = clamp(announce_timer * 6.0, 0.0, 1.0)
 	if count_timer > 0.0:
 		count_timer -= delta
 		count_label.modulate.a = clamp(count_timer * 3.0, 0.0, 1.0)
@@ -2709,15 +2654,15 @@ func _update_hud(delta: float) -> void:
 		hint_label.text = hint
 		_fit_hint()
 		hint_panel.visible = hint != ""
-		# The panel re-sizes around the text by itself (zero offsets + grow); give it a pop.
+		# The strip re-sizes around the text by itself (zero offsets + grow); a quick fade-in.
 		if hint != "":
-			hint_panel.pivot_offset = Vector2(hint_panel.size.x * 0.5, hint_panel.size.y)
-			hint_panel.scale = Vector2(1.12, 1.12)
-			create_tween().tween_property(hint_panel, "scale", Vector2.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+			hint_panel.modulate.a = 0.0
+			create_tween().tween_property(hint_panel, "modulate:a", 1.0, 0.12)
 	if hint_panel.visible:
+		# Flat strip; it flashes dark red while the player must mash / wait.
 		var st: int = p1.state
-		var bc := HUD_GOLD
-		if st == Wrestler.S.PINNED or st == Wrestler.S.TIEUP_DEF:
-			bc = HUD_HP_LOW if int(hud_clock * 8.0) % 2 == 0 else Color.WHITE
-		hint_style.border_color = bc
+		var bg := Color(0.0, 0.0, 0.0, 0.5)
+		if (st == Wrestler.S.PINNED or st == Wrestler.S.TIEUP_DEF) and int(hud_clock * 8.0) % 2 == 0:
+			bg = Color(0.45, 0.04, 0.04, 0.6)
+		hint_style.bg_color = bg
 	_update_touch_labels()
