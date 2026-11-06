@@ -55,6 +55,7 @@ func _ready() -> void:
 	audio = Audio.new()
 	add_child(audio)
 	_build_environment()
+	_build_low_res_view()
 	_build_arena()
 	_build_crowd()
 
@@ -144,7 +145,7 @@ func _setup_input() -> void:
 # ---------------------------------------------------------------- world building
 
 # Hooks for other systems (impacts, crowd reactions, rope physics):
-var cam_fov_kick := 0.0          # degrees added to the 40 deg broadcast FOV; decays back to 0
+var cam_fov_kick := 0.0          # degrees added to the 45 deg broadcast FOV; decays back to 0
 var crowd_hype := 0.0            # 0..1, crowd excitement; drifts back down slowly on its own
 var rope_nodes: Array[Node3D] = []  # 12 ropes: for each height (bottom, middle, top): +z, -z, +x, -x
 var ring_spot: SpotLight3D       # the work light on a stand: key light over the ring
@@ -756,63 +757,150 @@ func _build_environment() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
+	# Night: a low cool ambient so everything off the ring sinks toward near-black,
+	# the floodlit ring is the brightest thing on screen.
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.42, 0.42, 0.78)
-	env.ambient_light_energy = 0.42
+	env.ambient_light_color = Color(0.30, 0.32, 0.55)
+	env.ambient_light_energy = 0.25
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
 	env.glow_enabled = false
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.1, 0.09, 0.2)
+	env.fog_light_color = Color(0.06, 0.06, 0.12)
 	env.fog_light_energy = 1.0
-	env.fog_density = 0.016
+	env.fog_density = 0.02
 	env.fog_sky_affect = 0.0
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 
-	# Cool moonlight fill from the camera side so faces never go black; no shadows (cheap).
-	var moon := DirectionalLight3D.new()
-	moon.rotation_degrees = Vector3(-40, 20, 0)
-	moon.light_energy = 0.35
-	moon.light_color = Color(0.6, 0.66, 1.0)
-	add_child(moon)
+	# Two warm floodlights on poles at opposite corners, both aimed at the ring centre.
+	# No shadow maps (wrestlers keep their blob shadows); ring_spot is the front one.
+	var floods: Array[SpotLight3D] = []
+	for corner: Vector3 in [Vector3(-5.0, 6.5, 5.0), Vector3(5.0, 6.5, -5.0)]:
+		var fl := SpotLight3D.new()
+		fl.transform = Transform3D(Basis.looking_at(Vector3(0, RING_TOP, 0) - corner), corner)
+		fl.spot_angle = 38.0
+		fl.spot_angle_attenuation = 0.8
+		fl.spot_range = 14.0
+		fl.spot_attenuation = 0.5
+		fl.light_energy = 3.5
+		fl.light_color = Color(1.0, 0.88, 0.7)
+		fl.shadow_enabled = false
+		add_child(fl)
+		floods.append(fl)
+		# The pole and lamp head itself.
+		var pole_base := Vector3(corner.x * 1.04, 0, corner.z * 1.04)
+		_box(Vector3(0.12, corner.y + 0.2, 0.12), pole_base + Vector3(0, (corner.y + 0.2) * 0.5, 0), Color(0.1, 0.1, 0.11))
+		var head := _box(Vector3(0.7, 0.45, 0.3), Vector3.ZERO, Color(0.16, 0.16, 0.17))
+		head.transform = fl.transform
+		var lens := _box(Vector3(0.6, 0.36, 0.04), Vector3.ZERO, Color(1.0, 0.92, 0.75), true)
+		lens.transform = fl.transform * Transform3D(Basis(), Vector3(0, 0, -0.17))
+	ring_spot = floods[0]
 
-	# Work light on a tripod at the front-left: the key light over the ring.
-	var wl_pos := Vector3(-6.4, 6.0, 2.6)
-	ring_spot = SpotLight3D.new()
-	ring_spot.transform = Transform3D(Basis.looking_at(Vector3(0.6, 1.0, -0.6) - wl_pos), wl_pos)
-	ring_spot.spot_angle = 40.0
-	ring_spot.spot_angle_attenuation = 0.9
-	ring_spot.spot_range = 20.0
-	ring_spot.spot_attenuation = 0.6
-	ring_spot.light_energy = 5.5
-	ring_spot.light_color = Color(1.0, 0.95, 0.84)
-	ring_spot.shadow_enabled = true
-	add_child(ring_spot)
-
-	# Warm porch light by the sliding door.
+	# Dim cool light by the sliding door: the house reads at ~40% next to the ring.
 	var porch := OmniLight3D.new()
 	porch.position = Vector3(-0.9, 2.4, -14.3)
-	porch.omni_range = 7.5
-	porch.light_energy = 2.2
-	porch.light_color = Color(1.0, 0.68, 0.32)
+	porch.omni_range = 6.5
+	porch.light_energy = 0.9
+	porch.light_color = Color(0.72, 0.8, 1.0)
 	add_child(porch)
 
-	# Glow from the string lights hanging over the ring.
+	# Faint warm glow from the string lights hanging over the ring.
 	for p: Vector3 in [Vector3(0, 4.4, -7.0), Vector3(0, 4.4, -1.0)]:
 		var o := OmniLight3D.new()
 		o.position = p
-		o.omni_range = 8.0
-		o.light_energy = 0.9
+		o.omni_range = 7.0
+		o.light_energy = 0.45
 		o.light_color = Color(1.0, 0.78, 0.5)
 		add_child(o)
 
 	camera = Camera3D.new()
-	camera.fov = 40
-	camera.position = Vector3(0, 4.3, 7.5)
+	camera.fov = 45
+	camera.position = Vector3(0, RING_TOP + 3.3, 6.8)
 	add_child(camera)
-	camera.look_at(Vector3(0, RING_TOP + 1.6, 0))
+	camera.look_at(Vector3(0, RING_TOP + 0.9, 0))
+
+
+const N64_POST_SHADER := """
+shader_type canvas_item;
+
+// N64-style video output: bilinear upscale of a ~240p frame (container filter), a soft
+// 3-tap horizontal video blur, 5 bits per channel with a 4x4 ordered dither, slight desaturation.
+uniform float blur_px = 1.0;
+uniform float levels = 31.0;
+uniform float dither_amp = 0.03125;
+uniform float desat = 0.03;
+
+const float BAYER[16] = float[16](
+	0.0, 8.0, 2.0, 10.0,
+	12.0, 4.0, 14.0, 6.0,
+	3.0, 11.0, 1.0, 9.0,
+	15.0, 7.0, 13.0, 5.0);
+
+void fragment() {
+	vec2 px = TEXTURE_PIXEL_SIZE;
+	vec2 o = vec2(px.x * blur_px, 0.0);
+	vec3 c = texture(TEXTURE, UV).rgb * 0.5
+		+ texture(TEXTURE, UV - o).rgb * 0.25
+		+ texture(TEXTURE, UV + o).rgb * 0.25;
+	float l = dot(c, vec3(0.299, 0.587, 0.114));
+	c = mix(c, vec3(l), desat);
+	ivec2 lp = ivec2(mod(floor(UV / px), 4.0));
+	float b = (BAYER[lp.y * 4 + lp.x] + 0.5) / 16.0 - 0.5;
+	c = clamp(c + b * dither_amp, 0.0, 1.0);
+	c = floor(c * levels + 0.5) / levels;
+	COLOR = vec4(c, 1.0);
+}
+"""
+
+var low_res_container: SubViewportContainer
+var low_res_view: SubViewport
+
+
+func _build_low_res_view() -> void:
+	# Render the 3D world at ~240 lines into a SubViewport that shares this World3D (so the
+	# WorldEnvironment still applies), then upscale it bilinearly through the N64 post shader.
+	# It sits on a canvas layer below the HUD and never eats input.
+	var layer := CanvasLayer.new()
+	layer.layer = -1
+	add_child(layer)
+	low_res_container = SubViewportContainer.new()
+	low_res_container.set_anchors_preset(Control.PRESET_FULL_RECT)
+	low_res_container.stretch = true
+	low_res_container.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	low_res_container.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	low_res_container.focus_mode = Control.FOCUS_NONE
+	var post := ShaderMaterial.new()
+	var psh := Shader.new()
+	psh.code = N64_POST_SHADER
+	post.shader = psh
+	low_res_container.material = post
+	layer.add_child(low_res_container)
+	low_res_view = SubViewport.new()
+	low_res_view.own_world_3d = false
+	low_res_view.msaa_3d = Viewport.MSAA_DISABLED
+	low_res_view.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+	low_res_view.handle_input_locally = false
+	low_res_view.gui_disable_input = true
+	low_res_view.physics_object_picking = false
+	low_res_view.audio_listener_enable_3d = true
+	low_res_view.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	low_res_container.add_child(low_res_view)
+	var keep := camera.global_transform
+	camera.get_parent().remove_child(camera)
+	low_res_view.add_child(camera)
+	camera.global_transform = keep
+	camera.current = true
+	_update_low_res_shrink()
+	get_viewport().size_changed.connect(_update_low_res_shrink)
+
+
+func _update_low_res_shrink() -> void:
+	if low_res_container == null:
+		return
+	var h := get_viewport().get_visible_rect().size.y
+	low_res_container.stretch_shrink = maxi(1, roundi(h / 240.0))
 
 
 # ---- the yard and the homemade ring
@@ -2679,15 +2767,14 @@ func _update_camera(delta: float) -> void:
 	var mid := (a + b) * 0.5
 	var spread := a.distance_to(b)
 	cam_target = cam_target.lerp(mid, clampf(delta * 4.0, 0.0, 1.0))
-	# Tight broadcast framing: a wrestler fills ~40% of screen height. The look target is
-	# biased upward so the bottom-corner touch buttons sit over the mat, not the wrestlers.
-	var want := cam_target + Vector3(0, 2.4 + spread * 0.25, 5.2 + spread * 0.55)
+	# AKI-style framing: higher and further back (~30 deg pitch), wrestlers ~1/3 of screen height.
+	var want := cam_target + Vector3(0, 3.3 + spread * 0.3, 6.8 + spread * 0.6)
 	camera.position = camera.position.lerp(want, clampf(delta * 3.0, 0.0, 1.0))
-	camera.look_at(cam_target + Vector3(0, 1.2 + 0.4, 0))
+	camera.look_at(cam_target + Vector3(0, 0.9, 0))
 	cam_fov_kick = lerpf(cam_fov_kick, 0.0, clampf(delta * 5.0, 0.0, 1.0))
 	if absf(cam_fov_kick) < 0.01:
 		cam_fov_kick = 0.0
-	camera.fov = clampf(40.0 + cam_fov_kick, 15.0, 90.0)
+	camera.fov = clampf(45.0 + cam_fov_kick, 15.0, 90.0)
 	if cam_shake > 0.0:
 		camera.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * cam_shake * 0.25
 		cam_shake = max(0.0, cam_shake - delta * 2.5)
