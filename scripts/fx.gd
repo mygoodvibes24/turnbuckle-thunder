@@ -6,8 +6,16 @@ extends Node3D
 ##   spark(pos, strength)   # starburst that scale-pops and fades (~0.2 s)
 ##   dust(pos, strength)    # ring of grey puffs drifting outward along the mat
 ##   flash(strength)        # full-screen white flash (finishers)
+##   splinters(pos, strength)      # 10-20 brown wood shards fly out, spin, bounce once, fade
+##   debris(pos, strength, color)  # chunkier generic bits (chairs: grey, trash cans, ...)
 
 const SPARK_POOL := 12
+const SHARD_POOL := 48            # shared by splinters and debris (ring buffer)
+const SHARD_LIFE := 1.1
+const SHARD_GRAVITY := 14.0
+const MAT_Y := 1.0                # world y of the mat top
+const RING_EDGE := 4.4            # beyond this |x| or |z| there is no mat under a shard
+var _splinter_colors: Array[Color] = [Color(0.55, 0.38, 0.2), Color(0.68, 0.5, 0.3), Color(0.42, 0.28, 0.15)]
 const SPARK_LIFE := 0.2
 const DUST_SETS := 3
 const DUST_PER_SET := 6
@@ -32,6 +40,20 @@ var _dust_dur := PackedFloat32Array()
 var _dust_size := PackedFloat32Array()
 var _dust_vel := PackedVector3Array()
 var _next_dust_set := 0
+
+var _shards: Array[MeshInstance3D] = []
+var _shard_mats: Array[StandardMaterial3D] = []
+var _shard_life := PackedFloat32Array()
+var _shard_dur := PackedFloat32Array()
+var _shard_vel := PackedVector3Array()
+var _shard_spin := PackedVector3Array()    # axis * radians/s
+var _shard_floor := PackedFloat32Array()   # world y it bounces on
+var _shard_bounced := PackedByteArray()
+var _shard_scale := PackedVector3Array()
+var _shard_color: Array[Color] = []
+var _next_shard := 0
+var _splinter_mesh: BoxMesh
+var _chunk_mesh: BoxMesh
 
 var _flash_layer: CanvasLayer
 var _flash_rect: ColorRect
@@ -92,6 +114,31 @@ func _ready() -> void:
 		_dust_dur.append(DUST_LIFE)
 		_dust_size.append(0.4)
 		_dust_vel.append(Vector3.ZERO)
+
+	_splinter_mesh = BoxMesh.new()
+	_splinter_mesh.size = Vector3(0.035, 0.025, 0.2)
+	_chunk_mesh = BoxMesh.new()
+	_chunk_mesh.size = Vector3(0.09, 0.05, 0.12)
+	for i in SHARD_POOL:
+		var m := StandardMaterial3D.new()
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.roughness = 0.9
+		var mi := MeshInstance3D.new()
+		mi.mesh = _splinter_mesh
+		mi.material_override = m
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		mi.visible = false
+		add_child(mi)
+		_shards.append(mi)
+		_shard_mats.append(m)
+		_shard_life.append(0.0)
+		_shard_dur.append(SHARD_LIFE)
+		_shard_vel.append(Vector3.ZERO)
+		_shard_spin.append(Vector3.ZERO)
+		_shard_floor.append(0.0)
+		_shard_bounced.append(0)
+		_shard_scale.append(Vector3.ONE)
+		_shard_color.append(Color.WHITE)
 
 	_flash_layer = CanvasLayer.new()
 	_flash_layer.layer = 5
@@ -154,6 +201,51 @@ func dust(pos: Vector3, strength: float) -> void:
 		mi.visible = true
 
 
+func splinters(pos: Vector3, strength: float) -> void:
+	var s: float = clampf(strength, 0.1, 1.5)
+	var count: int = clampi(int(10.0 + 7.0 * s), 10, 20)
+	for k in count:
+		var c: Color = _splinter_colors[randi() % _splinter_colors.size()]
+		var sc := Vector3(randf_range(0.6, 1.3), randf_range(0.7, 1.2), randf_range(0.5, 1.6))
+		_spawn_shard(pos, s, c, _splinter_mesh, sc, 1.0)
+
+
+func debris(pos: Vector3, strength: float, color: Color) -> void:
+	var s: float = clampf(strength, 0.1, 1.5)
+	var count: int = clampi(int(5.0 + 6.0 * s), 5, 14)
+	for k in count:
+		var v: float = randf_range(0.8, 1.15)
+		var c := Color(color.r * v, color.g * v, color.b * v, 1.0)
+		var sc := Vector3(randf_range(0.5, 1.4), randf_range(0.5, 1.2), randf_range(0.5, 1.4))
+		_spawn_shard(pos, s, c, _chunk_mesh, sc, 0.8)
+
+
+func _spawn_shard(pos: Vector3, s: float, c: Color, mesh: Mesh, sc: Vector3, speed_k: float) -> void:
+	var i: int = _next_shard
+	_next_shard = (_next_shard + 1) % SHARD_POOL
+	var mi: MeshInstance3D = _shards[i]
+	mi.mesh = mesh
+	var ang: float = randf() * TAU
+	var out: float = (1.5 + 2.5 * s) * randf_range(0.5, 1.2) * speed_k
+	var p: Vector3 = pos + Vector3(randf_range(-0.15, 0.15), randf_range(0.0, 0.1), randf_range(-0.15, 0.15))
+	mi.global_position = p
+	mi.rotation = Vector3(randf() * TAU, randf() * TAU, randf() * TAU)
+	_shard_vel[i] = Vector3(cos(ang) * out, (2.0 + 3.0 * s) * randf_range(0.6, 1.2) * speed_k, sin(ang) * out)
+	var axis := Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1))
+	if axis.length_squared() < 0.01:
+		axis = Vector3.UP
+	_shard_spin[i] = axis.normalized() * randf_range(8.0, 20.0)
+	_shard_floor[i] = MAT_Y if p.y >= MAT_Y else 0.0
+	_shard_bounced[i] = 0
+	_shard_dur[i] = SHARD_LIFE * randf_range(0.8, 1.2)
+	_shard_life[i] = _shard_dur[i]
+	_shard_scale[i] = sc
+	_shard_color[i] = c
+	mi.scale = sc
+	_shard_mats[i].albedo_color = c
+	mi.visible = true
+
+
 func flash(strength: float) -> void:
 	var peak: float = clampf(FLASH_ALPHA * strength, 0.0, 0.6)
 	if peak <= 0.0:
@@ -203,6 +295,46 @@ func _process(delta: float) -> void:
 		mi.scale = Vector3(sc, sc, sc)
 		var a: float = 0.55 * minf(k * 6.0, 1.0) * (1.0 - k)
 		_dust_mats[i].albedo_color = Color(0.72, 0.7, 0.68, a)
+
+	for i in SHARD_POOL:
+		var life: float = _shard_life[i]
+		if life <= 0.0:
+			continue
+		life -= delta
+		_shard_life[i] = life
+		var mi: MeshInstance3D = _shards[i]
+		if life <= 0.0:
+			mi.visible = false
+			continue
+		var v: Vector3 = _shard_vel[i]
+		v.y -= SHARD_GRAVITY * delta
+		var p: Vector3 = mi.global_position + v * delta
+		var fl: float = _shard_floor[i]
+		if fl > 0.0 and (absf(p.x) > RING_EDGE or absf(p.z) > RING_EDGE):
+			fl = 0.0 # flew off the ring: fall to the yard
+			_shard_floor[i] = 0.0
+		var rest_y: float = fl + 0.015
+		if p.y < rest_y:
+			p.y = rest_y
+			if _shard_bounced[i] == 0 and v.y < -1.0:
+				_shard_bounced[i] = 1
+				v = Vector3(v.x * 0.45, -v.y * 0.3, v.z * 0.45)
+				_shard_spin[i] = _shard_spin[i] * 0.5
+			else:
+				# settled: slide to a stop, stop spinning
+				v = Vector3(v.x * maxf(0.0, 1.0 - delta * 8.0), 0.0, v.z * maxf(0.0, 1.0 - delta * 8.0))
+				_shard_spin[i] = _shard_spin[i] * maxf(0.0, 1.0 - delta * 10.0)
+		_shard_vel[i] = v
+		mi.global_position = p
+		var spin: Vector3 = _shard_spin[i]
+		var sl: float = spin.length()
+		if sl > 0.01:
+			mi.rotate(spin / sl, sl * delta)
+		var k: float = life / _shard_dur[i]   # 1 -> 0
+		var a: float = clampf(k / 0.35, 0.0, 1.0)  # fade over the last 35%
+		var c: Color = _shard_color[i]
+		_shard_mats[i].albedo_color = Color(c.r, c.g, c.b, a)
+		mi.scale = _shard_scale[i] * (0.6 + 0.4 * a)
 
 	if _flash_life > 0.0:
 		# The flash runs on real time so slow motion doesn't stretch it into a fade-out.

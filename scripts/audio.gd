@@ -12,21 +12,24 @@ extends Node
 ##   audio.stop_crowd()                   # fades out, then stops
 ##
 ## Sound names: "punch", "kick", "thud", "big_thud", "rope", "bell", "count",
-##              "whoosh", "pop", "ooh", "boo" (plus "crowd_loop", used internally).
+##              "whoosh", "pop", "ooh", "boo",
+##              backyard/hardcore: "chair", "metal", "wood", "crack", "whoa",
+##              "cheer_small", "climb", "dive_whoosh"
+##              (plus "crowd_loop", used internally: a small backyard crowd + crickets).
 ##
 ## All clips are 16-bit mono 22050 Hz AudioStreamWAV, lightly bit-crushed for a
 ## late-90s cartridge feel. Noise uses a fixed-seed RandomNumberGenerator so the
 ## sounds are identical every launch.
 
 const MIX_RATE: int = 22050
-const POOL_SIZE: int = 8
+const POOL_SIZE: int = 10
 const CROWD_MIN_DB: float = -22.0
 const CROWD_MAX_DB: float = -6.0
 const CROWD_SILENT_DB: float = -60.0
 const BELL_GAP: float = 0.35
 
 var clips: Dictionary = {}
-# Synthesized clips survive scene reloads (REMATCH), so the ~216k-sample synthesis
+# Synthesized clips survive scene reloads (REMATCH), so the ~340k-sample synthesis
 # runs once per launch instead of on every reload.
 static var _cache: Dictionary = {}
 
@@ -133,6 +136,16 @@ func _build_clips() -> void:
 	clips["pop"] = _to_wav(_synth_pop(1.5), false)
 	clips["ooh"] = _to_wav(_synth_ooh(1.0, 210.0, 0.85), false)
 	clips["boo"] = _to_wav(_synth_ooh(1.1, 150.0, 0.7), false)
+	clips["chair"] = _to_wav(_synth_metal(0.5, PackedFloat32Array([412.0, 967.0, 1433.0, 1871.0, 2389.0, 2953.0]),
+			PackedFloat32Array([7.0, 8.5, 10.0, 12.0, 14.0, 17.0]), 0.0, 3200.0), false)
+	clips["metal"] = _to_wav(_synth_metal(0.6, PackedFloat32Array([173.0, 268.0, 391.0, 547.0, 811.0, 1190.0]),
+			PackedFloat32Array([6.0, 7.0, 8.0, 10.0, 13.0, 16.0]), 1.0, 1500.0), false)
+	clips["wood"] = _to_wav(_synth_wood(0.15), false)
+	clips["crack"] = _to_wav(_synth_crack(0.7), false)
+	clips["whoa"] = _to_wav(_synth_whoa(1.1), false)
+	clips["cheer_small"] = _to_wav(_synth_cheer_small(1.4), false)
+	clips["climb"] = _to_wav(_synth_creak(0.45), false)
+	clips["dive_whoosh"] = _to_wav(_synth_dive_whoosh(0.7), false)
 	clips["crowd_loop"] = _to_wav(_synth_crowd_loop(3.0), true)
 	_cache = clips
 
@@ -398,33 +411,41 @@ func _synth_ooh(dur: float, base_hz: float, sag: float) -> PackedFloat32Array:
 	return buf
 
 
-## Crowd murmur bed: two noise bands with slow random amplitude modulation,
-## generated long and crossfaded end-into-start so it loops without a click.
+## Backyard crowd bed: a dozen friends standing close (a thin, near chatter band with
+## quick random swells, no stadium rumble) plus crickets (4.5 kHz sine chirps).
+## Generated long and crossfaded end-into-start so it loops without a click.
 func _synth_crowd_loop(dur: float) -> PackedFloat32Array:
 	var n: int = _n(dur)
 	var fade: int = _n(0.25)
 	var total: int = n + fade
+	var sr: float = float(MIX_RATE)
 	var raw: PackedFloat32Array = PackedFloat32Array()
 	raw.resize(total)
 	var l1: float = 0.0
 	var h1: float = 0.0
 	var l2: float = 0.0
 	var h2: float = 0.0
-	var a_l1: float = _coef(1100.0)
-	var a_h1: float = _coef(280.0)
-	var a_l2: float = _coef(2600.0)
-	var a_h2: float = _coef(1200.0)
-	var m1: float = 0.6
-	var m1_t: float = 0.6
-	var m2: float = 0.5
-	var m2_t: float = 0.5
-	var a_m: float = _coef(2.5)
-	var a_m2: float = _coef(6.0)
+	var a_l1: float = _coef(1700.0)
+	var a_h1: float = _coef(450.0)
+	var a_l2: float = _coef(3000.0)
+	var a_h2: float = _coef(1500.0)
+	var m1: float = 0.5
+	var m1_t: float = 0.5
+	var m2: float = 0.4
+	var m2_t: float = 0.4
+	var a_m: float = _coef(4.0)
+	var a_m2: float = _coef(9.0)
+	# Crickets: a chirp is 3 short 4.5 kHz pulses (40 Hz gate); one every ~0.55-1.1 s.
+	var w_cr: float = TAU * 4500.0 / sr
+	var w_gate: float = TAU * 40.0 / sr
+	var chirp_at: int = _n(0.3)
+	var chirp_len: int = _n(0.075)
+	var chirp_gain: float = 0.08
 	for i in range(total):
-		if i % 4410 == 0:
-			m1_t = _rng.randf_range(0.45, 1.0)
-		if i % 1700 == 0:
-			m2_t = _rng.randf_range(0.2, 1.0)
+		if i % 2900 == 0:
+			m1_t = _rng.randf_range(0.25, 1.0) # fewer people: deeper, quicker swells
+		if i % 1300 == 0:
+			m2_t = _rng.randf_range(0.0, 1.0)
 		m1 += a_m * (m1_t - m1)
 		m2 += a_m2 * (m2_t - m2)
 		var nz: float = _noise()
@@ -433,7 +454,15 @@ func _synth_crowd_loop(dur: float) -> PackedFloat32Array:
 		var nz2: float = _noise()
 		l2 += a_l2 * (nz2 - l2)
 		h2 += a_h2 * (l2 - h2)
-		raw[i] = (l1 - h1) * m1 * 1.6 + (l2 - h2) * m2 * 0.9
+		var cr: float = 0.0
+		var ci: int = i - chirp_at
+		if ci >= 0 and ci < chirp_len:
+			var gate: float = maxf(0.0, sin(w_gate * float(ci)))
+			cr = sin(w_cr * float(i)) * gate * gate * chirp_gain
+		elif ci >= chirp_len:
+			chirp_at = i + _n(_rng.randf_range(0.55, 1.1))
+			chirp_gain = _rng.randf_range(0.05, 0.1)
+		raw[i] = (l1 - h1) * m1 * 1.2 + (l2 - h2) * m2 * 0.5 + cr
 	var buf: PackedFloat32Array = PackedFloat32Array()
 	buf.resize(n)
 	for i in range(n):
@@ -442,6 +471,269 @@ func _synth_crowd_loop(dur: float) -> PackedFloat32Array:
 		var g: float = float(i) / float(fade)
 		# equal-power crossfade: tail (past loop end) fades out over the head
 		buf[i] = raw[i] * sin(g * PI * 0.5) + raw[n + i] * cos(g * PI * 0.5)
+	return buf
+
+
+## Metal clang (folding chair / trash can): inharmonic partials with a fast attack
+## and a short ring, a high-passed noise strike, and an optional low hollow "boom".
+func _synth_metal(dur: float, partials: PackedFloat32Array, decays: PackedFloat32Array, boom: float, strike_hz: float) -> PackedFloat32Array:
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var sr: float = float(MIX_RATE)
+	var np: int = partials.size()
+	var ws: PackedFloat32Array = PackedFloat32Array()
+	var pph: PackedFloat32Array = PackedFloat32Array()
+	ws.resize(np)
+	pph.resize(np)
+	for k in range(np):
+		ws[k] = TAU * partials[k] / sr
+		pph[k] = 0.0
+	var hp_lp: float = 0.0
+	var a_hp: float = _coef(strike_hz)
+	var b_lp: float = 0.0
+	var a_b: float = _coef(300.0)
+	var bph: float = 0.0
+	for i in range(n):
+		var t: float = float(i) / sr
+		var x: float = float(i) / float(n)
+		# slight wobble = the panel flexing after the hit
+		var wob: float = 1.0 + 0.004 * sin(t * TAU * 9.0)
+		var ring: float = 0.0
+		for k in range(np):
+			pph[k] = pph[k] + ws[k] * wob
+			ring += sin(pph[k]) * exp(-t * decays[k]) / (1.0 + float(k) * 0.25)
+		var nz: float = _noise()
+		hp_lp += a_hp * (nz - hp_lp)
+		var strike: float = (nz - hp_lp) * exp(-t * 90.0) * 1.3
+		var low: float = 0.0
+		if boom > 0.0:
+			bph += TAU * (70.0 + 50.0 * exp(-t * 20.0)) / sr
+			b_lp += a_b * (nz - b_lp)
+			low = (sin(bph) * exp(-t * 9.0) + b_lp * 2.0 * exp(-t * 25.0)) * boom
+		var atk: float = minf(1.0, float(i) / 10.0)
+		buf[i] = (ring * 0.32 + strike + low) * atk * (1.0 - x * x)
+	return buf
+
+
+## 2x4 thwack: dry hollow knock (two damped wood modes) + a band-passed click.
+func _synth_wood(dur: float) -> PackedFloat32Array:
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var sr: float = float(MIX_RATE)
+	var lp: float = 0.0
+	var lp2: float = 0.0
+	var a1: float = _coef(3500.0)
+	var a2: float = _coef(900.0)
+	var p1: float = 0.0
+	var p2: float = 0.0
+	for i in range(n):
+		var t: float = float(i) / sr
+		var x: float = float(i) / float(n)
+		var nz: float = _noise()
+		lp += a1 * (nz - lp)
+		lp2 += a2 * (lp - lp2)
+		var click: float = (lp - lp2) * exp(-t * 110.0) * 1.8
+		p1 += TAU * (240.0 - 40.0 * x) / sr
+		p2 += TAU * 690.0 / sr
+		var body: float = sin(p1) * exp(-t * 38.0) + sin(p2) * 0.5 * exp(-t * 60.0)
+		var atk: float = minf(1.0, float(i) / 6.0)
+		buf[i] = (click + body * 0.8) * atk * (1.0 - x)
+	return buf
+
+
+## Table break: big snap, a run of splintering noise bursts and crackle, a low thump.
+func _synth_crack(dur: float) -> PackedFloat32Array:
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var sr: float = float(MIX_RATE)
+	var hp_lp: float = 0.0
+	var a_hp: float = _coef(1200.0)
+	var bp_lp: float = 0.0
+	var bp_lp2: float = 0.0
+	var a_b1: float = _coef(4200.0)
+	var a_b2: float = _coef(700.0)
+	var t_lp: float = 0.0
+	var a_t: float = _coef(260.0)
+	var phase: float = 0.0
+	var burst_env: float = 1.0
+	var crackle: float = 0.0
+	for i in range(n):
+		var t: float = float(i) / sr
+		var x: float = float(i) / float(n)
+		var nz: float = _noise()
+		# initial snap
+		hp_lp += a_hp * (nz - hp_lp)
+		var snap: float = (nz - hp_lp) * exp(-t * 55.0) * 1.6
+		# splinter bursts: random re-triggers, denser early on
+		if _rng.randf() < 0.0025 * exp(-t * 5.0):
+			burst_env = _rng.randf_range(0.5, 1.0)
+		burst_env *= 0.9975
+		bp_lp += a_b1 * (nz - bp_lp)
+		bp_lp2 += a_b2 * (bp_lp - bp_lp2)
+		var bursts: float = (bp_lp - bp_lp2) * burst_env * 1.5
+		# crackle: sparse ticks that ring very briefly
+		if _rng.randf() < 0.02 * exp(-t * 4.0):
+			crackle = _rng.randf_range(-1.0, 1.0)
+		crackle *= 0.8
+		# low thump (wrestler + table hitting the ground)
+		t_lp += a_t * (nz - t_lp)
+		phase += TAU * (48.0 + 60.0 * exp(-t * 18.0)) / sr
+		var thump: float = sin(phase) * exp(-t * 8.0) * 0.9 + t_lp * 2.0 * exp(-t * 14.0)
+		var atk: float = minf(1.0, float(i) / 12.0)
+		buf[i] = (snap + bursts + crackle * 0.6 + thump) * atk * (1.0 - x * x)
+	return buf
+
+
+## "WHOOOA!" from a handful of friends: buzzy voices whose pitch and vowel formant
+## rise ("whoo" -> "OA"), over band-passed breathy noise, swelling then dropping off.
+func _synth_whoa(dur: float) -> PackedFloat32Array:
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var sr: float = float(MIX_RATE)
+	var base: PackedFloat32Array = PackedFloat32Array([180.0, 205.0, 240.0, 290.0, 330.0])
+	var ph: PackedFloat32Array = PackedFloat32Array([0.0, 0.31, 0.57, 0.12, 0.83])
+	var vl: float = 0.0
+	var vh: float = 0.0
+	var nl: float = 0.0
+	var nh: float = 0.0
+	for i in range(n):
+		var t: float = float(i) / sr
+		var x: float = float(i) / float(n)
+		var rise: float = smoothstep(0.0, 0.55, x)
+		var voices: float = 0.0
+		for k in range(base.size()):
+			var f: float = base[k] * (0.85 + 0.45 * rise) * (1.0 + 0.02 * sin(t * TAU * (5.0 + float(k))))
+			ph[k] = ph[k] + f / sr
+			voices += fposmod(ph[k], 1.0) * 2.0 - 1.0
+		# vowel: formant centre glides 350 Hz ("oo") -> 900 Hz ("ah")
+		var fc: float = 350.0 + 550.0 * rise
+		vl += _coef(fc * 1.5) * (voices - vl)
+		vh += _coef(fc * 0.5) * (vl - vh)
+		var nz: float = _noise()
+		nl += _coef(fc * 2.5) * (nz - nl)
+		nh += _coef(fc * 0.7) * (nl - nh)
+		var env: float = smoothstep(0.0, 0.35, x) * (1.0 - smoothstep(0.6, 1.0, x))
+		buf[i] = ((vl - vh) * 0.35 + (nl - nh) * 1.2) * env
+	return buf
+
+
+## Small backyard cheer (~a dozen people, not a stadium): a few whooping voices that
+## re-pitch and glide up on each whoop, scattered hand claps and a thin chatter band.
+func _synth_cheer_small(dur: float) -> PackedFloat32Array:
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var sr: float = float(MIX_RATE)
+	var nv: int = 5
+	var vf: PackedFloat32Array = PackedFloat32Array()
+	var vp: PackedFloat32Array = PackedFloat32Array()
+	var vg: PackedFloat32Array = PackedFloat32Array()
+	var vt: PackedFloat32Array = PackedFloat32Array() # start time of this voice's current whoop
+	vf.resize(nv)
+	vp.resize(nv)
+	vg.resize(nv)
+	vt.resize(nv)
+	for k in range(nv):
+		vf[k] = _rng.randf_range(260.0, 620.0)
+		vp[k] = _rng.randf()
+		vg[k] = _rng.randf_range(0.4, 1.0)
+		vt[k] = _rng.randf_range(0.0, 0.25)
+	var vl: float = 0.0
+	var vh: float = 0.0
+	var a_vl: float = _coef(2200.0)
+	var a_vh: float = _coef(500.0)
+	var bl: float = 0.0
+	var bh: float = 0.0
+	var a_bl: float = _coef(2600.0)
+	var a_bh: float = _coef(700.0)
+	var clap: float = 0.0
+	var cl_lp: float = 0.0
+	var a_cl: float = _coef(1500.0)
+	for i in range(n):
+		var t: float = float(i) / sr
+		var voices: float = 0.0
+		for k in range(nv):
+			var age: float = t - vt[k]
+			if age > 0.45:
+				# this person's next whoop
+				vt[k] = t + _rng.randf_range(0.0, 0.2)
+				vf[k] = _rng.randf_range(260.0, 620.0)
+				vg[k] = _rng.randf_range(0.4, 1.0)
+				age = t - vt[k]
+			if age > 0.0:
+				var f: float = vf[k] * (1.0 + 0.5 * minf(age * 4.0, 1.0)) # "whoo-OO" upward glide
+				vp[k] = vp[k] + f / sr
+				var ve: float = minf(age * 20.0, 1.0) * exp(-age * 5.0)
+				voices += (fposmod(vp[k], 1.0) * 2.0 - 1.0) * ve * vg[k]
+		vl += a_vl * (voices - vl)
+		vh += a_vh * (vl - vh)
+		var nz: float = _noise()
+		bl += a_bl * (nz - bl)
+		bh += a_bh * (bl - bh)
+		if _rng.randf() < 0.0012:
+			clap = _rng.randf_range(0.6, 1.0)
+		clap *= 0.992
+		cl_lp += a_cl * (nz - cl_lp)
+		var claps: float = (nz - cl_lp) * clap
+		var env: float = minf(t / 0.08, 1.0) * exp(-maxf(t - 0.3, 0.0) * 2.2)
+		buf[i] = ((vl - vh) * 0.3 + (bl - bh) * 0.6 + claps * 0.7) * env
+	return buf
+
+
+## Creak (rope / homemade turnbuckle under weight): stick-slip pulse train with a
+## wandering, jittery period through a woody band-pass.
+func _synth_creak(dur: float) -> PackedFloat32Array:
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var sr: float = float(MIX_RATE)
+	var ph: float = 0.0
+	var bl: float = 0.0
+	var bh: float = 0.0
+	var a_bl: float = _coef(1800.0)
+	var a_bh: float = _coef(600.0)
+	for i in range(n):
+		var t: float = float(i) / sr
+		var x: float = float(i) / float(n)
+		# pitch wanders 70 -> 160 Hz and back, with jitter (stick-slip)
+		var f: float = 70.0 + 90.0 * sin(x * PI) + _rng.randf_range(-15.0, 15.0)
+		ph += f / sr
+		var pulse: float = 0.0
+		if ph >= 1.0:
+			ph -= 1.0
+			pulse = _rng.randf_range(0.7, 1.0)
+		bl += a_bl * (pulse - bl)
+		bh += a_bh * (bl - bh)
+		var strain: float = maxf(0.0, sin(x * TAU - 0.3)) + 0.25
+		var atk: float = minf(1.0, t / 0.03)
+		buf[i] = (bl - bh) * strain * atk * (1.0 - x * x)
+	return buf
+
+
+## Long dive whoosh: band-passed noise whose centre rises steadily, building and then
+## cut off sharply (the impact follows), with a fluttery low wind layer.
+func _synth_dive_whoosh(dur: float) -> PackedFloat32Array:
+	var n: int = _n(dur)
+	var buf: PackedFloat32Array = PackedFloat32Array()
+	buf.resize(n)
+	var lp: float = 0.0
+	var lp2: float = 0.0
+	var wl: float = 0.0
+	var a_w: float = _coef(380.0)
+	for i in range(n):
+		var x: float = float(i) / float(n)
+		var fc: float = 300.0 + 2700.0 * x * x
+		var nz: float = _noise()
+		lp += _coef(fc * 1.5) * (nz - lp)
+		lp2 += _coef(fc * 0.65) * (lp - lp2)
+		wl += a_w * (nz - wl)
+		var flutter: float = 0.75 + 0.25 * sin(x * TAU * 11.0)
+		var env: float = pow(x, 1.3) * (1.0 - smoothstep(0.88, 1.0, x))
+		buf[i] = ((lp - lp2) * 2.0 + wl * 1.2) * env * flutter
 	return buf
 
 
