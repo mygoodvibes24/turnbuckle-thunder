@@ -139,7 +139,15 @@ func pick_up(item: Node3D, holder: Node3D) -> void:
 	it.settle_t = -1.0
 	it.transform = Transform3D.IDENTITY
 	var hb := Basis(Vector3.RIGHT, it.held_pitch)
-	_set_model(it, hb, fist - hb * Vector3(0.0, it.grip_y, 0.0))
+	# Where the right fist holds it (model space). The wrestler aims the prop through the
+	# wrist and puts the left hand on the mirrored point (wrestler.gd _w_grip_left).
+	var grip := Vector3(0.0, it.grip_y, 0.0)
+	match it.kind:
+		"chair":
+			grip = Vector3(0.2, 0.15, 0.0)   # one back leg; the left hand takes the other
+		"trash_can":
+			grip = Vector3(0.3, 0.6, 0.0)    # by the rim; the left hand on the far side
+	_set_model(it, hb, fist - hb * grip)
 
 
 ## Drops the item on the mat at local_pos (lying flat, a little random yaw).
