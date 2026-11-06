@@ -1409,18 +1409,28 @@ func start_thrown(land_pos: Vector3, m: Dictionary, key := "") -> void:
 	throw_height = m["height"]
 	throw_end_angle = -PI / 2 - (TAU if m["flip"] else 0.0)
 	pending_damage = m["dmg"]
+	# Visual throw path: keyframed in the thrower's frame (see _throw_keys).
+	var tp: Vector3 = opponent.position
+	var ty: float = opponent.rotation.y
+	throw_origin = Vector3(tp.x, 0.0, tp.z)
+	throw_yaw0 = ty
+	throw_yaw_start = wrapf(rotation.y - ty, -PI, PI)
 
 
 func _thrown() -> void:
 	var t: float = clamp(state_time / throw_time, 0.0, 1.0)
-	position = throw_from.lerp(throw_to, t)
+	_throw_sample(t)  # keyframed path: sets position (ends exactly at throw_to)
 	if t >= 1.0:
 		var key := current_move_key
+		position = throw_to
 		take_damage(pending_damage)
 		set_state(S.DOWN)
 		current_move_key = key  # landed from this move (animation may vary the bump)
 		down_duration = _down_time()
-		pose_root.rotation.x = -PI / 2
+		# Lying on the back, oriented as the throw left us (DOWN keeps this facing).
+		_set_facing_angle(throw_yaw0 + throw_land_yaw)
+		pose_root.rotation = Vector3(-PI / 2, 0.0, 0.0)
+		pose_root.position = Vector3(0.0, LIE_Y, 0.0)
 		impact.emit(clamp(pending_damage / 20.0, 0.3, 1.2))
 		sfx.emit("big_thud" if pending_damage >= 20.0 else "thud", clamp(pending_damage / 20.0, 0.3, 1.3), global_position + Vector3(0, 0.3, 0))
 
@@ -1507,8 +1517,16 @@ func _try_pin_or_taunt() -> void:
 	if os == S.DOWN and _flat_to_opponent().length() < 2.0:
 		set_state(S.PINNING)
 		current_move_key = "cover"
-		position = opponent.position
-		_set_facing_angle(opponent.rotation.y + PI / 2)
+		# Lie across the opponent: chest over their chest, perpendicular, from our side.
+		var oyaw: float = opponent.rotation.y
+		var ofwd := Vector3(sin(oyaw), 0.0, cos(oyaw))  # their head lies toward -ofwd
+		var opos: Vector3 = opponent.position
+		var chest := opos - ofwd * 0.42
+		var perp := Vector3(ofwd.z, 0.0, -ofwd.x)
+		if perp.dot(chest - position) < 0.0:
+			perp = -perp
+		_set_facing_angle(atan2(perp.x, perp.z))
+		position = chest - perp * 0.42
 		pin_count_value = 0
 		opponent.set_state(S.PINNED)
 		opponent.pin_escape = 0.0
@@ -1782,246 +1800,1421 @@ func _ai_reversal_chance() -> float:
 
 
 # ---------------------------------------------------------------- procedural animation
+# Every frame a per-state _pose_* function fills the pose targets (pt_*), which the body
+# then eases toward with per-group rates: fast for strikes, loose for bumps so the limbs
+# flop and follow through. Standing poses derive the pelvis height from the leg angles
+# (_leg_drop) so the soles stay on the mat; crouches and kneels plant the feet with
+# _plant_knee; hands that hold something use the two-bone reach (_reach).
+#
+# Throws are keyframed in the THROWER's frame (f = forward, s = sideways, y = pelvis
+# height) with an orientation quaternion per key, so the victim can tumble around any
+# axis; the last key always lies on the back at throw_to, matching the DOWN pose.
+
+const EASE_SMOOTH := 0
+const EASE_IN := 1
+const EASE_OUT := 2
+
+# pose targets
+var pt_al := Vector3.ZERO
+var pt_ar := Vector3.ZERO
+var pt_el_l := Vector3.ZERO
+var pt_el_r := Vector3.ZERO
+var pt_ll := Vector3.ZERO
+var pt_lr := Vector3.ZERO
+var pt_kn_l := 0.0
+var pt_kn_r := 0.0
+var pt_tor := Vector3.ZERO
+var pt_hd := Vector3.ZERO
+var pt_hip := Vector3.ZERO
+var pt_root_rot := Vector3.ZERO
+var pt_root_pos := Vector3(0, STAND_Y, 0)
+var pt_root_dy := 0.0
+var pt_auto_height := false
+var pt_root_direct := false
+var pt_hip_y_direct := false
+var pt_use_basis := false
+var pt_breath := 0.0
+var r_body := 12.0
+var r_limb := 14.0
+var r_root := 12.0
+
+# animation bookkeeping (never read by gameplay)
+var _gait := 0.0
+var _walk_f := 0.0
+var _walk_s := 0.0
+var _style := -1
+var _pose_prev_state := -1
+var _entry_state := -1
+var _entry_root_x := 0.0
+var _entry_root_y := STAND_Y
+var _seen_health := 100.0
+var _hit_clock := -10.0
+
+# throw path (set in start_thrown, sampled in _thrown)
+var throw_origin := Vector3.ZERO   # thrower position
+var throw_yaw0 := 0.0              # thrower facing angle: the frame the keys live in
+var throw_yaw_start := PI          # our yaw relative to that frame when the throw began
+var throw_land_yaw := 0.0          # our relative yaw once lying on the back
+var throw_pose_y := STAND_Y
+var throw_pose_q := Quaternion.IDENTITY
+
+
+# --- small math helpers ---------------------------------------------------------------
+
+func _ease_in(x: float) -> float:
+	var c := clampf(x, 0.0, 1.0)
+	return c * c
+
+
+func _ease_out(x: float) -> float:
+	var c := 1.0 - clampf(x, 0.0, 1.0)
+	return 1.0 - c * c
+
+
+func _smooth(x: float) -> float:
+	var c := clampf(x, 0.0, 1.0)
+	return c * c * (3.0 - 2.0 * c)
+
+
+func _seg(x: float, a: float, b: float) -> float:
+	return clampf((x - a) / maxf(b - a, 0.0001), 0.0, 1.0)
+
+
+## 0 -> 1 -> 0 over [a, b].
+func _hump(x: float, a: float, b: float) -> float:
+	return sin(_seg(x, a, b) * PI)
+
+
+## Pelvis-to-sole height of a leg swung forward by a (= -rotation.x), knee bent back by b.
+func _leg_drop(a: float, b: float, z := 0.0) -> float:
+	return 0.06 + (0.43 * cos(a) + 0.46 * cos(a - b)) * cos(z)
+
+
+## Knee bend that puts the sole on the mat, for a pelvis at height y, body pitch rp
+## (pose_root.rotation.x) and thigh swing lx (leg rotation.x).
+func _plant_knee(y: float, rp: float, lx: float) -> float:
+	var a := -(lx + rp)  # absolute thigh angle, forward of straight down
+	var knee_y := y - 0.06 * cos(rp) - 0.43 * cos(a)
+	if knee_y >= 0.46:
+		return clampf(a, 0.0, 2.7)
+	return clampf(a + acos(clampf(knee_y / 0.46, 0.0, 1.0)), 0.0, 2.7)
+
+
+func _qe(yaw: float, pitch: float, roll := 0.0) -> Quaternion:
+	return Quaternion(Basis.from_euler(Vector3(pitch, yaw, roll)))
+
+
+## Wrestling stance; c = crouch 0..1. Left foot leads, feet apart, pelvis from the legs.
+func _stance(c: float) -> void:
+	pt_ll = Vector3(-(0.25 + 0.2 * c), 0.0, -0.12)
+	pt_lr = Vector3(-(0.05 + 0.15 * c), 0.0, 0.12)
+	pt_kn_l = 0.5 + 0.5 * c
+	pt_kn_r = 0.35 + 0.45 * c
+	pt_auto_height = true
+
+
+## Explicit pelvis height / pitch with both feet planted.
+func _legs_for(y: float, rp: float, lx_l: float, lx_r: float) -> void:
+	pt_auto_height = false
+	pt_root_pos.y = y
+	pt_root_rot.x = rp
+	pt_ll.x = lx_l
+	pt_lr.x = lx_r
+	pt_kn_l = _plant_knee(y, rp, lx_l)
+	pt_kn_r = _plant_knee(y, rp, lx_r)
+
+
+## Stance(c) blended by w toward a planted pose at pelvis height y / pitch rp.
+func _legs_blend(c: float, y: float, rp: float, lx_l: float, lx_r: float, w: float) -> void:
+	_stance(c)
+	if w <= 0.001:
+		return
+	var sy := maxf(_leg_drop(-pt_ll.x, pt_kn_l, pt_ll.z), _leg_drop(-pt_lr.x, pt_kn_r, pt_lr.z))
+	_legs_for(lerpf(sy, y, w), rp * w, lerpf(pt_ll.x, lx_l, w), lerpf(pt_lr.x, lx_r, w))
+
+
+## Two-bone reach: aims an arm so the fist lands on a world-space point (or points at it
+## when out of reach). w blends from the current targets.
+func _reach(left: bool, target: Vector3, w := 1.0) -> void:
+	var arm: Node3D = arm_l if left else arm_r
+	var v := torso.to_local(target) - arm.position
+	var dist := v.length()
+	if dist < 0.05:
+		return
+	var d := v / dist
+	var b := asin(clampf(d.x, -1.0, 1.0))
+	var a := atan2(-d.z, -d.y)
+	if a > 1.6:
+		a -= TAU
+	var r := clampf(dist, 0.25, 0.64)
+	var bend := PI - acos(clampf((0.2113 - r * r) / 0.2112, -1.0, 1.0))
+	var off := acos(clampf((0.1024 + r * r - 0.1089) / (0.64 * r), -1.0, 1.0))
+	var sh := Vector3(a + off, 0.0, b)
+	var el := Vector3(-bend, 0.0, 0.0)
+	if left:
+		pt_al = pt_al.lerp(sh, w)
+		pt_el_l = pt_el_l.lerp(el, w)
+	else:
+		pt_ar = pt_ar.lerp(sh, w)
+		pt_el_r = pt_el_r.lerp(el, w)
+
+
+## Both hands onto two points, each hand taking the nearer one (no crossed arms).
+func _reach_pair(p1: Vector3, p2: Vector3, w := 1.0) -> void:
+	var sl := arm_l.global_position
+	if sl.distance_squared_to(p1) + arm_r.global_position.distance_squared_to(p2) <= \
+			sl.distance_squared_to(p2) + arm_r.global_position.distance_squared_to(p1):
+		_reach(true, p1, w)
+		_reach(false, p2, w)
+	else:
+		_reach(true, p2, w)
+		_reach(false, p1, w)
+
+
+## Arms hanging straight down in world space, given the body's total forward pitch.
+func _hang_arms(pitch: float, spread: float) -> void:
+	pt_al = Vector3(-pitch, 0.0, -spread)
+	pt_ar = Vector3(-pitch, 0.0, spread)
+	pt_el_l = Vector3(-0.2, 0.0, 0.0)
+	pt_el_r = Vector3(-0.2, 0.0, 0.0)
+
+
+func _opp_node(n: String) -> Node3D:
+	var o: Node3D = opponent.get(n)
+	return o
+
+
+# --- main --------------------------------------------------------------------------
+
+func _pose_reset() -> void:
+	pt_al = Vector3(-0.6, 0.0, -0.2)
+	pt_ar = Vector3(-0.6, 0.0, 0.2)
+	pt_el_l = Vector3(-1.2, 0.0, 0.0)
+	pt_el_r = Vector3(-1.2, 0.0, 0.0)
+	pt_ll = Vector3.ZERO
+	pt_lr = Vector3.ZERO
+	pt_kn_l = 0.12
+	pt_kn_r = 0.12
+	pt_tor = Vector3.ZERO
+	pt_hd = Vector3.ZERO
+	pt_hip = Vector3.ZERO
+	pt_root_rot = Vector3.ZERO
+	pt_root_pos = Vector3(0.0, STAND_Y, 0.0)
+	pt_root_dy = 0.0
+	pt_auto_height = false
+	pt_root_direct = false
+	pt_hip_y_direct = false
+	pt_use_basis = false
+	pt_breath = 0.0
+	r_body = 12.0
+	r_limb = 14.0
+	r_root = 12.0
+
+
+func _pose_state_changed() -> void:
+	_entry_state = _pose_prev_state
+	_pose_prev_state = state
+	_entry_root_x = pose_root.rotation.x
+	_entry_root_y = pose_root.position.y
+	# An elbow drop lands turned sideways: fold that visual yaw into our facing.
+	if _entry_state == S.GROUND_DROP and absf(pose_root.rotation.y) > 0.01:
+		var ry := pose_root.rotation.y
+		_set_facing_angle(rotation.y + ry)
+		pose_root.rotation.y = 0.0
+	if state == S.DOWN:
+		_seen_health = health
+		_hit_clock = -10.0
+
 
 func _update_pose(delta: float) -> void:
-	var t := state_time
-	var al := Vector3(-0.35, 0, -0.15)
-	var ar := Vector3(-0.35, 0, 0.15)
-	var ll := Vector3.ZERO
-	var lr := Vector3.ZERO
-	var hip := Vector3.ZERO
-	var el_l := Vector3(-0.6, 0, 0)  # elbows: -x bends the forearm forward/up
-	var el_r := Vector3(-0.6, 0, 0)
-	var kn_l := 0.12  # knees: +x bends the shin back
-	var kn_r := 0.12
-	var root_x := 0.0
-	var root_y := STAND_Y  # pelvis height (pose_root sits at the pelvis)
-	var direct := false
+	if _style < 0:
+		_style = absi(display_name.hash()) % 3
+	if state != _pose_prev_state:
+		_pose_state_changed()
+	_pose_reset()
 
 	match state:
 		S.IDLE:
-			var b := sin(anim_clock * 3.0)
-			al.x = -0.4 + b * 0.06
-			ar.x = -0.4 - b * 0.06
-			el_l.x = -1.25
-			el_r.x = -1.25
-			hip.x = 0.14
-			ll.x = -0.15
-			lr.x = -0.35
-			kn_l = 0.35
-			kn_r = 0.45
+			_pose_idle()
 		S.WALK:
-			var s := sin(anim_clock * 9.0)
-			ll.x = s * 0.6
-			lr.x = -s * 0.6
-			al.x = -0.4 - s * 0.45
-			ar.x = -0.4 + s * 0.45
-			el_l.x = -1.0
-			el_r.x = -1.0
-			kn_l = 0.1 + max(0.0, s) * 0.8
-			kn_r = 0.1 + max(0.0, -s) * 0.8
+			_pose_walk(delta)
 		S.RUN:
-			var s := sin(anim_clock * 15.0)
-			ll.x = s * 1.0
-			lr.x = -s * 1.0
-			al.x = -0.4 - s * 0.9
-			ar.x = -0.4 + s * 0.9
-			el_l.x = -1.5
-			el_r.x = -1.5
-			kn_l = 0.2 + max(0.0, s) * 1.4
-			kn_r = 0.2 + max(0.0, -s) * 1.4
-			hip.x = 0.3
+			_pose_run(delta)
 		S.PUNCH:
-			var p: float = clamp(t / PUNCH_HIT, 0.0, 1.0) if t < PUNCH_HIT else clamp(1.0 - (t - PUNCH_HIT) / (PUNCH_END - PUNCH_HIT), 0.0, 1.0)
-			ar.x = lerp(-0.6, -1.65, p)
-			al.x = -0.6
-			el_r.x = lerp(-1.4, -0.05, p)
-			el_l.x = -1.4
-			kn_l = 0.3
-			kn_r = 0.3
-			hip.y = 0.45 * p
-			hip.x = 0.15 * p
+			_pose_punch()
 		S.RUN_ATTACK:
-			al.z = -1.5
-			ar.z = 1.5
-			el_l.x = 0.0
-			el_r.x = 0.0
-			hip.x = 0.3
-			ll.x = 0.5
-			lr.x = -0.4
-			kn_r = 0.6
+			_pose_run_attack(delta)
 		S.STUNNED:
-			hip.x = -0.35
-			al.x = 0.4
-			ar.x = 0.3
-			el_l.x = -0.3
-			el_r.x = -0.3
-			kn_l = 0.35
-			kn_r = 0.35
-		S.TIEUP_ATK, S.TIEUP_DEF:
-			al = Vector3(-1.35, 0, 0.3)
-			ar = Vector3(-1.35, 0, -0.3)
-			hip.x = 0.4
-			hip.z = sin(anim_clock * 18.0) * 0.05
-			ll.x = 0.35
-			lr.x = -0.35
-			el_l.x = -0.75
-			el_r.x = -0.75
-			kn_l = 0.5
-			kn_r = 0.3
-		S.THROWING:
-			var p: float = sin(clamp(t / throw_time, 0.0, 1.0) * PI)
-			al.x = lerp(-1.4, -3.0, p)
-			ar.x = lerp(-1.4, -3.0, p)
-			hip.x = lerp(0.3, -0.45, p)
-			el_l.x = -0.4
-			el_r.x = -0.4
-			kn_l = 0.3
-			kn_r = 0.3
-		S.THROWN:
-			var p: float = clamp(t / throw_time, 0.0, 1.0)
-			root_x = lerp(0.0, throw_end_angle, p)
-			root_y = lerpf(STAND_Y, LIE_Y, p) + sin(p * PI) * throw_height
-			al.z = -1.3
-			ar.z = 1.3
-			el_l.x = -0.3
-			el_r.x = -0.3
-			kn_l = 0.7
-			kn_r = 0.3
-			direct = true
-		S.DOWN, S.PINNED, S.LOSE:
-			root_x = -PI / 2
-			root_y = LIE_Y
-			al = Vector3(0, 0, -0.7)
-			ar = Vector3(0, 0, 0.7)
-			ll.z = -0.2
-			lr.z = 0.2
-			ll.x = -0.6
-			kn_l = 1.1
-			el_l.x = -0.2
-			el_r.x = -0.2
-			if state == S.PINNED:
-				al.x = sin(anim_clock * 12.0) * 0.4
-				ar.x = -sin(anim_clock * 12.0) * 0.4
-		S.GETTING_UP:
-			var p: float = clamp(t / 0.7, 0.0, 1.0)
-			root_x = lerp(-PI / 2, 0.0, p * p)
-			root_y = lerpf(LIE_Y, STAND_Y, p)
-			al.x = -0.8
-			ar.x = -0.8
-			ll.x = lerp(-1.2, 0.0, p)
-			lr.x = lerp(-0.4, 0.0, p)
-			kn_l = lerp(1.6, 0.1, p)
-			kn_r = lerp(1.0, 0.1, p)
-			direct = true
-		S.PINNING:
-			root_x = PI / 2 * 0.95
-			root_y = PIN_Y
-			al.x = -0.6
-			ar.x = -0.6
-			el_l.x = -0.9
-			el_r.x = -0.9
-			kn_l = 0.9
-			kn_r = 0.9
-		S.TAUNT, S.WIN:
-			# double-bicep flex
-			al = Vector3(0, 0, -1.45)
-			ar = Vector3(0, 0, 1.45)
-			el_l = Vector3(0, 0, -1.6)
-			el_r = Vector3(0, 0, 1.6)
-			kn_l = 0.25
-			kn_r = 0.25
-			root_y = STAND_Y + abs(sin(t * 6.0)) * 0.15
-			hip.y = sin(t * 3.0) * 0.3
-		# ---- minimal poses for the gameplay states added later (animation pass will refine)
-		S.GRAB_WINDUP:
-			# reaching forward for the collar-and-elbow
-			al = Vector3(-1.3, 0, 0.2)
-			ar = Vector3(-1.3, 0, -0.2)
-			el_l.x = -0.5
-			el_r.x = -0.5
-			hip.x = 0.3
-			ll.x = 0.3
-			lr.x = -0.3
-			kn_l = 0.45
-			kn_r = 0.35
+			_pose_stunned()
 		S.WHIFF:
-			# lunged at nothing: stumbling forward
-			hip.x = 0.6
-			al = Vector3(-1.0, 0, -0.3)
-			ar = Vector3(-1.0, 0, 0.3)
-			el_l.x = -0.1
-			el_r.x = -0.1
-			ll.x = 0.5
-			lr.x = -0.2
-			kn_l = 0.6
-			kn_r = 0.3
+			_pose_whiff()
+		S.GRAB_WINDUP:
+			_pose_grab_windup()
+		S.TIEUP_ATK, S.TIEUP_DEF:
+			_pose_tieup()
 		S.WHIPPING:
-			# right arm extended after flinging the opponent away
-			ar = Vector3(-1.4, 0, 0.2)
-			el_r.x = 0.0
-			al.x = -0.5
-			el_l.x = -1.0
-			hip.x = 0.15
-			kn_l = 0.35
-			kn_r = 0.35
+			_pose_whipping()
+		S.THROWING:
+			_pose_throwing()
+		S.THROWN:
+			_pose_thrown()
+		S.DOWN:
+			_pose_down()
+		S.LOSE:
+			_pose_lying_limp()
+		S.PINNED:
+			_pose_pinned()
+		S.GETTING_UP:
+			_pose_getting_up()
+		S.PINNING:
+			_pose_pinning()
+		S.TAUNT:
+			_pose_taunt()
+		S.WIN:
+			_pose_win()
 		S.STOMP:
-			var p: float = sin(clamp(t / 0.4, 0.0, 1.0) * PI)
-			lr.x = -1.2 * p
-			kn_r = 0.2 + 1.3 * p
-			kn_l = 0.3
-			al.z = -0.4
-			ar.z = 0.4
-			hip.x = 0.25
+			_pose_stomp()
 		S.GROUND_DROP:
-			# leap and come down across the opponent, elbow / knee first
-			var p: float = clamp(t / 0.5, 0.0, 1.0)
-			root_x = lerp(0.0, -PI / 2 * 0.8, p)
-			root_y = lerpf(STAND_Y, LIE_Y + 0.15, p) + sin(p * PI) * 0.6
-			ar = Vector3(0, 0, 1.6)
-			el_r = Vector3(-2.0, 0, 0)
-			al = Vector3(-0.6, 0, -0.5)
-			ll.x = -0.6
-			kn_l = 1.2
-			kn_r = 0.4
-			direct = true
+			_pose_ground_drop()
 		S.PICKUP:
-			# bent over grabbing the head, then straightening up
-			var p: float = clamp(t / 0.6, 0.0, 1.0)
-			hip.x = lerp(0.9, 0.2, p)
-			al.x = lerp(-1.5, -1.2, p)
-			ar.x = lerp(-1.5, -1.2, p)
-			el_l.x = -0.6
-			el_r.x = -0.6
-			kn_l = lerp(0.8, 0.3, p)
-			kn_r = lerp(0.8, 0.3, p)
+			_pose_pickup()
 		S.LIFTED:
-			# hauled from the mat to a limp standing position
-			var p: float = clamp(t / 0.6, 0.0, 1.0)
-			root_x = lerp(-PI / 2, 0.0, p * p)
-			root_y = lerpf(LIE_Y, STAND_Y - 0.05, p)
-			al = Vector3(0.2, 0, -0.3)
-			ar = Vector3(0.2, 0, 0.3)
-			el_l.x = -0.2
-			el_r.x = -0.2
-			hip.x = 0.35
-			kn_l = lerp(1.2, 0.4, p)
-			kn_r = lerp(1.0, 0.4, p)
-			direct = true
+			_pose_lifted(delta)
+	_apply_pose(delta)
 
-	var k: float = clamp(delta * 14.0, 0.0, 1.0)
-	arm_l.rotation = arm_l.rotation.lerp(al, k)
-	arm_r.rotation = arm_r.rotation.lerp(ar, k)
-	leg_l.rotation = leg_l.rotation.lerp(ll, k)
-	leg_r.rotation = leg_r.rotation.lerp(lr, k)
-	hips.rotation = hips.rotation.lerp(hip, k)
-	elbow_l.rotation = elbow_l.rotation.lerp(el_l, k)
-	elbow_r.rotation = elbow_r.rotation.lerp(el_r, k)
-	knee_l.rotation.x = lerp(knee_l.rotation.x, kn_l, k)
-	knee_r.rotation.x = lerp(knee_r.rotation.x, kn_r, k)
-	if direct:
-		pose_root.rotation.x = root_x
-		pose_root.position.y = root_y
+
+func _apply_pose(delta: float) -> void:
+	if pt_auto_height:
+		pt_root_pos.y = maxf(_leg_drop(-pt_ll.x, pt_kn_l, pt_ll.z), _leg_drop(-pt_lr.x, pt_kn_r, pt_lr.z))
+	pt_root_pos.y += pt_root_dy
+	var kb := 1.0 - exp(-r_body * delta)
+	var kl := 1.0 - exp(-r_limb * delta)
+	var kr := 1.0 - exp(-r_root * delta)
+	arm_l.rotation = arm_l.rotation.lerp(pt_al, kl)
+	arm_r.rotation = arm_r.rotation.lerp(pt_ar, kl)
+	elbow_l.rotation = elbow_l.rotation.lerp(pt_el_l, kl)
+	elbow_r.rotation = elbow_r.rotation.lerp(pt_el_r, kl)
+	leg_l.rotation = leg_l.rotation.lerp(pt_ll, kl)
+	leg_r.rotation = leg_r.rotation.lerp(pt_lr, kl)
+	knee_l.rotation.x = lerpf(knee_l.rotation.x, pt_kn_l, kl)
+	knee_r.rotation.x = lerpf(knee_r.rotation.x, pt_kn_r, kl)
+	torso.rotation = torso.rotation.lerp(pt_tor, kb)
+	head.rotation = head.rotation.lerp(pt_hd, kb)
+	var b := pt_breath
+	torso.scale = torso.scale.lerp(Vector3(1.0 + 0.012 * b, 1.0 + 0.008 * b, 1.0 + 0.02 * b), kb)
+	hips.rotation.x = lerpf(hips.rotation.x, pt_hip.x, kb)
+	hips.rotation.z = lerpf(hips.rotation.z, pt_hip.z, kb)
+	if pt_hip_y_direct:
+		hips.rotation.y = pt_hip.y
 	else:
-		pose_root.rotation.x = lerp(pose_root.rotation.x, root_x, k)
-		pose_root.position.y = lerp(pose_root.position.y, root_y, k)
+		hips.rotation.y = lerp_angle(wrapf(hips.rotation.y, -PI, PI), pt_hip.y, kb)
+	if pt_use_basis:
+		pose_root.basis = Basis(throw_pose_q)
+		pose_root.position = Vector3(0.0, throw_pose_y, 0.0)
+	elif pt_root_direct:
+		pose_root.rotation = pt_root_rot
+		pose_root.position = pt_root_pos
+	else:
+		var rr := pose_root.rotation
+		pose_root.rotation = Vector3(lerpf(rr.x, pt_root_rot.x, kr),
+			lerp_angle(rr.y, pt_root_rot.y, kr), lerpf(rr.z, pt_root_rot.z, kr))
+		pose_root.position = pose_root.position.lerp(pt_root_pos, kr)
+
+
+# --- standing ------------------------------------------------------------------------
+
+## Getting back to the feet from a throw / sit-out: ease up instead of popping up.
+func _recovering() -> void:
+	if state_time < 0.45 and _entry_root_y < 0.75:
+		r_root = 7.0
+		r_limb = 9.0
+		r_body = 8.0
+
+
+## Arms up and chin down when a strike is about to land on us (reversal window open).
+func _brace_guard() -> void:
+	if reversal_window > 0.0:
+		pt_al = Vector3(-1.25, 0.0, -0.15)
+		pt_ar = Vector3(-1.25, 0.0, 0.15)
+		pt_el_l = Vector3(-2.1, 0.0, 0.0)
+		pt_el_r = Vector3(-2.1, 0.0, 0.0)
+		pt_tor.x -= 0.08
+		pt_hd.x += 0.2
+		r_limb = 24.0
+
+
+func _pose_idle() -> void:
+	var b := sin(anim_clock * 2.3)   # breathing
+	var w := sin(anim_clock * 1.15)  # weight shifting foot to foot
+	pt_breath = b
+	_stance(0.55 + 0.06 * w)
+	pt_kn_l += 0.06 * w
+	pt_kn_r -= 0.06 * w
+	pt_tor = Vector3(0.22 + 0.025 * b, -0.05 * w, 0.035 * w)
+	pt_hd = Vector3(-0.14 - 0.02 * b, 0.04 * w, -0.03 * w)
+	var lean := pt_tor.x
+	pt_al = Vector3(-0.55 - lean - 0.03 * b, 0.0, -0.3)
+	pt_ar = Vector3(-0.5 - lean + 0.03 * b, 0.0, 0.3)
+	pt_el_l = Vector3(-1.5, 0.0, 0.0)
+	pt_el_r = Vector3(-1.4, 0.0, 0.0)
+	_brace_guard()
+	_recovering()
+
+
+func _pose_walk(delta: float) -> void:
+	# Project the stick onto our forward / right vectors: walk forward/back swings the legs
+	# on x, sideways strafing swings them on z (a side-step shuffle).
+	var mv := Vector3(in_move.x, 0.0, in_move.y)
+	var mag := clampf(mv.length(), 0.0, 1.0)
+	var right := Vector3(facing.z, 0.0, -facing.x)
+	var wf := 0.0
+	var ws := 0.0
+	if mag > 0.05:
+		wf = mv.dot(facing) / mv.length()
+		ws = mv.dot(right) / mv.length()
+	var kw := 1.0 - exp(-10.0 * delta)
+	_walk_f = lerpf(_walk_f, wf, kw)
+	_walk_s = lerpf(_walk_s, ws, kw)
+	_gait += delta * (6.0 + 4.0 * mag)
+	var s := sin(_gait)
+	var c := cos(_gait)
+	var amp := 0.2 + 0.25 * mag
+	var f := _walk_f
+	var sd := _walk_s
+	var lift_l := maxf(0.0, c)  # left foot travels (lifted) while c > 0
+	var lift_r := maxf(0.0, -c)
+	pt_ll = Vector3(-0.28 - s * amp * f - 0.2 * lift_l, 0.0, -0.1 + s * amp * 0.55 * sd)
+	pt_lr = Vector3(-0.28 + s * amp * f - 0.2 * lift_r, 0.0, 0.1 - s * amp * 0.55 * sd)
+	pt_kn_l = 0.55 + 0.75 * lift_l
+	pt_kn_r = 0.55 + 0.75 * lift_r
+	pt_auto_height = true
+	# no extra bob: the leg geometry already dips the hips ~0.05 at full stride
+	pt_tor = Vector3(0.2 + 0.06 * f, -s * 0.12 * f, 0.06 * sd * s)
+	pt_hd = Vector3(-0.15, s * 0.06 * f, -0.04 * sd * s)
+	var lean := pt_tor.x
+	pt_al = Vector3(-0.5 - lean + s * 0.32 * f, 0.0, -0.3 - 0.12 * absf(sd))
+	pt_ar = Vector3(-0.5 - lean - s * 0.32 * f, 0.0, 0.3 + 0.12 * absf(sd))
+	pt_el_l = Vector3(-1.35, 0.0, 0.0)
+	pt_el_r = Vector3(-1.35, 0.0, 0.0)
+	r_limb = 20.0
+	r_root = 20.0
+	_brace_guard()
+	_recovering()
+
+
+func _pose_run(delta: float) -> void:
+	_gait += delta * 15.0
+	var s := sin(_gait)
+	var c := cos(_gait)
+	pt_ll = Vector3(-0.35 - s * 0.85, 0.0, -0.06)
+	pt_lr = Vector3(-0.35 + s * 0.85, 0.0, 0.06)
+	pt_kn_l = 0.3 + maxf(0.0, c) * 1.5 + maxf(0.0, -c) * 0.25
+	pt_kn_r = 0.3 + maxf(0.0, -c) * 1.5 + maxf(0.0, c) * 0.25
+	pt_auto_height = true
+	pt_root_dy = 0.04 * absf(s)  # small flight phase
+	pt_tor = Vector3(0.4, s * 0.18, 0.0)
+	pt_hd = Vector3(-0.3, -s * 0.1, 0.0)
+	pt_al = Vector3(-0.85 + s * 0.9, 0.0, -0.15)
+	pt_ar = Vector3(-0.85 - s * 0.9, 0.0, 0.15)
+	pt_el_l = Vector3(-1.7, 0.0, 0.0)
+	pt_el_r = Vector3(-1.7, 0.0, 0.0)
+	r_limb = 24.0
+	r_root = 22.0
+	if whipped:
+		# flung into the ropes: yanked off balance, arms windmilling
+		var yank := 1.0 - _smooth(_seg(state_time, 0.0, 0.5))
+		var fl := anim_clock * 13.0
+		pt_tor = Vector3(lerpf(0.25, -0.2, yank), 0.15 * sin(fl * 0.5), 0.1 * sin(fl * 0.7))
+		pt_hd = Vector3(-0.35 + 0.15 * sin(fl * 0.9), 0.0, 0.15 * sin(fl * 0.6))
+		pt_al = Vector3(-1.5 + 0.9 * sin(fl), 0.0, -0.9 - 0.4 * sin(fl * 0.7))
+		pt_ar = Vector3(-1.5 + 0.9 * sin(fl + 2.0), 0.0, 0.9 + 0.4 * sin(fl * 0.8))
+		pt_el_l = Vector3(-0.4, 0.0, 0.0)
+		pt_el_r = Vector3(-0.4, 0.0, 0.0)
+
+
+# --- strikes -------------------------------------------------------------------------
+
+func _pose_punch() -> void:
+	match current_move_key:
+		"knee":
+			_pose_knee_lift()
+		"clothesline":
+			_pose_clothesline()
+		_:
+			_pose_jab()
+
+
+func _pose_jab() -> void:
+	# 0.08 s wind-up (shoulder back, fist cocked) -> snap out to PUNCH_HIT -> recoil.
+	var t := state_time
+	var wind := _smooth(_seg(t, 0.0, 0.08))
+	var snap := _ease_in(_seg(t, 0.08, PUNCH_HIT))
+	var back := _smooth(_seg(t, PUNCH_HIT + 0.06, PUNCH_END))
+	var cock := wind * (1.0 - snap)
+	var ext := snap * (1.0 - back)
+	r_limb = 34.0
+	r_body = 24.0
+	_stance(0.55 + 0.15 * ext)
+	pt_ll.x -= 0.2 * ext  # step into it
+	pt_tor = Vector3(0.18 + 0.14 * ext, 0.3 * cock - 0.4 * ext, 0.0)
+	pt_hd = Vector3(-0.12, -0.2 * cock + 0.25 * ext, 0.0)
+	var lean := pt_tor.x
+	pt_ar = Vector3(-0.55 - lean + 0.35 * cock - 1.3 * ext, 0.0, 0.3 - 0.36 * ext)
+	pt_el_r = Vector3(-1.5 - 0.6 * cock + 1.42 * ext, 0.0, 0.0)
+	pt_al = Vector3(-0.75 - lean, 0.0, -0.3)
+	pt_el_l = Vector3(-1.9, 0.0, 0.0)
+	pt_root_pos.z = 0.1 * ext
+
+
+func _pose_knee_lift() -> void:
+	# Grab the head, pull it down, drive the right knee up into the gut.
+	var t := state_time
+	var cock := _smooth(_seg(t, 0.0, 0.08))
+	var up := _ease_out(_seg(t, 0.08, 0.18))
+	var down := _smooth(_seg(t, 0.28, PUNCH_END))
+	var e := up * (1.0 - down)
+	r_limb = 30.0
+	r_body = 22.0
+	_stance(0.45)
+	pt_ll = Vector3(-0.15, 0.0, -0.1)
+	pt_kn_l = 0.35 + 0.1 * cock
+	pt_lr = Vector3(-0.2 + 0.25 * cock * (1.0 - up) - 1.5 * e, 0.0, 0.04)
+	pt_kn_r = 0.4 + 0.4 * cock * (1.0 - up) + 1.25 * e
+	pt_root_pos.z = 0.42 * e
+	pt_tor = Vector3(0.3 + 0.15 * cock * (1.0 - e) + 0.25 * e, 0.0, 0.0)
+	pt_hd = Vector3(0.25, 0.0, 0.0)
+	var oh := _opp_node("head")
+	var hp := oh.global_position + Vector3(0.0, 0.1, 0.0)
+	var side := Vector3(facing.z, 0.0, -facing.x) * 0.12
+	_reach_pair(hp - side, hp + side)
+
+
+func _pose_clothesline() -> void:
+	# Arm cocked back, then swung out sideways through the runner's chest.
+	var t := state_time
+	var cock := _smooth(_seg(t, 0.0, 0.06))
+	var swing := _ease_in(_seg(t, 0.06, 0.16))
+	var back := _smooth(_seg(t, 0.26, PUNCH_END))
+	r_limb = 32.0
+	r_body = 22.0
+	_stance(0.6)
+	pt_lr.x += 0.15
+	var ax := lerpf(lerpf(-0.4, 0.55, cock), -0.6, swing)
+	var az := lerpf(lerpf(0.4, 1.2, cock), 1.5, swing)
+	pt_ar = Vector3(lerpf(ax, -0.7, back), 0.0, lerpf(az, 0.35, back))
+	pt_el_r = Vector3(lerpf(-0.15, -1.3, back), 0.0, 0.0)
+	pt_tor = Vector3(0.15, lerpf(lerpf(0.0, 0.4, cock), -0.45, swing) * (1.0 - back), 0.0)
+	pt_al = Vector3(0.1, 0.0, -0.45)
+	pt_el_l = Vector3(-0.9, 0.0, 0.0)
+	pt_hd = Vector3(-0.1, 0.2 * swing * (1.0 - back), 0.0)
+
+
+func _pose_run_attack(delta: float) -> void:
+	# Running lariat: stride carries in, arm cocked behind then whipped out sideways.
+	var t := state_time
+	var stride := _smooth(_seg(t, 0.0, 0.18))
+	var cock := _smooth(_seg(t, 0.0, 0.08))
+	var swing := _ease_in(_seg(t, 0.08, 0.2))
+	var back := _smooth(_seg(t, 0.38, 0.55))
+	_gait += delta * 15.0 * (1.0 - stride)
+	var s := sin(_gait)
+	r_limb = 30.0
+	r_body = 20.0
+	r_root = 20.0
+	pt_ll = Vector3(lerpf(-0.35 - s * 0.85, -0.8, stride), 0.0, -0.08)
+	pt_lr = Vector3(lerpf(-0.35 + s * 0.85, 0.45, stride), 0.0, 0.08)
+	pt_kn_l = lerpf(0.6, 0.7, stride)
+	pt_kn_r = lerpf(0.6, 0.85, stride)
+	pt_auto_height = true
+	pt_tor = Vector3(0.35 - 0.1 * back, (lerpf(0.4 * cock, -0.55, swing)) * (1.0 - back), 0.0)
+	pt_hd = Vector3(-0.25, 0.15 * swing, 0.0)
+	var ax := lerpf(lerpf(-0.6, 0.6, cock), -0.7, swing)
+	var az := lerpf(lerpf(0.3, 1.2, cock), 1.45, swing)
+	pt_ar = Vector3(lerpf(ax, -1.3, back), 0.0, lerpf(az, 0.5, back))
+	pt_el_r = Vector3(lerpf(-0.1, -1.0, back), 0.0, 0.0)
+	pt_al = Vector3(0.35, 0.0, -0.5)
+	pt_el_l = Vector3(-1.0, 0.0, 0.0)
+
+
+func _pose_stunned() -> void:
+	var t := state_time
+	var os := _opp_state()
+	var ok: String = opponent.current_move_key
+	if dazed:
+		# Picked up and out on their feet: wobbling, arms limp, knees buckling.
+		var ph := anim_clock * 3.4
+		_stance(0.55 + 0.15 * sin(ph * 0.8))
+		pt_kn_l += 0.15 * maxf(0.0, sin(ph))
+		pt_kn_r += 0.15 * maxf(0.0, -sin(ph))
+		pt_tor = Vector3(0.38 + 0.1 * sin(ph * 0.7), 0.12 * sin(ph * 0.5), 0.17 * sin(ph))
+		pt_hd = Vector3(0.35 + 0.15 * sin(ph * 1.3), 0.2 * sin(ph * 0.6), 0.25 * sin(ph + 1.0))
+		pt_hip.y = 0.12 * sin(ph * 0.45)
+		_hang_arms(pt_tor.x, 0.15 + 0.1 * sin(ph))
+		r_body = 6.0
+		r_limb = 8.0
+		return
+	if os == S.PUNCH and ok == "knee":
+		# Knee to the gut: yanked in, folding over, clutching the stomach.
+		var fold := _smooth(_seg(t, 0.0, 0.1)) * (1.0 - _smooth(_seg(t, 0.4, 0.7)))
+		_stance(0.5 + 0.3 * fold)
+		pt_root_pos.z = 0.3 * (1.0 - _smooth(_seg(t, 0.12, 0.35)))
+		pt_tor = Vector3(0.2 + 0.7 * fold, 0.0, 0.0)
+		pt_hd = Vector3(0.1 + 0.35 * fold, 0.0, 0.0)
+		pt_al = Vector3(-0.9 - 0.4 * fold, 0.0, 0.35)
+		pt_ar = Vector3(-0.9 - 0.4 * fold, 0.0, -0.35)
+		pt_el_l = Vector3(-1.5, 0.0, 0.0)
+		pt_el_r = Vector3(-1.5, 0.0, 0.0)
+		r_body = 22.0
+		return
+	# Generic hit: head snaps back, arms fling, stagger a step, then recover.
+	var e := (t / 0.05) if t < 0.05 else exp(-(t - 0.05) * 7.0)
+	_stance(0.5)
+	pt_lr.x += 0.3 * e
+	pt_kn_l += 0.15 * e
+	pt_tor = Vector3(0.2 - 0.6 * e, 0.0, 0.08 * e)
+	pt_hd = Vector3(-0.1 - 0.55 * e, 0.0, 0.12 * e)
+	pt_al = Vector3(-0.3 + 0.35 * e, 0.0, -0.35 - 0.45 * e)
+	pt_ar = Vector3(-0.3 + 0.3 * e, 0.0, 0.35 + 0.5 * e)
+	pt_el_l = Vector3(-0.9 + 0.6 * e, 0.0, 0.0)
+	pt_el_r = Vector3(-0.9 + 0.6 * e, 0.0, 0.0)
+	r_body = 26.0
+	r_limb = 22.0
+	_recovering()
+
+
+func _pose_whiff() -> void:
+	# Lunged at nothing: stumble forward, arms grasping, then catch the balance.
+	var u := state_time / maxf(whiff_time, 0.1)
+	var lunge := _ease_out(_seg(u, 0.0, 0.35))
+	var rec := _smooth(_seg(u, 0.5, 1.0))
+	var e := lunge * (1.0 - rec)
+	var strong := current_move_key == "whiff_strong"
+	_stance(0.5 + 0.3 * e)
+	pt_ll.x -= 0.5 * e
+	pt_kn_l += 0.3 * e
+	pt_lr.x += 0.45 * e
+	pt_root_pos.z = 0.15 * e
+	pt_tor = Vector3(0.25 + 0.5 * e, 0.0, 0.1 * e * sin(state_time * 9.0))
+	pt_hd = Vector3(-0.3 * e, 0.0, 0.0)
+	var lean := pt_tor.x
+	var wave := sin(state_time * 16.0) * 0.6 * e if strong else 0.0
+	pt_al = Vector3(-1.4 - lean * 0.5 + wave, 0.0, -0.3 - 0.3 * e)
+	pt_ar = Vector3(-1.4 - lean * 0.5 - wave, 0.0, 0.3 + 0.3 * e)
+	pt_el_l = Vector3(-0.3, 0.0, 0.0)
+	pt_el_r = Vector3(-0.3, 0.0, 0.0)
+	r_body = 16.0
+	r_limb = 20.0
+
+
+func _pose_grab_windup() -> void:
+	# Reaching for the collar-and-elbow; holding GRAB sinks lower and spreads wider.
+	var g := _smooth(_seg(state_time, 0.0, STRONG_GRAB_HOLD))
+	var reach := _ease_out(_seg(state_time, 0.0, 0.08))
+	_stance(0.6 + 0.3 * g)
+	pt_ll.x -= 0.15 * reach
+	pt_tor = Vector3(0.3 + 0.12 * g, 0.0, 0.0)
+	pt_hd = Vector3(-0.2, 0.0, 0.0)
+	var lean := pt_tor.x
+	pt_al = Vector3(-1.35 - lean * 0.6, 0.0, -0.3 - 0.25 * g)
+	pt_ar = Vector3(-1.35 - lean * 0.6, 0.0, 0.3 + 0.25 * g)
+	pt_el_l = Vector3(-0.45, 0.0, 0.0)
+	pt_el_r = Vector3(-0.45, 0.0, 0.0)
+	pt_root_pos.z = 0.06 * reach
+	r_limb = 26.0
+
+
+# --- lock-up -------------------------------------------------------------------------
+
+func _pose_tieup() -> void:
+	var atk := state == S.TIEUP_ATK
+	var t := state_time
+	# Push-pull: both pelvises drift the same way in world space (opposite local signs).
+	var sway := sin(t * 3.2) * 0.045 + sin(t * 17.0) * 0.008
+	pt_root_pos.z = sway if atk else -sway
+	var oh := _opp_node("head")
+	var ot := _opp_node("torso")
+	var opr := _opp_node("pose_root")
+	var oc: String = opponent.committed_move
+	var bracing := (not atk) and (reversal_window > 0.0 or oc != "")
+	var setting := atk and committed_move != ""
+	r_limb = 16.0
+	if not tie_strong:
+		# Collar-and-elbow: left hand on the neck, right hand on their elbow, heads side
+		# by side (each leans its head to its own right, i.e. local +x).
+		_stance(0.7)
+		pt_ll.z = -0.18
+		pt_lr.z = 0.18
+		pt_tor = Vector3(0.38, 0.0, -0.14)
+		pt_hd = Vector3(-0.12, 0.0, -0.14)
+		var oel := _opp_node("elbow_l")
+		_reach(true, oh.global_position - Vector3(0.0, 0.03, 0.0))
+		_reach(false, oel.global_position)
+	elif atk:
+		# Strong: arm hooked around the bent-over opponent's head, other hand on the back.
+		_stance(0.65)
+		pt_tor = Vector3(0.3, 0.12, 0.08)
+		pt_hd = Vector3(0.05, 0.0, 0.1)
+		_reach(false, oh.to_global(Vector3(0.0, 0.16, -0.12)))
+		_reach(true, ot.to_global(Vector3(0.0, 0.4, -0.18)))
+		pt_el_r.z = -0.5
+	else:
+		# Strong (defending): bent over with the head tucked under their arm, hands on
+		# their waist.
+		_stance(0.85)
+		pt_tor = Vector3(0.75, 0.0, 0.28)
+		pt_hd = Vector3(0.3, 0.0, 0.2)
+		_reach_pair(opr.to_global(Vector3(-0.3, 0.12, 0.0)), opr.to_global(Vector3(0.3, 0.12, 0.0)))
+	if bracing:
+		# Reading the move: sink, lean in, tense up.
+		_stance(0.95)
+		if not tie_strong:
+			pt_ll.z = -0.2
+			pt_lr.z = 0.2
+		pt_tor.x += 0.1
+		pt_tor.z += sin(anim_clock * 31.0) * 0.025
+		pt_hd.x += 0.15
+		pt_el_l.x -= 0.2
+		pt_el_r.x -= 0.2
+	elif setting:
+		# Committed: dip the hips to load the move.
+		_stance(0.85)
+		pt_tor.x += 0.08
+		pt_root_pos.z += 0.05
+
+
+func _pose_whipping() -> void:
+	var t := state_time
+	var fling := 1.0 - _smooth(_seg(t, 0.25, 0.6))
+	var rb: int = opponent.rope_bounces
+	var coming := rb >= 1
+	_stance(0.8 if coming else 0.5)
+	pt_tor = Vector3(0.3 + (0.15 if coming else 0.0), -0.35 * fling, 0.0)
+	pt_hd = Vector3(-0.2, 0.2 * fling, 0.0)
+	var lean := pt_tor.x
+	pt_al = Vector3(-0.9 - lean * 0.5, 0.0, -0.35)
+	pt_ar = Vector3(-0.9 - lean * 0.5, 0.0, 0.35)
+	pt_el_l = Vector3(-1.0, 0.0, 0.0)
+	pt_el_r = Vector3(-1.0, 0.0, 0.0)
+	if fling > 0.0:
+		# throwing arm stays extended toward the runner, other arm swung back
+		var ot := _opp_node("torso")
+		_reach(false, ot.global_position + Vector3(0.0, 0.3, 0.0), fling)
+		pt_el_r.x = lerpf(pt_el_r.x, -0.05, fling)
+		pt_al = pt_al.lerp(Vector3(0.35, 0.0, -0.45), fling)
+	r_limb = 22.0
+	_recovering()
+
+
+# --- throws: the thrower ----------------------------------------------------------------
+
+func _pose_throwing() -> void:
+	var t := state_time
+	var p := clampf(t / maxf(throw_time, 0.01), 0.0, 1.0)
+	r_limb = 18.0
+	r_body = 16.0
+	r_root = 18.0
+	var vh := _opp_node("hips")
+	var vt := _opp_node("torso")
+	var vhd := _opp_node("head")
+	var pelvis := vh.global_position
+	var chest := vt.to_global(Vector3(0.0, 0.35, 0.0))
+	var vhead := vhd.to_global(Vector3(0.0, 0.15, 0.0))
+	var hip_a := vh.to_global(Vector3(-0.26, 0.05, 0.0))
+	var hip_b := vh.to_global(Vector3(0.26, 0.05, 0.0))
+	match current_move_key:
+		"slam", "powerslam":
+			var dip := _hump(p, 0.0, 0.22)
+			var lift := _smooth(_seg(p, 0.05, 0.4))
+			var slam := _ease_in(_seg(p, 0.5, 1.0))
+			if current_move_key == "powerslam":
+				# fall forward onto the victim, landing on the knees
+				_legs_blend(0.4 + 0.5 * dip, 0.6, 0.7, -0.3 - 0.7, -0.1 - 0.7, slam)
+				pt_tor = Vector3(0.3 * (1.0 - lift) - 0.12 * lift + 0.45 * slam, 0.0, 0.0)
+			else:
+				_stance(0.4 + 0.5 * dip + 0.45 * slam)
+				pt_tor = Vector3(0.35 * (1.0 - lift) - 0.15 * lift * (1.0 - slam) + 0.55 * slam, 0.0, 0.0)
+			pt_hd = Vector3(-0.35 * lift * (1.0 - slam) + 0.2 * slam, 0.0, 0.0)
+			_reach(false, pelvis)
+			_reach(true, chest)
+		"suplex":
+			var dip := _hump(p, 0.0, 0.2)
+			var lift := _smooth(_seg(p, 0.05, 0.45))
+			var fall := _smooth(_seg(p, 0.55, 0.95))
+			# fall back into a kneeling arch while the victim goes over the top
+			_legs_blend(0.4 + 0.5 * dip, 0.5, -0.55, -0.6 + 0.55, -0.4 + 0.55, fall)
+			pt_tor = Vector3(0.2 * (1.0 - lift) - 0.15 * lift - 0.4 * fall, 0.0, -0.1 * lift)
+			pt_hd = Vector3(-0.3 * lift - 0.3 * fall, 0.0, 0.0)
+			_reach(true, chest)
+			_reach(false, pelvis)
+		"ddt":
+			var lock := _smooth(_seg(p, 0.0, 0.25))
+			var fall := _ease_in(_seg(p, 0.3, 0.62))
+			var lie := _smooth(_seg(p, 0.62, 1.0))
+			# step to the side so the victim's head goes down beside us, then sit back hard
+			pt_root_pos.x = -0.35 * lock
+			var rp := -1.0 - 0.2 * lie
+			_legs_blend(0.6, 0.3, rp, -1.3 - rp, -1.2 - rp, fall)
+			pt_tor = Vector3(0.45 * lock * (1.0 - fall) - 0.1 * fall, 0.0, 0.1 * lock)
+			pt_hd = Vector3(0.2 * lock - 0.2 * fall, 0.0, 0.0)
+			_reach(false, vhead)
+			_reach(true, chest)
+		"piledriver":
+			var dip := _hump(p, 0.0, 0.2)
+			var lift := _smooth(_seg(p, 0.05, 0.4))
+			var kneel := _ease_in(_seg(p, 0.6, 0.75))
+			var sit := _smooth(_seg(p, 0.8, 1.0))
+			_legs_blend(0.35 + 0.5 * dip, 0.55 - 0.08 * sit, -0.15 * sit, -0.25 * sit, -0.25 * sit, kneel)
+			pt_root_dy = 0.06 * _hump(p, 0.48, 0.6)  # little hop before the drop
+			pt_root_pos.z = -0.2 * sit
+			pt_tor = Vector3(0.3 * dip - 0.12 * lift * (1.0 - kneel) + 0.15 * kneel, 0.0, 0.0)
+			pt_hd = Vector3(-0.15 * lift + 0.3 * kneel, 0.0, 0.0)
+			_reach_pair(hip_a, hip_b)
+		"powerbomb":
+			var bend := _smooth(_seg(p, 0.0, 0.16)) * (1.0 - _smooth(_seg(p, 0.2, 0.45)))
+			var hold := _smooth(_seg(p, 0.3, 0.46))
+			var slam := _ease_in(_seg(p, 0.62, 1.0))
+			_stance(0.45 + 0.5 * bend + 0.6 * slam)
+			pt_root_pos.z = -0.15 * bend  # sit the hips back so the head fits between the legs
+			pt_tor = Vector3(0.15 + 0.8 * bend - 0.12 * hold * (1.0 - slam) + 0.6 * slam, 0.0, 0.0)
+			pt_hd = Vector3(0.2 * bend - 0.3 * hold * (1.0 - slam) + 0.25 * slam, 0.0, 0.0)
+			_reach_pair(hip_a, hip_b)
+		"spinebuster":
+			var grab := _smooth(_seg(p, 0.0, 0.15))
+			var spin := _seg(p, 0.15, 0.55)
+			var drop := _ease_in(_seg(p, 0.55, 1.0))
+			pt_hip.y = TAU * _smooth(spin)
+			pt_hip_y_direct = true
+			_legs_blend(0.5 + 0.2 * grab, 0.58, 0.55, -0.2 - 0.55, -0.05 - 0.55, drop)
+			pt_tor = Vector3(0.3 * grab * (1.0 - spin) - 0.1 * spin * (1.0 - drop) + 0.5 * drop, 0.0, 0.0)
+			pt_hd = Vector3(0.1 + 0.2 * drop, 0.0, 0.0)
+			_reach_pair(hip_a, hip_b)
+		"neckbreaker":
+			var swing := _smooth(_seg(p, 0.0, 0.45))
+			var drop := _ease_in(_seg(p, 0.4, 0.85))
+			pt_hip.y = 0.7 * swing * (1.0 - 0.6 * drop)
+			# drop to a seat, legs out in front
+			_legs_blend(0.55, 0.24, -0.15, -1.4 + 0.15, -1.3 + 0.15, drop)
+			pt_kn_l = lerpf(pt_kn_l, 0.3, drop)
+			pt_kn_r = lerpf(pt_kn_r, 0.25, drop)
+			pt_tor = Vector3(0.25 * (1.0 - drop) + 0.15 * drop, 0.0, 0.15 * drop)
+			pt_hd = Vector3(0.1, 0.0, 0.0)
+			_reach(false, vhead)
+			_reach(true, chest)
+		"backdrop", "rev_backdrop":
+			var duck := _smooth(_seg(p, 0.0, 0.12)) * (1.0 - _smooth(_seg(p, 0.15, 0.42)))
+			var push := _smooth(_seg(p, 0.15, 0.45))
+			_stance(0.35 + 0.75 * duck)
+			pt_tor = Vector3(0.2 + 0.9 * duck - 0.3 * push, 0.0, 0.0)
+			pt_hd = Vector3(0.2 * duck - 0.45 * push, 0.0, 0.0)
+			if push > 0.0:
+				var k1 := _opp_node("knee_l")
+				var k2 := _opp_node("knee_r")
+				_reach_pair(k1.global_position, k2.global_position)
+			else:
+				pt_al = Vector3(0.3, 0.0, -0.4)
+				pt_ar = Vector3(0.3, 0.0, 0.4)
+				pt_el_l = Vector3(-0.8, 0.0, 0.0)
+				pt_el_r = Vector3(-0.8, 0.0, 0.0)
+		"hiptoss", "armdrag":
+			var turn := _hump(p, 0.0, 0.85)
+			if current_move_key == "armdrag":
+				# drop to a knee, dragging the arm down and across
+				var kneel := _smooth(_seg(p, 0.1, 0.45)) * (1.0 - _smooth(_seg(p, 0.8, 1.0)))
+				_legs_blend(0.5, 0.6, 0.0, 0.0, -1.25, kneel)
+				pt_tor = Vector3(0.25 + 0.3 * kneel, -0.4 * turn, 0.0)
+			else:
+				pt_hip.y = 0.8 * turn
+				_stance(0.6 + 0.2 * turn)
+				pt_tor = Vector3(0.2 + 0.45 * _smooth(_seg(p, 0.2, 0.7)), 0.0, 0.0)
+			pt_hd = Vector3(0.1, 0.0, 0.0)
+			_reach(true, chest)
+			_reach(false, pelvis)
+		"finisher":
+			var dip := _hump(p, 0.0, 0.14)
+			var lift := _smooth(_seg(p, 0.06, 0.4))
+			var sit := _ease_in(_seg(p, 0.6, 0.78))
+			var after := _smooth(_seg(p, 0.8, 1.0))
+			# hoist overhead, hold it high, then jump into a sit-out and drive it down
+			_legs_blend(0.3 + 0.6 * dip, 0.24, -0.2 - 0.25 * after, -1.35 + 0.2, -1.35 + 0.2, sit)
+			if sit > 0.0:
+				pt_ll.z = lerpf(pt_ll.z, -0.55, sit)
+				pt_lr.z = lerpf(pt_lr.z, 0.55, sit)
+				pt_kn_l = lerpf(pt_kn_l, 0.3, sit)
+				pt_kn_r = lerpf(pt_kn_r, 0.3, sit)
+			pt_root_dy = 0.05 * _hump(p, 0.45, 0.58) * (1.0 - sit)
+			pt_tor = Vector3(0.3 * dip - 0.18 * lift * (1.0 - sit) + 0.3 * sit, 0.0, 0.0)
+			pt_hd = Vector3(-0.45 * lift * (1.0 - sit) + 0.2 * sit, 0.0, 0.0)
+			_reach_pair(hip_a, hip_b)
+		_:
+			_stance(0.5 + 0.4 * _hump(p, 0.0, 1.0))
+			pt_tor = Vector3(0.2, 0.0, 0.0)
+			_reach_pair(hip_a, hip_b)
+
+
+# --- throws: the victim -------------------------------------------------------------------
+
+func _key(p: float, f: float, s: float, y: float, q: Quaternion, ek := EASE_SMOOTH) -> Array:
+	return [p, Vector3(f, s, y), q, ek]
+
+
+## Victim keyframes for a move, in the thrower's frame. Sets throw_land_yaw.
+func _throw_keys(key: String) -> Array:
+	var fwd := Vector3(sin(throw_yaw0), 0.0, cos(throw_yaw0))
+	var rgt := Vector3(cos(throw_yaw0), 0.0, -sin(throw_yaw0))
+	var d0 := throw_from - throw_origin
+	var d1 := throw_to - throw_origin
+	var f0 := d0.dot(fwd)
+	var s0 := d0.dot(rgt)
+	var fl := d1.dot(fwd)
+	var sl := d1.dot(rgt)
+	var k: Array = [_key(0.0, f0, s0, STAND_Y, _qe(throw_yaw_start, 0.0))]
+	var land_ease := EASE_IN
+	match key:
+		"suplex":
+			# head dives under the thrower's arm, legs swing up and over, lands behind
+			throw_land_yaw = PI
+			k.append(_key(0.12, 0.75, 0.5, 1.2, _qe(PI, 0.25 * PI)))
+			k.append(_key(0.25, 0.45, 0.5, 1.55, _qe(PI, 0.55 * PI)))
+			k.append(_key(0.45, 0.2, 0.5, 2.05, _qe(PI, 0.98 * PI), EASE_OUT))
+			k.append(_key(0.55, 0.15, 0.5, 2.1, _qe(PI, 1.02 * PI)))
+		"ddt":
+			# bent over in a front facelock, spiked head-first, then flops onto the back
+			throw_land_yaw = 0.0
+			k.append(_key(0.3, 1.0, 0.25, 1.05, _qe(PI, 0.35 * PI)))
+			k.append(_key(0.6, 0.8, 0.25, 0.5, _qe(PI, 0.62 * PI), EASE_IN))
+			k.append(_key(0.78, 0.8, 0.15, 0.4, _qe(PI, 0.55 * PI) * Quaternion(Vector3.UP, 0.5 * PI)))
+			land_ease = EASE_SMOOTH
+		"piledriver":
+			# cartwheeled upside down chest-to-chest, dropped onto the head, topples over
+			throw_land_yaw = 0.0
+			k.append(_key(0.2, 0.6, 0.0, 1.25, _qe(PI, 0.0, 0.5 * PI)))
+			k.append(_key(0.4, 0.4, 0.0, 1.55, _qe(PI, 0.0, 0.98 * PI), EASE_OUT))
+			k.append(_key(0.6, 0.4, 0.0, 1.6, _qe(PI, 0.0, PI)))
+			k.append(_key(0.75, 0.38, 0.0, 1.13, _qe(PI, 0.0, PI), EASE_IN))
+			k.append(_key(0.87, 0.9, 0.0, 0.8, _qe(0.0, 1.25 * PI)))  # pivots over the planted head
+			land_ease = EASE_SMOOTH
+		"powerbomb":
+			# head between the legs, swung up onto the shoulders, slammed down forward
+			throw_land_yaw = PI
+			k.append(_key(0.08, 1.2, 0.0, 0.92, _qe(PI, 0.3 * PI)))
+			k.append(_key(0.18, 1.25, 0.0, 0.95, _qe(PI, 0.58 * PI)))
+			k.append(_key(0.26, 1.45, 0.0, 1.15, _qe(PI, 0.42 * PI)))
+			k.append(_key(0.34, 1.15, 0.0, 1.6, _qe(PI, 0.22 * PI)))
+			k.append(_key(0.46, 0.4, 0.0, 1.85, _qe(PI, -0.05), EASE_OUT))
+			k.append(_key(0.62, 0.38, 0.0, 1.92, _qe(PI, -0.12)))
+		"spinebuster":
+			# bear-hugged, carried around a full turn, driven down onto the back
+			throw_land_yaw = PI
+			k.append(_key(0.15, 0.6, 0.0, 1.2, _qe(PI, 0.25)))
+			for i in range(1, 9):
+				var u := float(i) / 8.0
+				var ph := TAU * _smooth(u)
+				k.append(_key(0.15 + 0.4 * u, 0.6 * cos(ph), 0.6 * sin(ph), 1.2 + 0.08 * sin(u * PI),
+					_qe(PI + ph, 0.25), 3))
+		"neckbreaker":
+			# swung around by the head to the side, both fall back
+			throw_land_yaw = 0.5 * PI
+			k.append(_key(0.3, 0.45, 0.75, 1.0, _qe(0.75 * PI, 0.0)))
+			k.append(_key(0.45, -0.4, 0.45, 1.05, _qe(0.5 * PI, -0.15)))
+		"backdrop", "rev_backdrop":
+			# folded over the ducking thrower's back, flipped up and over, lands behind
+			throw_land_yaw = PI
+			k.append(_key(0.15, 0.55, 0.0, 1.35, _qe(PI, 0.4 * PI)))
+			k.append(_key(0.45, -0.15, 0.0, 2.45, _qe(PI, 0.8 * PI), EASE_OUT))
+			k.append(_key(0.55, -0.35, 0.0, 2.5, _qe(PI, 0.95 * PI)))
+		"powerslam":
+			# scooped across the chest, the thrower falls forward on top
+			throw_land_yaw = -0.5 * PI
+			k.append(_key(0.3, 0.45, 0.0, 1.6, _qe(PI, 0.0, 0.5 * PI), EASE_OUT))
+			k.append(_key(0.45, 0.5, 0.0, 1.65, _qe(PI, 0.0, 0.5 * PI)))
+		"armdrag", "hiptoss":
+			# quick front flip over the hip
+			throw_land_yaw = PI
+			var apex := STAND_Y + throw_height * 0.72
+			k.append(_key(0.25, 1.0, 0.45, 1.45, _qe(PI, 0.35 * PI)))
+			k.append(_key(0.5, 0.85, 0.45, apex, _qe(PI, PI)))
+			k.append(_key(0.75, 1.15, 0.25, 1.1, _qe(PI, 1.3 * PI), EASE_IN))
+			land_ease = EASE_SMOOTH
+		"finisher":
+			# hoisted highest of all, upside down, driven into the mat from a sit-out
+			throw_land_yaw = 0.0
+			k.append(_key(0.18, 0.6, 0.0, 1.4, _qe(PI, 0.0, 0.5 * PI)))
+			k.append(_key(0.4, 0.42, 0.0, 2.6, _qe(PI, 0.0, PI), EASE_OUT))
+			k.append(_key(0.6, 0.42, 0.0, 2.72, _qe(PI, 0.0, PI)))
+			k.append(_key(0.78, 0.45, 0.0, 1.08, _qe(PI, 0.0, PI), EASE_IN))
+			k.append(_key(0.89, 0.95, 0.0, 0.78, _qe(0.0, 1.25 * PI)))
+			land_ease = EASE_SMOOTH
+		_:
+			# body slam: scooped and turned upside down across the chest, slammed forward
+			throw_land_yaw = -0.5 * PI
+			k.append(_key(0.2, 0.5, 0.0, 1.35, _qe(PI, 0.0, 0.45 * PI)))
+			k.append(_key(0.4, 0.55, 0.0, 1.85, _qe(PI, 0.1, 0.9 * PI), EASE_OUT))
+			k.append(_key(0.55, 0.55, 0.0, 1.92, _qe(PI, 0.1, 0.92 * PI)))
+	k.append(_key(1.0, fl, sl, LIE_Y, _qe(throw_land_yaw, -PI / 2), land_ease))
+	return k
+
+
+## Samples the victim's throw path at p: sets our ring position and the pelvis pose.
+func _throw_sample(p: float) -> void:
+	var k := _throw_keys(current_move_key)
+	var i := 0
+	while i < k.size() - 2:
+		var nxt: Array = k[i + 1]
+		var np: float = nxt[0]
+		if p < np:
+			break
+		i += 1
+	var a: Array = k[i]
+	var b: Array = k[i + 1]
+	var pa: float = a[0]
+	var pb: float = b[0]
+	var ek: int = b[3]
+	var u := _seg(p, pa, pb)
+	match ek:
+		EASE_SMOOTH:
+			u = _smooth(u)
+		EASE_IN:
+			u = _ease_in(u)
+		EASE_OUT:
+			u = _ease_out(u)
+	var va: Vector3 = a[1]
+	var vb: Vector3 = b[1]
+	var qa: Quaternion = a[2]
+	var qb: Quaternion = b[2]
+	var v := va.lerp(vb, u)
+	throw_pose_q = qa.slerp(qb, u).normalized()
+	throw_pose_y = v.z
+	var fwd := Vector3(sin(throw_yaw0), 0.0, cos(throw_yaw0))
+	var rgt := Vector3(cos(throw_yaw0), 0.0, -sin(throw_yaw0))
+	position = throw_origin + fwd * v.x + rgt * v.y
+	_set_facing_angle(throw_yaw0)
+
+
+func _pose_thrown() -> void:
+	var p := clampf(state_time / maxf(throw_time, 0.01), 0.0, 1.0)
+	pt_use_basis = true
+	r_limb = 16.0
+	r_body = 14.0
+	var fl := sin(anim_clock * 13.0)
+	var fl2 := sin(anim_clock * 10.0 + 1.3)
+	pt_al = Vector3(-0.6 + 0.35 * fl, 0.0, -1.0 - 0.25 * fl2)
+	pt_ar = Vector3(-0.6 - 0.35 * fl2, 0.0, 1.0 + 0.25 * fl)
+	pt_el_l = Vector3(-0.5, 0.0, 0.0)
+	pt_el_r = Vector3(-0.5, 0.0, 0.0)
+	pt_ll = Vector3(-0.35 + 0.2 * fl, 0.0, -0.1)
+	pt_lr = Vector3(-0.15 - 0.2 * fl2, 0.0, 0.1)
+	pt_kn_l = 0.6 + 0.2 * fl2
+	pt_kn_r = 0.4 + 0.2 * fl
+	pt_hd = Vector3(-0.2 + 0.1 * fl2, 0.0, 0.0)
+	match current_move_key:
+		"powerbomb":
+			if p < 0.28:
+				# bent over, arms hanging
+				pt_tor = Vector3(0.45, 0.0, 0.0)
+				_hang_arms(1.4, 0.2)
+				pt_ll = Vector3(-0.1, 0.0, -0.1)
+				pt_lr = Vector3(-0.1, 0.0, 0.1)
+				pt_kn_l = 0.3
+				pt_kn_r = 0.3
+			else:
+				# sitting on the shoulders: thighs over them, shins down the thrower's back
+				pt_ll = Vector3(-1.45, 0.0, -0.4)
+				pt_lr = Vector3(-1.45, 0.0, 0.4)
+				pt_kn_l = 1.45
+				pt_kn_r = 1.45
+				pt_tor = Vector3(-0.1, 0.0, 0.0)
+		"suplex", "piledriver", "finisher":
+			if p > 0.18:
+				# upside down: legs straight up together, arms dangling toward the mat
+				pt_ll = Vector3(0.05, 0.0, -0.03)
+				pt_lr = Vector3(0.05, 0.0, 0.03)
+				pt_kn_l = 0.15 + 0.1 * fl
+				pt_kn_r = 0.15 + 0.1 * fl2
+				pt_al = Vector3(-2.6 + 0.15 * fl, 0.0, -0.35)
+				pt_ar = Vector3(-2.6 + 0.15 * fl2, 0.0, 0.35)
+				pt_el_l = Vector3(-0.3, 0.0, 0.0)
+				pt_el_r = Vector3(-0.3, 0.0, 0.0)
+		"ddt":
+			pt_tor = Vector3(0.45 * (1.0 - _seg(p, 0.65, 1.0)), 0.0, 0.0)
+			pt_al = Vector3(-1.4, 0.0, -0.3)
+			pt_ar = Vector3(-1.4, 0.0, 0.3)
+			pt_el_l = Vector3(-0.2, 0.0, 0.0)
+			pt_el_r = Vector3(-0.2, 0.0, 0.0)
+		"spinebuster":
+			# legs fly out with the spin
+			pt_ll = Vector3(0.2, 0.0, -0.35)
+			pt_lr = Vector3(0.2, 0.0, 0.35)
+			pt_tor = Vector3(0.2, 0.0, 0.0)
+		"backdrop", "rev_backdrop":
+			pt_ll = Vector3(-0.3 + 0.3 * fl, 0.0, -0.25)
+			pt_lr = Vector3(-0.3 - 0.3 * fl, 0.0, 0.25)
+	# brace for impact just before landing
+	var brace := _seg(p, 0.85, 1.0)
+	pt_hd.x = lerpf(pt_hd.x, 0.4, brace)
+
+
+# --- on the mat -----------------------------------------------------------------------
+
+## Relaxed lying-on-the-back pose: one knee up, head lifted, arms out on the mat.
+func _down_relaxed() -> void:
+	var ac := anim_clock
+	pt_breath = sin(ac * 3.0)
+	pt_root_rot = Vector3(-PI / 2, 0.0, 0.0)
+	pt_root_pos = Vector3(0.0, LIE_Y, 0.0)
+	pt_al = Vector3(0.0, 0.0, -1.15 - 0.05 * sin(ac * 1.3))
+	pt_ar = Vector3(0.0, 0.0, 0.95 + 0.05 * sin(ac * 1.1))
+	pt_el_l = Vector3(0.0, 0.0, -0.5)
+	pt_el_r = Vector3(0.0, 0.0, 0.3)
+	pt_ll = Vector3(-0.85, 0.0, -0.12 + 0.08 * sin(ac * 0.9))
+	pt_kn_l = 1.85
+	pt_lr = Vector3(0.0, 0.0, 0.14)
+	pt_kn_r = 0.12
+	pt_tor = Vector3(0.1 + 0.02 * pt_breath, 0.0, 0.0)
+	pt_hd = Vector3(0.38, 0.0, 0.12 * sin(ac * 0.7))
+
+
+func _pose_down() -> void:
+	var t := state_time
+	pt_root_direct = true
+	r_limb = 7.0
+	r_body = 9.0
+	_down_relaxed()
+	var from_up := _entry_root_x > -1.0
+	var fall_t := 0.34
+	if from_up and t < fall_t:
+		# knocked off our feet: knees buckle, butt hits, then the back slaps the mat
+		var u := t / fall_t
+		var s1 := _smooth(_seg(u, 0.0, 0.45))
+		var s2 := _ease_in(_seg(u, 0.4, 1.0))
+		var rp := lerpf(lerpf(_entry_root_x, -0.5, s1), -PI / 2, s2)
+		var y := lerpf(lerpf(_entry_root_y, 0.5, s1), LIE_Y, s2)
+		pt_root_rot = Vector3(rp, 0.0, 0.0)
+		pt_root_pos = Vector3(0.0, y, 0.0)
+		var lx := lerpf(-0.7, -0.5, s2)
+		pt_ll = Vector3(lx, 0.0, -0.12)
+		pt_lr = Vector3(lx + 0.1, 0.0, 0.12)
+		pt_kn_l = lerpf(_plant_knee(y, rp, lx), 0.9, s2)
+		pt_kn_r = lerpf(_plant_knee(y, rp, lx + 0.1), 0.7, s2)
+		pt_al = Vector3(-1.3, 0.0, -0.5)
+		pt_ar = Vector3(-1.2, 0.0, 0.5)
+		pt_el_l = Vector3(-0.4, 0.0, 0.0)
+		pt_el_r = Vector3(-0.4, 0.0, 0.0)
+		pt_tor = Vector3(0.3, 0.0, 0.0)
+		pt_hd = Vector3(0.45, 0.0, 0.0)
+		r_limb = 20.0
+		r_body = 20.0
+		return
+	# Landing bump: the pelvis bounces up 0.08 and settles, limbs fling up then flop.
+	var land := t - (fall_t if from_up else 0.0)
+	var bounce := 0.08 * _hump(land, 0.0, 0.2) + 0.02 * _hump(land, 0.2, 0.32)
+	var fling := _hump(land, 0.0, 0.25)
+	pt_root_pos.y += bounce
+	pt_root_rot.x += 0.15 * bounce / 0.08 * 0.5
+	pt_al.x -= 0.8 * fling
+	pt_ar.x -= 0.7 * fling
+	pt_ll.x -= 0.35 * fling
+	pt_lr.x -= 0.5 * fling
+	pt_hd.x -= 0.5 * fling  # head whips back into the mat
+	pt_tor.x -= 0.1 * fling
+	if land < 0.3:
+		r_limb = 12.0
+	# Stomped / dropped on: the body jolts and curls.
+	if health < _seen_health - 0.01:
+		_hit_clock = anim_clock
+	_seen_health = health
+	var jolt := exp(-(anim_clock - _hit_clock) * 7.0)
+	if jolt > 0.01:
+		pt_tor.x += 0.4 * jolt
+		pt_hd.x += 0.3 * jolt
+		pt_ll.x -= 0.4 * jolt
+		pt_lr.x -= 0.6 * jolt
+		pt_kn_r += 0.8 * jolt
+		pt_al.x -= 0.6 * jolt
+		pt_ar.x -= 0.6 * jolt
+		pt_root_pos.y += 0.05 * jolt
+		r_limb = 18.0
+		r_body = 18.0
+
+
+func _pose_lying_limp() -> void:
+	pt_root_direct = true
+	r_limb = 5.0
+	r_body = 5.0
+	_down_relaxed()
+	pt_breath *= 0.5
+	pt_ll = Vector3(-0.2, 0.0, -0.2)
+	pt_kn_l = 0.4
+	pt_lr = Vector3(0.0, 0.0, 0.2)
+	pt_al = Vector3(0.0, 0.0, -1.35)
+	pt_ar = Vector3(0.0, 0.0, 1.3)
+	pt_hd = Vector3(0.05, 0.0, 0.35)
+
+
+func _pose_pinned() -> void:
+	# Shoulders struggle: torso rocks, pelvis bucks, the free leg kicks, the arms flail.
+	# The leg nearer the pinner is hooked up by their arm. Effort grows with the escape bar.
+	pt_root_direct = true
+	_down_relaxed()
+	var ac := anim_clock
+	var effort := clampf(pin_escape / maxf(_pin_escape_needed(), 0.1), 0.0, 1.0)
+	var amp := 0.6 + 0.6 * effort
+	var right := Vector3(facing.z, 0.0, -facing.x)
+	var pin_side: float = (opponent.position - position).dot(right)
+	var kick := maxf(0.0, sin(ac * 9.0)) * amp
+	if pin_side < 0.0:
+		pt_ll = Vector3(-1.05, 0.0, -0.1)
+		pt_kn_l = 0.9
+		pt_lr = Vector3(-0.2 - 0.4 * kick, 0.0, 0.15)
+		pt_kn_r = 0.2 + 0.9 * maxf(0.0, sin(ac * 9.0 + 1.2)) * amp
+	else:
+		pt_lr = Vector3(-1.05, 0.0, 0.1)
+		pt_kn_r = 0.9
+		pt_ll = Vector3(-0.2 - 0.4 * kick, 0.0, -0.15)
+		pt_kn_l = 0.2 + 0.9 * maxf(0.0, sin(ac * 9.0 + 1.2)) * amp
+	pt_tor = Vector3(0.12 + 0.08 * maxf(0.0, sin(ac * 5.0)) * amp, 0.22 * sin(ac * 6.5) * amp, 0.0)
+	pt_hd = Vector3(0.3 + 0.15 * sin(ac * 7.0), 0.2 * sin(ac * 4.0), 0.0)
+	pt_al = Vector3(-0.4 * maxf(0.0, sin(ac * 8.0)) * amp, 0.0, -0.9)
+	pt_ar = Vector3(-0.4 * maxf(0.0, sin(ac * 8.0 + 1.5)) * amp, 0.0, 0.9)
+	pt_root_pos.y = LIE_Y + 0.04 * maxf(0.0, sin(ac * 6.0)) * amp
+	r_limb = 16.0
+	r_body = 14.0
+
+
+func _pose_getting_up() -> void:
+	# Three stages over 0.7 s: lying -> sit up -> one knee -> stand.
+	var u := clampf(state_time / 0.7, 0.0, 1.0)
+	var a := _smooth(_seg(u, 0.0, 0.36))
+	var b := _smooth(_seg(u, 0.3, 0.66))
+	var c := _smooth(_seg(u, 0.62, 1.0))
+	pt_root_direct = true
+	r_limb = 20.0
+	r_body = 18.0
+	var rp := lerpf(lerpf(lerpf(-PI / 2, -0.25, a), 0.05, b), 0.0, c)
+	var y := lerpf(lerpf(lerpf(LIE_Y, 0.22, a), 0.55, b), 0.9, c)
+	pt_root_rot = Vector3(rp, 0.0, 0.0)
+	pt_root_pos = Vector3(0.0, y, 0.0)
+	# left: knee up -> foot drawn in -> kneeling on it -> stance
+	pt_ll = Vector3(lerpf(lerpf(lerpf(-0.85, -0.75, a), 0.0, b), -0.35, c), 0.0, -0.12)
+	pt_kn_l = lerpf(lerpf(lerpf(1.85, 2.2, a), 1.45, b), 0.7, c)
+	# right: straight -> out in front -> foot planted ahead -> stance
+	pt_lr = Vector3(lerpf(lerpf(lerpf(0.0, -1.25, a), -1.25, b), -0.12, c), 0.0, 0.12)
+	pt_kn_r = lerpf(lerpf(lerpf(0.12, 0.2, a), 1.95, b), 0.6, c)
+	pt_tor = Vector3(lerpf(lerpf(lerpf(0.1, 0.45, a), 0.35, b), 0.22, c), 0.0, 0.0)
+	pt_hd = Vector3(lerpf(lerpf(lerpf(0.38, 0.1, a), -0.1, b), -0.14, c), 0.0, 0.0)
+	# hands: out on the mat -> pushing off behind -> on the knee -> guard
+	pt_al = Vector3(0.0, 0.0, -1.15).lerp(Vector3(0.55, 0.0, -0.35), a).lerp(Vector3(-0.7, 0.0, -0.1), b) \
+		.lerp(Vector3(-0.77, 0.0, -0.3), c)
+	pt_ar = Vector3(0.0, 0.0, 0.95).lerp(Vector3(0.55, 0.0, 0.35), a).lerp(Vector3(-0.9, 0.0, 0.2), b) \
+		.lerp(Vector3(-0.72, 0.0, 0.3), c)
+	pt_el_l = Vector3(0.0, 0.0, -0.5).lerp(Vector3(-0.2, 0.0, 0.0), a).lerp(Vector3(-0.6, 0.0, 0.0), b) \
+		.lerp(Vector3(-1.5, 0.0, 0.0), c)
+	pt_el_r = Vector3(0.0, 0.0, 0.3).lerp(Vector3(-0.2, 0.0, 0.0), a).lerp(Vector3(-0.6, 0.0, 0.0), b) \
+		.lerp(Vector3(-1.4, 0.0, 0.0), c)
+
+
+func _pose_pinning() -> void:
+	# Chest across the opponent's chest, perpendicular, face down, knees on the mat,
+	# one arm hooking the near leg and the other hand braced past the far side.
+	r_root = 16.0
+	r_limb = 14.0
+	pt_root_rot = Vector3(1.35, 0.0, 0.0)
+	pt_root_pos = Vector3(0.0, PIN_Y + 0.01 * sin(anim_clock * 8.0), 0.0)
+	pt_ll = Vector3(-1.25, 0.0, -0.15)
+	pt_lr = Vector3(-1.25, 0.0, 0.15)
+	pt_kn_l = 1.45
+	pt_kn_r = 1.45
+	pt_tor = Vector3(0.08, 0.0, 0.0)
+	pt_hd = Vector3(-0.55, 0.0, 0.0)
+	var k1 := _opp_node("knee_l")
+	var k2 := _opp_node("knee_r")
+	var kn: Node3D = k1 if k1.global_position.distance_squared_to(global_position) < \
+		k2.global_position.distance_squared_to(global_position) else k2
+	var knee_p := kn.global_position
+	var ot := _opp_node("torso")
+	var brace := ot.to_global(Vector3(0.0, 0.4, 0.0)) + facing * 0.45
+	brace.y = 0.12
+	var left_to_knee := arm_l.global_position.distance_squared_to(knee_p) < \
+		arm_r.global_position.distance_squared_to(knee_p)
+	_reach(left_to_knee, knee_p)
+	_reach(not left_to_knee, brace)
+
+
+# --- taunts & celebrations ------------------------------------------------------------
+
+func _pose_taunt() -> void:
+	var u := state_time
+	var pre := _smooth(_seg(u, 0.0, 0.15))
+	var on := _smooth(_seg(u, 0.12, 0.3)) * (1.0 - _smooth(_seg(u, TAUNT_TIME - 0.2, TAUNT_TIME)))
+	r_limb = 16.0
+	_stance(0.3 + 0.45 * pre * (1.0 - on))
+	pt_tor = Vector3(0.25 * pre * (1.0 - on), 0.0, 0.0)
+	match _style:
+		0:
+			# double bicep flex with a pelvis bounce
+			var bounce := absf(sin(u * 7.0)) * on
+			_stance(0.25 + 0.35 * bounce + 0.45 * pre * (1.0 - on))
+			pt_al = Vector3(-0.6, 0.0, -0.2).lerp(Vector3(0.0, 0.0, -1.45), on)
+			pt_ar = Vector3(-0.6, 0.0, 0.2).lerp(Vector3(0.0, 0.0, 1.45), on)
+			pt_el_l = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(0.0, 0.0, -1.75 - 0.15 * bounce), on)
+			pt_el_r = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(0.0, 0.0, 1.75 + 0.15 * bounce), on)
+			pt_tor = Vector3(lerpf(pt_tor.x, -0.12, on), 0.15 * sin(u * 3.0) * on, 0.0)
+			pt_hd = Vector3(-0.3 * on, 0.0, 0.0)
+			pt_breath = on
+		1:
+			# fist pumped to the rafters, other hand on the hip
+			var pump := maxf(0.0, sin(u * 9.0)) * on
+			pt_ar = Vector3(-0.6, 0.0, 0.2).lerp(Vector3(-2.85 + 0.3 * pump, 0.0, 0.25), on)
+			pt_el_r = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(-0.2 - 0.6 * pump, 0.0, 0.0), on)
+			pt_al = Vector3(-0.6, 0.0, -0.2).lerp(Vector3(0.15, 0.0, -0.6), on)
+			pt_el_l = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(0.0, 0.0, 1.3), on)
+			pt_tor = Vector3(lerpf(pt_tor.x, -0.1, on), 0.3 * sin(u * 2.5) * on, -0.08 * on)
+			pt_hd = Vector3(-0.35 * on, 0.0, 0.0)
+			pt_kn_l += 0.15 * pump
+			pt_kn_r += 0.15 * pump
+		_:
+			# beating the chest and roaring
+			var bl := maxf(0.0, sin(u * 10.0)) * on
+			var br := maxf(0.0, -sin(u * 10.0)) * on
+			pt_al = Vector3(-0.6, 0.0, -0.2).lerp(Vector3(-1.1 + 0.35 * bl, 0.0, 0.15), on)
+			pt_ar = Vector3(-0.6, 0.0, 0.2).lerp(Vector3(-1.1 + 0.35 * br, 0.0, -0.15), on)
+			pt_el_l = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(-2.2, 0.0, 0.0), on)
+			pt_el_r = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(-2.2, 0.0, 0.0), on)
+			pt_tor = Vector3(lerpf(pt_tor.x, -0.18 + 0.06 * (bl + br), on), 0.08 * (bl - br), 0.0)
+			pt_hd = Vector3(-0.45 * on, 0.0, 0.0)
+			r_limb = 26.0
+
+
+func _pose_win() -> void:
+	var ac := anim_clock
+	var bounce := absf(sin(ac * 5.0))
+	_stance(0.3 + 0.3 * bounce)
+	r_limb = 12.0
+	if fmod(ac, 5.0) < 3.2:
+		# arm raised high, the other pointing out at the crowd
+		pt_ar = Vector3(-2.95 + 0.15 * sin(ac * 6.0), 0.0, 0.3)
+		pt_el_r = Vector3(-0.15, 0.0, 0.0)
+		pt_al = Vector3(-1.5, 0.0, -0.4)
+		pt_el_l = Vector3(-0.05, 0.0, 0.0)
+		pt_tor = Vector3(-0.08, 0.35 * sin(ac * 0.8), 0.0)
+		pt_hd = Vector3(-0.2, 0.15 * sin(ac * 0.8), 0.0)
+	else:
+		# double bicep flex
+		pt_al = Vector3(0.0, 0.0, -1.45)
+		pt_ar = Vector3(0.0, 0.0, 1.45)
+		pt_el_l = Vector3(0.0, 0.0, -1.8)
+		pt_el_r = Vector3(0.0, 0.0, 1.8)
+		pt_tor = Vector3(-0.12, 0.0, 0.0)
+		pt_hd = Vector3(-0.3, 0.0, 0.0)
+		pt_breath = 1.0
+
+
+# --- ground attacks -----------------------------------------------------------------
+
+func _pose_stomp() -> void:
+	# Right foot raised high, then driven down onto the downed opponent.
+	var u := state_time
+	var lift := _smooth(_seg(u, 0.0, 0.14))
+	var stomp := _ease_in(_seg(u, 0.14, 0.22))
+	var rec := _smooth(_seg(u, 0.3, 0.5))
+	r_limb = 30.0
+	r_body = 20.0
+	_stance(0.45)
+	pt_ll = Vector3(-0.2, 0.0, -0.12)
+	pt_kn_l = 0.45 + 0.25 * stomp * (1.0 - rec)
+	var lx := lerpf(lerpf(-0.1, -1.35, lift), -1.0, stomp)
+	var kn := lerpf(lerpf(0.35, 1.75, lift), 0.9, stomp)
+	pt_lr = Vector3(lerpf(lx, -0.1, rec), 0.0, 0.08)
+	pt_kn_r = lerpf(kn, 0.4, rec)
+	pt_tor = Vector3(0.15 - 0.08 * lift + 0.35 * stomp * (1.0 - rec), 0.0, 0.0)
+	pt_hd = Vector3(0.3, 0.0, 0.0)
+	var bal := lift * (1.0 - stomp)
+	pt_al = Vector3(-0.3 + 0.4 * stomp, 0.0, -0.3 - 0.4 * bal)
+	pt_ar = Vector3(-0.3 + 0.4 * stomp, 0.0, 0.3 + 0.4 * bal)
+	pt_el_l = Vector3(-1.2, 0.0, 0.0)
+	pt_el_r = Vector3(-1.2, 0.0, 0.0)
+
+
+func _pose_ground_drop() -> void:
+	# Crouch, leap (pelvis up ~0.5), come down elbow- or knee-first on the opponent.
+	var u := clampf(state_time / 0.5, 0.0, 1.0)
+	var crouch := _hump(u, 0.0, 0.25)
+	var v := _seg(u, 0.18, 1.0)
+	pt_root_direct = true
+	r_limb = 20.0
+	r_body = 18.0
+	if current_move_key == "knee_drop":
+		var y := lerpf(0.88, 0.86, v) + 0.58 * sin(PI * v) - 0.12 * crouch
+		pt_root_pos = Vector3(0.0, y, 0.0)
+		pt_ll = Vector3(lerpf(-0.4, 0.35, v), 0.0, -0.1)
+		pt_lr = Vector3(lerpf(-0.2, lerpf(-1.5, -0.4, _ease_in(v)), _smooth(_seg(v, 0.0, 0.3))), 0.0, 0.05)
+		if v <= 0.0:
+			pt_kn_l = _plant_knee(y, 0.0, pt_ll.x)
+			pt_kn_r = _plant_knee(y, 0.0, pt_lr.x)
+		else:
+			pt_kn_l = 1.4
+			pt_kn_r = lerpf(2.2, 2.0, v)
+		var impact := _seg(v, 0.85, 1.0)
+		pt_tor = Vector3(0.3 * crouch - 0.1 * v + 0.55 * impact, 0.0, 0.0)
+		pt_hd = Vector3(0.2 + 0.2 * impact, 0.0, 0.0)
+		pt_al = Vector3(lerpf(0.4 * crouch - 0.6, -2.5, _smooth(_seg(v, 0.0, 0.4))) + 1.8 * impact, 0.0, -0.4)
+		pt_ar = Vector3(pt_al.x, 0.0, 0.4)
+		pt_el_l = Vector3(-0.4, 0.0, 0.0)
+		pt_el_r = Vector3(-0.4, 0.0, 0.0)
+		return
+	# elbow drop: turn sideways in the air, fall back, left side (and elbow) first
+	var y2 := lerpf(0.88, 0.27, v * v) + 0.62 * sin(PI * v) - 0.12 * crouch
+	var rp := -PI / 2 * _ease_in(_seg(v, 0.25, 1.0))
+	pt_root_rot = Vector3(rp, 0.5 * PI * _smooth(_seg(v, 0.1, 0.7)), 0.0)
+	pt_root_pos = Vector3(0.0, y2, 0.0)
+	pt_hip.y = -0.6 * _smooth(_seg(v, 0.3, 0.9))
+	if v <= 0.0:
+		_legs_for(y2, 0.0, -0.4, -0.15)
+	else:
+		pt_ll = Vector3(-0.6, 0.0, -0.1)
+		pt_lr = Vector3(-0.3, 0.0, 0.1)
+		pt_kn_l = 1.0
+		pt_kn_r = 0.6
+	var cockw := _smooth(_seg(v, 0.0, 0.35))
+	pt_al = Vector3(0.4 * crouch - 0.4, 0.0, -0.3).lerp(Vector3(0.0, 0.0, -1.45), cockw)
+	pt_el_l = Vector3(-1.0, 0.0, 0.0).lerp(Vector3(-1.9, 0.0, 0.0), cockw)
+	pt_ar = Vector3(0.4 * crouch - 0.4, 0.0, 0.3).lerp(Vector3(-2.4, 0.0, 0.5), cockw)
+	pt_el_r = Vector3(-0.3, 0.0, 0.0)
+	pt_tor = Vector3(0.3 * crouch + 0.1 * v, 0.0, 0.0)
+	pt_hd = Vector3(0.35 * v, 0.0, 0.0)
+
+
+func _pose_pickup() -> void:
+	# Bend over, grab the head, haul them up while straightening.
+	var u := clampf(state_time / 0.6, 0.0, 1.0)
+	var bend := _smooth(_seg(u, 0.0, 0.3)) * (1.0 - _smooth(_seg(u, 0.45, 1.0)))
+	_stance(0.5 + 0.6 * bend)
+	pt_tor = Vector3(0.2 + 1.0 * bend, 0.0, 0.0)
+	pt_hd = Vector3(0.3 * bend - 0.1, 0.0, 0.0)
+	var vhd := _opp_node("head")
+	var hp := vhd.global_position + Vector3(0.0, 0.1, 0.0)
+	var side := Vector3(facing.z, 0.0, -facing.x) * 0.13
+	_reach_pair(hp - side, hp + side)
+	r_limb = 18.0
+
+
+func _pose_lifted(delta: float) -> void:
+	# Hauled limply from the mat to the feet by the head, turned to face the lifter.
+	var u := clampf(state_time / 0.6, 0.0, 1.0)
+	var a := _smooth(_seg(u, 0.0, 0.45))
+	var c := _smooth(_seg(u, 0.35, 1.0))
+	_face_opponent(delta * 0.5)
+	pt_root_direct = true
+	var rp := lerpf(lerpf(-PI / 2, -0.5, a), 0.0, c)
+	var y := lerpf(lerpf(LIE_Y, 0.3, a), 0.88, c)
+	pt_root_rot = Vector3(rp, 0.0, 0.0)
+	pt_root_pos = Vector3(0.0, y, 0.0)
+	var lx := lerpf(lerpf(0.0, -1.0, a), -0.2, c)
+	pt_ll = Vector3(lx, 0.0, -0.12)
+	pt_lr = Vector3(lx + 0.1, 0.0, 0.12)
+	pt_kn_l = lerpf(lerpf(0.1, 0.3, a), 0.55, c)
+	pt_kn_r = lerpf(lerpf(0.1, 0.3, a), 0.45, c)
+	pt_tor = Vector3(lerpf(0.1, 0.45, a), 0.0, 0.1 * sin(anim_clock * 4.0))
+	pt_hd = Vector3(lerpf(-0.2, 0.5, a) + 0.1 * sin(anim_clock * 5.0), 0.0, 0.2 * sin(anim_clock * 3.0))
+	_hang_arms(rp + pt_tor.x, 0.25)
+	r_limb = 8.0
+	r_body = 10.0
