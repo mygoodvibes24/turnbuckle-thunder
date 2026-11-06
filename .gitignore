@@ -1,3 +1,6 @@
 .godot/
 *.import
 .claude/worktrees/
+
+# web build preview (CI artifact downloads)
+/build/

@@ -7,14 +7,14 @@ name: Web build
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]   # every branch builds (agents use branch builds as previews)
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: web-build
+  group: web-build-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -51,6 +51,7 @@ jobs:
           name: web
           path: build/web
           include-hidden-files: true
+          retention-days: 3
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -68,7 +69,8 @@ jobs:
 
   deploy:
     needs: build
-    if: ${{ always() && needs.build.result != 'cancelled' }}
+    # Only main is published to GitHub Pages; other branches just keep the "web" artifact.
+    if: ${{ always() && needs.build.result != 'cancelled' && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
