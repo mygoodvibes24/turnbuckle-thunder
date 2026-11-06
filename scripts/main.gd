@@ -133,12 +133,31 @@ func _setup_input() -> void:
 var cam_fov_kick := 0.0          # degrees added to the 40 deg broadcast FOV; decays back to 0
 var crowd_hype := 0.0            # 0..1, crowd excitement; drifts back down slowly on its own
 var rope_nodes: Array[Node3D] = []  # 12 ropes: for each height (bottom, middle, top): +z, -z, +x, -x
-var ring_spot: SpotLight3D
-var crowd_mat: ShaderMaterial
+var ring_spot: SpotLight3D       # the work light on a stand: key light over the ring
+var crowd_mat: ShaderMaterial    # the friends-in-the-yard billboard material
 var crowd_hype_shown := 0.0
 var crowd_spots := PackedVector3Array()
 var flash_nodes: Array[MeshInstance3D] = []
 var flash_timers := PackedFloat32Array()
+
+# Static scenery is merged per material into a handful of meshes (few draw calls on mobile).
+var _batches := {}               # batch key -> SurfaceTool
+var _bulb_xforms: Array[Transform3D] = []
+var _bulb_cols: Array[Color] = []
+# Spectators collected while building, turned into one MultiMesh in _build_crowd.
+var _fan_xforms: Array[Transform3D] = []
+var _fan_custom: Array[Color] = []
+
+const BOX_NORMALS: Array[Vector3] = [Vector3.RIGHT, Vector3.LEFT, Vector3.UP, Vector3.DOWN, Vector3.BACK, Vector3.FORWARD]
+# Fan atlas variants (8 cells of 16x32 px).
+const FAN_HOODIE := 0
+const FAN_CAP := 1
+const FAN_CHEER := 2
+const FAN_PHONE := 3
+const FAN_CUP := 4
+const FAN_SIT := 5
+const FAN_SIT_CUP := 6
+const FAN_HAIR := 7
 
 const CROWD_SHADER := """
 shader_type spatial;
@@ -146,34 +165,61 @@ render_mode unshaded, cull_disabled;
 
 uniform sampler2D tex : source_color, filter_linear;
 uniform float hype = 0.0;
-uniform float brightness = 0.5;
+uniform float brightness = 1.0;
 
 varying vec3 shirt;
+varying float lit;
 
 float h1(float n) {
 	return fract(sin(n * 12.9898) * 43758.5453);
 }
 
 void vertex() {
+	// INSTANCE_CUSTOM: x = atlas variant / 8, y = bob scale, z = light level, w = 1 if may switch to cheering.
 	float id = float(INSTANCE_ID);
 	float ph = h1(id) * 6.2831;
-	float spd = mix(2.5, 10.0, hype) * (0.8 + 0.4 * h1(id + 3.1));
-	float amp = mix(0.025, 0.3, hype) * (0.5 + h1(id + 7.7));
+	float spd = mix(2.0, 9.5, hype) * (0.8 + 0.4 * h1(id + 3.1));
+	float amp = mix(0.02, 0.24, hype) * (0.5 + h1(id + 7.7)) * INSTANCE_CUSTOM.y;
 	float top = 1.0 - UV.y;
-	VERTEX.y += max(0.0, sin(TIME * spd + ph)) * amp;
-	VERTEX.x += sin(TIME * 1.7 + ph) * 0.04 * top;
+	float wave = sin(TIME * spd + ph);
+	VERTEX.y += max(0.0, wave) * amp;
+	VERTEX.x += sin(TIME * 1.3 + ph) * 0.05 * top;
 	shirt = COLOR.rgb;
-	float variant = floor(h1(id + 1.7) * 3.999);
-	UV.x = (UV.x + variant) * 0.25;
+	lit = INSTANCE_CUSTOM.z;
+	float variant = floor(INSTANCE_CUSTOM.x * 8.0 + 0.5);
+	if (INSTANCE_CUSTOM.w > 0.5 && hype > 0.45 && wave > 0.6 - hype) {
+		variant = 2.0;
+	}
+	UV.x = (UV.x + variant) * 0.125;
 }
 
 void fragment() {
 	vec4 t = texture(tex, UV);
 	float m = smoothstep(0.8, 0.97, min(t.r, min(t.g, t.b)));
-	vec3 c = mix(t.rgb, t.rgb * shirt, m);
-	ALBEDO = c * (brightness + hype * 0.3);
+	float scr = step(0.85, t.g) * step(0.85, t.b) * step(t.r, 0.2);
+	vec3 c = mix(t.rgb, t.rgb * shirt, m) * (lit + hype * 0.25) * brightness;
+	ALBEDO = mix(c, vec3(0.75, 0.92, 1.0) * 1.5, scr);
 	ALPHA = t.a;
 	ALPHA_SCISSOR_THRESHOLD = 0.5;
+}
+"""
+
+const SKY_SHADER := """
+shader_type sky;
+
+void sky() {
+	vec3 d = EYEDIR;
+	float h = clamp(d.y, -0.2, 1.0);
+	vec3 col = mix(vec3(0.12, 0.08, 0.22), vec3(0.015, 0.02, 0.07), smoothstep(0.0, 0.5, h));
+	vec3 cell = floor(d * 260.0);
+	float r = fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+	float star = step(0.992, r) * smoothstep(0.03, 0.2, d.y);
+	col += vec3(0.9, 0.9, 1.0) * star * (0.4 + 0.6 * fract(r * 91.7));
+	vec3 md = normalize(vec3(0.47, 0.11, -0.88));
+	float mm = dot(d, md);
+	col += vec3(0.25, 0.25, 0.4) * pow(max(mm, 0.0), 300.0);
+	col = mix(col, vec3(1.0, 0.97, 0.82), smoothstep(0.99955, 0.9997, mm));
+	COLOR = col;
 }
 """
 
@@ -200,20 +246,6 @@ func _box(size: Vector3, pos: Vector3, color: Color, emissive := false) -> MeshI
 	return mi
 
 
-func _cyl(radius: float, height: float, pos: Vector3, color: Color) -> MeshInstance3D:
-	var mi := MeshInstance3D.new()
-	var c := CylinderMesh.new()
-	c.top_radius = radius
-	c.bottom_radius = radius
-	c.height = height
-	c.radial_segments = 8
-	mi.mesh = c
-	mi.position = pos
-	mi.material_override = _mat(color)
-	add_child(mi)
-	return mi
-
-
 func _plane(size: Vector2, pos: Vector3, m: Material) -> MeshInstance3D:
 	# Flat, upward-facing quad with 0..1 UVs (BoxMesh UVs are an atlas, so textures go here).
 	var mi := MeshInstance3D.new()
@@ -222,6 +254,7 @@ func _plane(size: Vector2, pos: Vector3, m: Material) -> MeshInstance3D:
 	mi.mesh = p
 	mi.position = pos
 	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mi)
 	return mi
 
@@ -244,103 +277,410 @@ func _px_rect(img: Image, x0: int, y0: int, w: int, h: int, c: Color) -> void:
 				img.set_pixel(x, y, c)
 
 
-func _make_canvas_texture() -> ImageTexture:
-	# Light grey-blue canvas with a darker border band and a little blotchy wear.
-	var n := 64
+# ---- merged-geometry helpers (all scenery goes through these)
+
+func _st(key: String) -> SurfaceTool:
+	if not _batches.has(key):
+		var st := SurfaceTool.new()
+		st.begin(Mesh.PRIMITIVE_TRIANGLES)
+		_batches[key] = st
+	return _batches[key]
+
+
+func _tri(st: SurfaceTool, p0: Vector3, p1: Vector3, p2: Vector3, n: Vector3, a: Vector3, b: Vector3, col: Color, uvs: float) -> void:
+	# Godot front faces wind clockwise; callers pass corners in that order.
+	for p: Vector3 in [p0, p1, p2]:
+		st.set_color(col)
+		st.set_normal(n)
+		st.set_uv(Vector2(p.dot(a), -p.dot(b)) * uvs)
+		st.add_vertex(p)
+
+
+func _quad(st: SurfaceTool, bl: Vector3, tl: Vector3, tr: Vector3, br: Vector3, n: Vector3, a: Vector3, b: Vector3, col: Color, uvs: float) -> void:
+	_tri(st, bl, tl, tr, n, a, b, col, uvs)
+	_tri(st, bl, tr, br, n, a, b, col, uvs)
+
+
+func _sbox(key: String, size: Vector3, xf: Transform3D, col: Color, uvs := 1.0) -> void:
+	var st := _st(key)
+	var h := size * 0.5
+	for n0 in BOX_NORMALS:
+		var b0 := Vector3.UP
+		if absf(n0.y) > 0.5:
+			b0 = Vector3.FORWARD if n0.y > 0.0 else Vector3.BACK
+		var a0 := b0.cross(n0)
+		var c := n0 * n0.abs().dot(h)
+		var ea := a0 * a0.abs().dot(h)
+		var eb := b0 * b0.abs().dot(h)
+		var n := (xf.basis * n0).normalized()
+		var a := (xf.basis * a0).normalized()
+		var b := (xf.basis * b0).normalized()
+		_quad(st, xf * (c - ea - eb), xf * (c - ea + eb), xf * (c + ea + eb), xf * (c + ea - eb), n, a, b, col, uvs)
+
+
+func _bx(key: String, size: Vector3, pos: Vector3, col: Color, yaw := 0.0, uvs := 1.0) -> void:
+	_sbox(key, size, Transform3D(Basis(Vector3.UP, yaw), pos), col, uvs)
+
+
+func _scyl(key: String, rb: float, rt: float, height: float, xf: Transform3D, col: Color, segs := 8) -> void:
+	var st := _st(key)
+	var hh := height * 0.5
+	var up := (xf.basis * Vector3.UP).normalized()
+	var top_c := xf * Vector3(0, hh, 0)
+	var bot_c := xf * Vector3(0, -hh, 0)
+	for i in segs:
+		var t0 := TAU * i / segs
+		var t1 := TAU * (i + 1) / segs
+		var tm := (t0 + t1) * 0.5
+		var d0 := Vector3(cos(t0), 0, sin(t0))
+		var d1 := Vector3(cos(t1), 0, sin(t1))
+		var b0 := xf * (d0 * rb + Vector3(0, -hh, 0))
+		var b1 := xf * (d1 * rb + Vector3(0, -hh, 0))
+		var p0 := xf * (d0 * rt + Vector3(0, hh, 0))
+		var p1 := xf * (d1 * rt + Vector3(0, hh, 0))
+		var n := (xf.basis * Vector3(cos(tm), (rb - rt) / height, sin(tm))).normalized()
+		var a := (xf.basis * Vector3(-sin(tm), 0, cos(tm))).normalized()
+		_quad(st, b1, p1, p0, b0, n, a, up, col, 1.0)
+		if rt > 0.001:
+			_tri(st, top_c, p0, p1, up, Vector3.RIGHT, Vector3.FORWARD, col, 1.0)
+		if rb > 0.001:
+			_tri(st, bot_c, b1, b0, -up, Vector3.RIGHT, Vector3.BACK, col, 1.0)
+
+
+func _cy(key: String, rb: float, rt: float, height: float, pos: Vector3, col: Color, segs := 8) -> void:
+	_scyl(key, rb, rt, height, Transform3D(Basis(), pos), col, segs)
+
+
+func _beam(key: String, from: Vector3, to: Vector3, thick: float, col: Color) -> void:
+	# A thin box stretched between two points (wires, ladder rails, tripod legs).
+	var d := to - from
+	var up := Vector3.UP if absf(d.normalized().y) < 0.95 else Vector3.RIGHT
+	var xf := Transform3D(Basis.looking_at(d, up), (from + to) * 0.5)
+	_sbox(key, Vector3(thick, thick, d.length()), xf, col)
+
+
+func _batch_mat(key: String) -> Material:
+	var m := StandardMaterial3D.new()
+	m.vertex_color_use_as_albedo = true
+	m.vertex_color_is_srgb = true
+	m.roughness = 0.9
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
+	match key:
+		"glow":
+			m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		"wood":
+			m.albedo_texture = _make_wood_texture()
+		"siding":
+			m.albedo_texture = _make_siding_texture()
+		"shingle":
+			m.albedo_texture = _make_shingle_texture()
+		"metal":
+			m.metallic = 0.6
+			m.roughness = 0.45
+	return m
+
+
+func _flush_batches() -> void:
+	for key: String in _batches:
+		var st: SurfaceTool = _batches[key]
+		var mi := MeshInstance3D.new()
+		mi.mesh = st.commit()
+		mi.material_override = _batch_mat(key)
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
+	_batches.clear()
+
+
+# ---- generated textures (tiny, blurry, N64-style)
+
+func _make_grass_texture() -> ImageTexture:
+	var n := 32
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
-	var base := Color(0.74, 0.79, 0.88)
-	var band := Color(0.16, 0.24, 0.62)
 	for y in n:
 		for x in n:
-			var edge: int = mini(mini(x, y), mini(n - 1 - x, n - 1 - y))
-			var c := base
-			if edge < 5:
-				c = band
-			elif edge == 6:
-				c = Color(0.92, 0.94, 1.0)
-			var j := randf_range(-0.035, 0.035)
-			img.set_pixel(x, y, Color(c.r + j, c.g + j, c.b + j))
+			var j := randf_range(-0.05, 0.05)
+			var c := Color(0.17 + j, 0.33 + j * 1.6, 0.12 + j)
+			if randf() < 0.12:
+				c = Color(0.25, 0.45, 0.16)  # bright blade
+			elif randf() < 0.08:
+				c = Color(0.11, 0.22, 0.08)  # dark clump
+			img.set_pixel(x, y, c)
+	for i in 3:  # dry patches
+		var cx := randi() % n
+		var cy := randi() % n
+		for y in range(-2, 3):
+			for x in range(-3, 4):
+				if randf() < 0.6:
+					img.set_pixel((cx + x + n) % n, (cy + y + n) % n, Color(0.32, 0.36, 0.16))
 	return ImageTexture.create_from_image(img)
+
+
+func _make_wood_texture() -> ImageTexture:
+	# Greyscale-ish grain (tinted per vertex): stripes along u with a wobble and a knot or two.
+	var n := 32
+	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	for y in n:
+		for x in n:
+			var g := 0.84 + 0.09 * sin(y * 1.7 + sin(x * 0.35) * 1.6) + randf_range(-0.04, 0.04)
+			if (y + int(sin(x * 0.2) * 2.0)) % 11 == 0:
+				g -= 0.18
+			img.set_pixel(x, y, Color(g, g * 0.97, g * 0.92))
+	for k in 2:
+		var kx := randi() % n
+		var ky := randi() % n
+		for y in range(-1, 2):
+			for x in range(-2, 3):
+				img.set_pixel((kx + x + n) % n, (ky + y + n) % n, Color(0.5, 0.45, 0.4))
+	return ImageTexture.create_from_image(img)
+
+
+func _make_siding_texture() -> ImageTexture:
+	# Horizontal lap siding: a dark shadow line every 4 px.
+	var n := 32
+	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	for y in n:
+		for x in n:
+			var r := y % 4
+			var g := [0.55, 0.98, 0.93, 0.88][r] as float
+			g += randf_range(-0.025, 0.025)
+			img.set_pixel(x, y, Color(g, g, g))
+	return ImageTexture.create_from_image(img)
+
+
+func _make_shingle_texture() -> ImageTexture:
+	var n := 32
+	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	for y in n:
+		var row := y / 4
+		for x in n:
+			var tab := (x + (row % 2) * 3) / 6
+			var g := 0.7 + 0.25 * fposmod(sin(float(tab * 7 + row * 13)) * 43.7, 1.0)
+			if y % 4 == 3 or (x + (row % 2) * 3) % 6 == 0:
+				g *= 0.55
+			g += randf_range(-0.04, 0.04)
+			img.set_pixel(x, y, Color(g, g, g))
+	return ImageTexture.create_from_image(img)
+
+
+func _make_tarp_texture() -> ImageTexture:
+	# Stained blue tarp: hemmed edge with grommets, fold creases, dirt blotches, duct-tape patches.
+	var n := 64
+	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	for y in n:
+		for x in n:
+			var w := 0.04 * sin(x * 0.21 + y * 0.07) + 0.03 * sin(y * 0.33 - x * 0.12)
+			var c := Color(0.13 + w, 0.32 + w, 0.7 + w * 1.5)
+			if x == 21 or x == 42 or y == 32:
+				c = c.lightened(0.12)  # fold creases
+			var edge: int = mini(mini(x, y), mini(n - 1 - x, n - 1 - y))
+			if edge < 2:
+				c = c.darkened(0.25)
+			var j := randf_range(-0.03, 0.03)
+			img.set_pixel(x, y, Color(c.r + j, c.g + j, c.b + j))
+	for i in range(4, n - 2, 8):  # grommets
+		for p: Vector2i in [Vector2i(i, 0), Vector2i(i, n - 1), Vector2i(0, i), Vector2i(n - 1, i)]:
+			img.set_pixel(p.x, p.y, Color(0.8, 0.8, 0.75))
+	var stains: Array[Vector3] = [Vector3(12, 14, 4), Vector3(50, 20, 3), Vector3(16, 50, 5), Vector3(44, 46, 3), Vector3(34, 9, 2), Vector3(7, 34, 3)]
+	for s in stains:
+		for y in range(int(s.y - s.z) - 1, int(s.y + s.z) + 2):
+			for x in range(int(s.x - s.z) - 1, int(s.x + s.z) + 2):
+				if x < 0 or y < 0 or x >= n or y >= n:
+					continue
+				if Vector2(x, y).distance_to(Vector2(s.x, s.y)) < s.z + randf_range(-1.0, 1.0):
+					var o := img.get_pixel(x, y)
+					img.set_pixel(x, y, Color(o.r * 0.75 + 0.06, o.g * 0.72 + 0.03, o.b * 0.6))
+	var tape := Color(0.66, 0.66, 0.63)
+	_px_rect(img, 6, 6, 9, 3, tape)
+	_px_rect(img, 49, 52, 3, 8, tape)
+	_px_rect(img, 46, 55, 9, 3, tape)
+	_px_rect(img, 52, 8, 7, 2, tape)
+	_px_rect(img, 8, 55, 10, 3, tape)
+	for k in 7:  # an X patch
+		img.set_pixel(54 + k - 3, 30 + k - 3, tape)
+		img.set_pixel(54 + k - 3, 30 - k + 3, tape)
+		img.set_pixel(54 + k - 2, 30 + k - 3, tape)
+		img.set_pixel(54 + k - 2, 30 - k + 3, tape)
+	return ImageTexture.create_from_image(img)
+
+
+const PIXEL_FONT := {
+	"C": ["011", "100", "100", "100", "011"], "E": ["111", "100", "110", "100", "111"],
+	"G": ["011", "100", "101", "101", "011"], "I": ["111", "010", "010", "010", "111"],
+	"L": ["100", "100", "100", "100", "111"], "N": ["101", "111", "111", "101", "101"],
+	"R": ["110", "101", "110", "101", "101"], "S": ["011", "100", "010", "001", "110"],
+	"T": ["111", "010", "010", "010", "010"], "W": ["101", "101", "101", "111", "101"],
+	"Y": ["101", "101", "010", "010", "010"], "2": ["110", "001", "010", "100", "111"],
+}
+
+
+func _px_text(img: Image, text: String, x0: int, y0: int, sc: int, col: Color) -> void:
+	var x := x0
+	for ch in text:
+		if PIXEL_FONT.has(ch):
+			var rows: Array = PIXEL_FONT[ch]
+			for ry in 5:
+				var row: String = rows[ry]
+				for rx in 3:
+					if row[rx] == "1":
+						_px_rect(img, x + rx * sc, y0 + ry * sc, sc, sc, col)
+		x += 4 * sc
+
+
+func _px_text_w(text: String, sc: int) -> int:
+	return text.length() * 4 * sc - sc
 
 
 func _make_logo_texture() -> ImageTexture:
-	# 32x32 center-ring logo: yellow disc, red rim, red lightning bolt.
-	var img := Image.create_empty(32, 32, false, Image.FORMAT_RGBA8)
-	img.fill(Color(1, 0.8, 0.2, 0))
-	var ctr := Vector2(15.5, 15.5)
-	for y in 32:
-		for x in 32:
-			var d := Vector2(x, y).distance_to(ctr)
-			if d > 15.5:
+	# Spray-painted "C2C / CITY 2 CITY / WRESTLING" with lightning bolts, a black outline and drips.
+	var n := 96
+	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var yellow := Color(1.0, 0.86, 0.12)
+	var red := Color(0.92, 0.14, 0.1)
+	for side: float in [-1.0, 1.0]:  # little bolts flanking the big letters
+		var cx := 48.0 + side * 40.0
+		var bolt := PackedVector2Array([Vector2(cx + 1, 8), Vector2(cx - 5, 21), Vector2(cx - 1, 21), Vector2(cx - 4, 33),
+			Vector2(cx + 5, 17), Vector2(cx + 1, 17), Vector2(cx + 4, 8)])
+		for y in range(6, 36):
+			for x in range(int(cx) - 7, int(cx) + 8):
+				if Geometry2D.is_point_in_polygon(Vector2(x + 0.5, y + 0.5), bolt):
+					img.set_pixel(x, y, yellow)
+	_px_text(img, "C2C", (n - _px_text_w("C2C", 5)) / 2, 8, 5, red)
+	_px_text(img, "CITY 2 CITY", (n - _px_text_w("CITY 2 CITY", 2)) / 2, 44, 2, Color(0.95, 0.95, 0.9))
+	_px_text(img, "WRESTLING", (n - _px_text_w("WRESTLING", 2)) / 2, 60, 2, yellow)
+	# drips: pull paint down below the bottom of random letter columns
+	for i in 14:
+		var dx := randi_range(4, n - 5)
+		for y0: int in [32, 53, 69]:
+			if img.get_pixel(dx, y0).a > 0.5 and randf() < 0.6:
+				for k in randi_range(1, 5):
+					if y0 + k < n:
+						img.set_pixel(dx, y0 + k, img.get_pixel(dx, y0))
+	# black outline / overspray
+	var src := img.duplicate() as Image
+	for y in n:
+		for x in n:
+			if src.get_pixel(x, y).a > 0.5:
 				continue
-			var c := Color(1.0, 0.82, 0.15)
-			if d > 13.0:
-				c = Color(0.85, 0.1, 0.1)
-			elif d > 12.0:
-				c = Color(0.1, 0.08, 0.15)
-			img.set_pixel(x, y, c)
-	var bolt := Color(0.85, 0.1, 0.12)
-	for y in range(5, 17):
-		var cx := int(19.0 - (y - 5) * 0.55)
-		_px_rect(img, cx - 2, y, 4, 1, bolt)
-	_px_rect(img, 10, 15, 11, 2, bolt)
-	for y in range(17, 28):
-		var cx2 := int(18.0 - (y - 17) * 0.55)
-		_px_rect(img, cx2 - 2, y, 4, 1, bolt)
+			var near := false
+			for oy in range(-1, 2):
+				for ox in range(-1, 2):
+					var xx := x + ox
+					var yy := y + oy
+					if xx >= 0 and yy >= 0 and xx < n and yy < n and src.get_pixel(xx, yy).a > 0.5:
+						near = true
+			if near:
+				img.set_pixel(x, y, Color(0.06, 0.05, 0.08))
+			elif randf() < 0.008:
+				img.set_pixel(x, y, Color(0.9, 0.2, 0.15))  # stray speckle
 	return ImageTexture.create_from_image(img)
 
 
+func _fan_head(img: Image, ox: int, y: int, skin: Color, hair: Color) -> void:
+	_px_rect(img, ox + 5, y, 6, 7, skin)
+	_px_rect(img, ox + 5, y - 1, 6, 2, hair)
+	_px_rect(img, ox + 5, y + 1, 1, 2, hair)
+	_px_rect(img, ox + 10, y + 1, 1, 2, hair)
+	img.set_pixel(ox + 6, y + 3, Color(0.08, 0.05, 0.05))
+	img.set_pixel(ox + 9, y + 3, Color(0.08, 0.05, 0.05))
+	_px_rect(img, ox + 7, y + 5, 2, 1, skin.darkened(0.45))
+
+
 func _make_crowd_texture() -> ImageTexture:
-	# 64x32 atlas: four 16x32 pixel fans. Pure-white pixels are the shirt, tinted per instance.
-	var img := Image.create_empty(64, 32, false, Image.FORMAT_RGBA8)
+	# 128x32 atlas: eight 16x32 friends. Pure-white pixels are the shirt/hoodie (tinted per instance),
+	# pure cyan is a glowing phone screen.
+	var img := Image.create_empty(128, 32, false, Image.FORMAT_RGBA8)
 	img.fill(Color(0.5, 0.5, 0.5, 0))
 	var white := Color(1, 1, 1)
-	var skins: Array[Color] = [Color(0.93, 0.74, 0.58), Color(0.55, 0.36, 0.24), Color(0.8, 0.6, 0.45), Color(0.38, 0.25, 0.17)]
-	var hairs: Array[Color] = [Color(0.25, 0.16, 0.08), Color(0.05, 0.05, 0.05), Color(0.75, 0.6, 0.2), Color(0.1, 0.07, 0.05)]
-	var pants: Array[Color] = [Color(0.15, 0.2, 0.45), Color(0.12, 0.12, 0.14), Color(0.3, 0.25, 0.2), Color(0.2, 0.3, 0.55)]
-	for v in 4:
+	var screen := Color(0, 1, 1)
+	var skins: Array[Color] = [Color(0.93, 0.74, 0.58), Color(0.55, 0.36, 0.24), Color(0.8, 0.6, 0.45), Color(0.38, 0.25, 0.17),
+		Color(0.85, 0.66, 0.5), Color(0.62, 0.42, 0.3), Color(0.92, 0.72, 0.56), Color(0.45, 0.3, 0.2)]
+	var hairs: Array[Color] = [Color(0.25, 0.16, 0.08), Color(0.05, 0.05, 0.05), Color(0.75, 0.6, 0.2), Color(0.1, 0.07, 0.05),
+		Color(0.4, 0.22, 0.1), Color(0.08, 0.06, 0.05), Color(0.6, 0.3, 0.12), Color(0.1, 0.08, 0.06)]
+	var jeans := Color(0.2, 0.27, 0.48)
+	var dark := Color(0.13, 0.13, 0.15)
+	var cup := Color(0.85, 0.1, 0.12)
+	for v in 8:
 		var ox := v * 16
 		var skin: Color = skins[v]
 		var hair: Color = hairs[v]
-		# legs + hips
-		_px_rect(img, ox + 4, 23, 8, 2, pants[v])
-		_px_rect(img, ox + 4, 25, 3, 7, pants[v])
-		_px_rect(img, ox + 9, 25, 3, 7, pants[v])
-		# shirt
-		_px_rect(img, ox + 3, 11, 10, 12, white)
-		# neck + head
+		var pants: Color = jeans if v % 2 == 0 else dark
+		if v == FAN_SIT or v == FAN_SIT_CUP:
+			# Sitting: lower head, short torso, knees toward the viewer, shins down.
+			_fan_head(img, ox, 10, skin, hair)
+			_px_rect(img, ox + 7, 17, 2, 1, skin)
+			_px_rect(img, ox + 4, 18, 8, 6, white)
+			_px_rect(img, ox + 3, 24, 10, 3, pants)
+			_px_rect(img, ox + 4, 27, 3, 4, pants)
+			_px_rect(img, ox + 9, 27, 3, 4, pants)
+			_px_rect(img, ox + 4, 31, 3, 1, dark)
+			_px_rect(img, ox + 9, 31, 3, 1, dark)
+			_px_rect(img, ox + 2, 18, 2, 3, white)
+			_px_rect(img, ox + 12, 18, 2, 3, white)
+			_px_rect(img, ox + 2, 21, 2, 3, skin)
+			_px_rect(img, ox + 12, 21, 2, 3, skin)
+			if v == FAN_SIT:
+				_px_rect(img, ox + 5, 9, 6, 2, white)  # hood
+				_px_rect(img, ox + 4, 10, 1, 6, white)
+				_px_rect(img, ox + 11, 10, 1, 6, white)
+			else:
+				_px_rect(img, ox + 12, 19, 2, 3, cup)
+				_px_rect(img, ox + 4, 8, 8, 2, Color(0.15, 0.2, 0.55))  # beanie
+			continue
+		# Standing body
+		_fan_head(img, ox, 3, skin, hair)
 		_px_rect(img, ox + 7, 10, 2, 1, skin)
-		_px_rect(img, ox + 5, 3, 6, 7, skin)
-		_px_rect(img, ox + 5, 2, 6, 2, hair)
-		_px_rect(img, ox + 5, 4, 1, 2, hair)
-		_px_rect(img, ox + 10, 4, 1, 2, hair)
-		img.set_pixel(ox + 6, 6, Color(0.08, 0.05, 0.05))
-		img.set_pixel(ox + 9, 6, Color(0.08, 0.05, 0.05))
-		_px_rect(img, ox + 7, 8, 2, 1, skin.darkened(0.45))
+		_px_rect(img, ox + 4, 11, 8, 10, white)
+		_px_rect(img, ox + 4, 21, 8, 2, pants)
+		_px_rect(img, ox + 4, 23, 3, 8, pants)
+		_px_rect(img, ox + 9, 23, 3, 8, pants)
+		_px_rect(img, ox + 4, 31, 3, 1, dark)
+		_px_rect(img, ox + 9, 31, 3, 1, dark)
+		var left_down := true
+		var right_down := true
 		match v:
-			0:  # arms down
-				_px_rect(img, ox + 1, 12, 2, 3, white)
-				_px_rect(img, ox + 1, 15, 2, 6, skin)
-				_px_rect(img, ox + 13, 12, 2, 3, white)
-				_px_rect(img, ox + 13, 15, 2, 6, skin)
-			1:  # both arms up, cheering
-				_px_rect(img, ox + 1, 1, 2, 10, skin)
-				_px_rect(img, ox + 13, 1, 2, 10, skin)
-				_px_rect(img, ox + 1, 10, 2, 2, white)
-				_px_rect(img, ox + 13, 10, 2, 2, white)
-			2:  # one fist up, holding a little sign
-				_px_rect(img, ox + 0, 0, 6, 3, Color(1.0, 0.95, 0.55))
-				_px_rect(img, ox + 1, 1, 4, 1, Color(0.8, 0.1, 0.1))
-				_px_rect(img, ox + 2, 3, 2, 8, skin)
-				_px_rect(img, ox + 13, 12, 2, 3, white)
-				_px_rect(img, ox + 13, 15, 2, 6, skin)
-			_:  # ball cap, arms down
-				_px_rect(img, ox + 4, 1, 8, 2, Color(0.85, 0.15, 0.15))
-				_px_rect(img, ox + 9, 3, 4, 1, Color(0.6, 0.08, 0.08))
-				_px_rect(img, ox + 1, 12, 2, 3, white)
-				_px_rect(img, ox + 1, 15, 2, 6, skin)
-				_px_rect(img, ox + 13, 12, 2, 3, white)
-				_px_rect(img, ox + 13, 15, 2, 6, skin)
+			FAN_HOODIE:
+				_px_rect(img, ox + 5, 1, 6, 2, white)
+				_px_rect(img, ox + 4, 2, 1, 8, white)
+				_px_rect(img, ox + 11, 2, 1, 8, white)
+				_px_rect(img, ox + 6, 13, 4, 3, Color(0.85, 0.85, 0.85))  # pocket
+				_px_rect(img, ox + 7, 11, 1, 3, dark)  # drawstrings
+				_px_rect(img, ox + 9, 11, 1, 3, dark)
+			FAN_CAP:
+				_px_rect(img, ox + 4, 1, 8, 2, Color(0.12, 0.12, 0.14))
+				_px_rect(img, ox + 2, 2, 3, 1, Color(0.12, 0.12, 0.14))  # backwards brim
+				_px_rect(img, ox + 6, 14, 4, 3, Color(0.85, 0.2, 0.2))  # tee print
+			FAN_CHEER:
+				_px_rect(img, ox + 2, 1, 2, 9, skin)
+				_px_rect(img, ox + 12, 1, 2, 9, skin)
+				_px_rect(img, ox + 2, 10, 2, 2, white)
+				_px_rect(img, ox + 12, 10, 2, 2, white)
+				_px_rect(img, ox + 7, 8, 2, 2, Color(0.25, 0.05, 0.05))  # yelling
+				left_down = false
+				right_down = false
+			FAN_PHONE:
+				_px_rect(img, ox + 2, 5, 2, 6, skin)
+				_px_rect(img, ox + 2, 11, 2, 2, white)
+				_px_rect(img, ox + 1, 0, 4, 6, dark)
+				_px_rect(img, ox + 2, 1, 2, 4, screen)
+				left_down = false
+			FAN_CUP:
+				_px_rect(img, ox + 4, 1, 8, 3, Color(0.85, 0.5, 0.1))  # beanie
+				_px_rect(img, ox + 12, 11, 2, 3, white)
+				_px_rect(img, ox + 12, 14, 2, 3, skin)
+				_px_rect(img, ox + 12, 15, 3, 4, cup)
+				right_down = false
+			_:  # long hair, flannel-ish stripes
+				_px_rect(img, ox + 4, 2, 1, 9, hair)
+				_px_rect(img, ox + 11, 2, 1, 9, hair)
+				for yy in range(12, 21, 3):
+					_px_rect(img, ox + 4, yy, 8, 1, Color(0.8, 0.8, 0.8))
+		if left_down:
+			_px_rect(img, ox + 2, 11, 2, 3, white)
+			_px_rect(img, ox + 2, 14, 2, 6, skin)
+		if right_down:
+			_px_rect(img, ox + 12, 11, 2, 3, white)
+			_px_rect(img, ox + 12, 14, 2, 6, skin)
 	return ImageTexture.create_from_image(img)
 
 
@@ -355,53 +695,69 @@ func _make_flash_texture() -> ImageTexture:
 	return ImageTexture.create_from_image(img)
 
 
+# ---- lights, sky, camera
+
 func _build_environment() -> void:
+	var sky_mat := ShaderMaterial.new()
+	var ssh := Shader.new()
+	ssh.code = SKY_SHADER
+	sky_mat.shader = ssh
+	var sky := Sky.new()
+	sky.sky_material = sky_mat
+	sky.radiance_size = Sky.RADIANCE_SIZE_32
 	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.03, 0.015, 0.06)
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.55, 0.5, 0.75)
-	env.ambient_light_energy = 0.25
+	env.ambient_light_color = Color(0.42, 0.42, 0.78)
+	env.ambient_light_energy = 0.42
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
 	env.glow_enabled = false
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.13, 0.06, 0.2)
+	env.fog_light_color = Color(0.1, 0.09, 0.2)
 	env.fog_light_energy = 1.0
-	env.fog_density = 0.012
+	env.fog_density = 0.016
 	env.fog_sky_affect = 0.0
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 
-	# Soft cool key from the camera side so faces read; no shadows (cheap).
-	var fill := DirectionalLight3D.new()
-	fill.rotation_degrees = Vector3(-38, 8, 0)
-	fill.light_energy = 0.5
-	fill.light_color = Color(0.75, 0.8, 1.0)
-	add_child(fill)
+	# Cool moonlight fill from the camera side so faces never go black; no shadows (cheap).
+	var moon := DirectionalLight3D.new()
+	moon.rotation_degrees = Vector3(-40, 20, 0)
+	moon.light_energy = 0.35
+	moon.light_color = Color(0.6, 0.66, 1.0)
+	add_child(moon)
 
-	# The big warm spotlight over the ring: makes the canvas the brightest thing on screen.
+	# Work light on a tripod at the front-left: the key light over the ring.
+	var wl_pos := Vector3(-6.4, 6.0, 2.6)
 	ring_spot = SpotLight3D.new()
-	ring_spot.position = Vector3(0, 9.0, 0)
-	ring_spot.rotation_degrees = Vector3(-90, 0, 0)
-	ring_spot.spot_angle = 35.0
-	ring_spot.spot_angle_attenuation = 0.8
-	ring_spot.spot_range = 16.0
-	ring_spot.spot_attenuation = 0.5
-	ring_spot.light_energy = 4.0
-	ring_spot.light_color = Color(1.0, 0.92, 0.78)
+	ring_spot.transform = Transform3D(Basis.looking_at(Vector3(0.6, 1.0, -0.6) - wl_pos), wl_pos)
+	ring_spot.spot_angle = 40.0
+	ring_spot.spot_angle_attenuation = 0.9
+	ring_spot.spot_range = 20.0
+	ring_spot.spot_attenuation = 0.6
+	ring_spot.light_energy = 5.5
+	ring_spot.light_color = Color(1.0, 0.95, 0.84)
 	ring_spot.shadow_enabled = true
 	add_child(ring_spot)
 
-	# Colored rim lights from behind the far corners.
-	var rims: Array[Vector3] = [Vector3(-5.5, 4.5, -5.5), Vector3(5.5, 4.5, -5.5)]
-	var rim_cols: Array[Color] = [Color(1.0, 0.25, 0.8), Color(0.2, 0.8, 1.0)]
-	for i in rims.size():
+	# Warm porch light by the sliding door.
+	var porch := OmniLight3D.new()
+	porch.position = Vector3(-0.9, 2.4, -14.3)
+	porch.omni_range = 7.5
+	porch.light_energy = 2.2
+	porch.light_color = Color(1.0, 0.68, 0.32)
+	add_child(porch)
+
+	# Glow from the string lights hanging over the ring.
+	for p: Vector3 in [Vector3(0, 4.4, -7.0), Vector3(0, 4.4, -1.0)]:
 		var o := OmniLight3D.new()
-		o.position = rims[i]
-		o.omni_range = 10.0
-		o.light_energy = 2.0
-		o.light_color = rim_cols[i]
+		o.position = p
+		o.omni_range = 8.0
+		o.light_energy = 0.9
+		o.light_color = Color(1.0, 0.78, 0.5)
 		add_child(o)
 
 	camera = Camera3D.new()
@@ -411,110 +767,485 @@ func _build_environment() -> void:
 	camera.look_at(Vector3(0, RING_TOP + 1.6, 0))
 
 
+# ---- the yard and the homemade ring
+
 func _build_arena() -> void:
-	# Arena floor + padded mats around the ring
-	_box(Vector3(80, 0.1, 80), Vector3(0, -0.05, 0), Color(0.07, 0.05, 0.1))
-	_box(Vector3(14.2, 0.03, 14.2), Vector3(0, 0.015, 0), Color(0.12, 0.13, 0.3))
+	_plane(Vector2(70, 70), Vector3(0, 0, 0), _grass_mat())
+	_build_ring()
+	_build_house()
+	_build_fence()
+	_build_props()
+	_build_car()
+	_build_string_lights()
+	_flush_batches()
 
-	# ---- Ring
-	_box(Vector3(8.8, 0.89, 8.8), Vector3(0, 0.445, 0), Color(0.05, 0.05, 0.08))   # skirt
-	_box(Vector3(8.82, 0.08, 8.82), Vector3(0, 0.2, 0), Color(0.85, 0.12, 0.15))     # skirt stripe
-	_box(Vector3(8.7, 0.1, 8.7), Vector3(0, 0.94, 0), Color(0.9, 0.9, 0.95))        # apron edge, top 0.99
-	_plane(Vector2(7.9, 7.9), Vector3(0, RING_TOP, 0), _tex_mat(_make_canvas_texture()))  # canvas, top 1.00
-	_plane(Vector2(2.4, 2.4), Vector3(0, RING_TOP + 0.01, 0), _tex_mat(_make_logo_texture(), true))  # logo
 
+func _grass_mat() -> StandardMaterial3D:
+	var m := _tex_mat(_make_grass_texture())
+	m.uv1_scale = Vector3(28, 28, 1)
+	return m
+
+
+func _build_ring() -> void:
+	var gap := Color(0.03, 0.025, 0.02)
+	var cinder := Color(0.5, 0.5, 0.48)
+	var ply := Color(0.8, 0.64, 0.42)
 	var h := 4.15
-	var heights: Array[float] = [0.45, 0.85, 1.25]
+	# Shadowy underside, cinder blocks at the corners + side midpoints, plywood skirt and apron.
+	_bx("flat", Vector3(8.2, 0.4, 8.2), Vector3(0, 0.2, 0), gap)
+	for gx: float in [-1.0, 0.0, 1.0]:
+		for gz: float in [-1.0, 0.0, 1.0]:
+			if gx == 0.0 and gz == 0.0:
+				continue
+			var bp := Vector3(gx * 4.1, 0, gz * 4.1)
+			for k in 2:
+				var yaw := 0.0 if k == 0 else PI * 0.5
+				_bx("flat", Vector3(0.4, 0.2, 0.2), bp + Vector3(0, 0.1 + k * 0.2, 0), cinder.darkened(randf() * 0.15), yaw)
+				for sgn: float in [-1.0, 1.0]:
+					var along := Basis(Vector3.UP, yaw) * Vector3(sgn * 0.1, 0, 0)
+					_bx("flat", Vector3(0.12, 0.11, 0.205), bp + Vector3(0, 0.1 + k * 0.2, 0) + along, gap, yaw)
+	_bx("wood", Vector3(8.8, 0.56, 8.8), Vector3(0, 0.66, 0), ply)                   # plywood skirt
+	_bx("wood", Vector3(8.7, 0.1, 8.7), Vector3(0, 0.94, 0), ply.lightened(0.08))   # apron edge, top 0.99
+	_bx("flat", Vector3(8.84, 0.06, 0.04), Vector3(0, 0.55, 4.41), Color(0.62, 0.62, 0.6))  # duct tape seam
+	# Tarp canvas + spray-painted logo
+	_plane(Vector2(8.3, 8.3), Vector3(0, RING_TOP, 0), _tex_mat(_make_tarp_texture()))
+	_plane(Vector2(4.0, 4.0), Vector3(0, RING_TOP + 0.01, 0), _tex_mat(_make_logo_texture(), true))
+
+	# Wooden 4x4 posts with taped-pillow turnbuckle pads
 	var corners: Array[Vector2] = [Vector2(-h, -h), Vector2(h, -h), Vector2(-h, h), Vector2(h, h)]
-	var pad_cols: Array[Color] = [Color(0.9, 0.12, 0.12), Color(0.95, 0.85, 0.15), Color(0.95, 0.85, 0.15), Color(0.15, 0.3, 0.95)]
+	var pillow_cols: Array[Color] = [Color(0.86, 0.82, 0.74), Color(0.9, 0.62, 0.68), Color(0.55, 0.7, 0.9), Color(0.75, 0.25, 0.22)]
+	var tape := Color(0.6, 0.6, 0.58)
 	for ci in corners.size():
 		var cpos: Vector2 = corners[ci]
-		_cyl(0.11, 1.65, Vector3(cpos.x, 0.9 + 0.825, cpos.y), Color(0.75, 0.75, 0.8))
-		var inward := Vector3(-signf(cpos.x), 0, -signf(cpos.y)) * 0.12
-		for hh in heights:
-			var pad := _box(Vector3(0.26, 0.24, 0.26), Vector3(cpos.x, RING_TOP + hh, cpos.y) + inward, pad_cols[ci])
-			pad.rotation.y = PI / 4.0
-	var rope_colors: Array[Color] = [Color(0.9, 0.1, 0.1), Color(0.95, 0.95, 0.95), Color(0.15, 0.3, 0.95)]
+		_bx("wood", Vector3(0.2, 2.1, 0.2), Vector3(cpos.x, 1.45, cpos.y), Color(0.62, 0.48, 0.32), 0.0, 2.0)
+		var inward := Vector3(-signf(cpos.x), 0, -signf(cpos.y)).normalized()
+		var b := Basis.looking_at(inward)
+		var pc := Vector3(cpos.x, RING_TOP + 1.05, cpos.y) + inward * 0.16
+		_sbox("flat", Vector3(0.44, 0.6, 0.2), Transform3D(b, pc), pillow_cols[ci])
+		for s: float in [-0.17, 0.17]:
+			_sbox("flat", Vector3(0.46, 0.06, 0.22), Transform3D(b, pc + Vector3(0, s, 0)), tape)
+		_sbox("flat", Vector3(0.3, 0.22, 0.22), Transform3D(b, Vector3(cpos.x, RING_TOP + 0.45, cpos.y) + inward * 0.14), Color(0.95, 0.85, 0.3))
+		_sbox("flat", Vector3(0.32, 0.05, 0.24), Transform3D(b, Vector3(cpos.x, RING_TOP + 0.45, cpos.y) + inward * 0.14), tape)
+
+	# Ropes: garden hose (bottom), yellow rope (middle), orange extension cord (top).
+	var heights: Array[float] = [0.45, 0.85, 1.25]
+	var rope_cols: Array[Color] = [Color(0.12, 0.55, 0.2), Color(0.95, 0.8, 0.18), Color(1.0, 0.45, 0.06)]
+	var rope_mesh := CylinderMesh.new()
+	rope_mesh.top_radius = 0.04
+	rope_mesh.bottom_radius = 0.04
+	rope_mesh.height = 2 * h
+	rope_mesh.radial_segments = 6
+	rope_mesh.rings = 1
 	rope_nodes.clear()
 	for i in 3:
 		var y: float = RING_TOP + heights[i]
-		var c: Color = rope_colors[i]
-		rope_nodes.append(_box(Vector3(2 * h, 0.07, 0.07), Vector3(0, y, h), c))
-		rope_nodes.append(_box(Vector3(2 * h, 0.07, 0.07), Vector3(0, y, -h), c))
-		rope_nodes.append(_box(Vector3(0.07, 0.07, 2 * h), Vector3(h, y, 0), c))
-		rope_nodes.append(_box(Vector3(0.07, 0.07, 2 * h), Vector3(-h, y, 0), c))
+		var rm := _mat(rope_cols[i])
+		rm.roughness = 0.5
+		var spots: Array[Vector3] = [Vector3(0, y, h), Vector3(0, y, -h), Vector3(h, y, 0), Vector3(-h, y, 0)]
+		for si in 4:
+			var r := MeshInstance3D.new()
+			r.mesh = rope_mesh
+			r.material_override = rm
+			r.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			r.position = spots[si]
+			if si < 2:
+				r.rotation_degrees = Vector3(0, 0, 90)   # along x
+			else:
+				r.rotation_degrees = Vector3(90, 0, 0)   # along z
+			add_child(r)
+			rope_nodes.append(r)
 
-	# Steel steps at the far-left corner
-	var steel := Color(0.55, 0.57, 0.62)
-	_box(Vector3(1.3, 0.3, 0.55), Vector3(-3.2, 0.15, -5.95), steel)
-	_box(Vector3(1.3, 0.6, 0.55), Vector3(-3.2, 0.3, -5.4), steel)
-	_box(Vector3(1.3, 0.9, 0.55), Vector3(-3.2, 0.45, -4.85), steel)
 
-	# Timekeeper / announce table with the bell
-	_box(Vector3(2.4, 0.08, 0.8), Vector3(2.2, 0.76, -6.0), Color(0.5, 0.32, 0.18))
-	_box(Vector3(2.3, 0.7, 0.05), Vector3(2.2, 0.38, -5.62), Color(0.15, 0.2, 0.6))
-	_cyl(0.13, 0.12, Vector3(2.8, 0.86, -6.0), Color(0.95, 0.75, 0.2))
-	_box(Vector3(0.35, 0.25, 0.25), Vector3(1.6, 0.92, -6.1), Color(0.1, 0.1, 0.1))  # monitor
+func _build_house() -> void:
+	# Back of a two-story house at -z: the backdrop of the broadcast shot.
+	var wall_z := -15.0
+	var depth := 8.0
+	var w := 9.0
+	var top := 6.2
+	var ridge := 8.4
+	var siding := Color(0.72, 0.78, 0.86)
+	var trim := Color(0.92, 0.92, 0.9)
+	_bx("siding", Vector3(2 * w, top, 0.3), Vector3(0, top * 0.5, wall_z - 0.15), siding, 0.0, 0.6)
+	_bx("siding", Vector3(0.3, top, depth), Vector3(-w, top * 0.5, wall_z - depth * 0.5), siding, 0.0, 0.6)
+	_bx("siding", Vector3(0.3, top, depth), Vector3(w, top * 0.5, wall_z - depth * 0.5), siding, 0.0, 0.6)
+	_bx("flat", Vector3(2 * w + 0.3, 0.5, 0.35), Vector3(0, 0.25, wall_z - 0.12), Color(0.45, 0.42, 0.4))  # foundation
+	# Gable ends (triangles) on both sides
+	var st := _st("siding")
+	for s: float in [-1.0, 1.0]:
+		var x := s * (w + 0.15)
+		var p0 := Vector3(x, top, wall_z)
+		var p1 := Vector3(x, ridge, wall_z - depth * 0.5)
+		var p2 := Vector3(x, top, wall_z - depth)
+		var n := Vector3(s, 0, 0)
+		if s > 0.0:
+			_tri(st, p0, p1, p2, n, Vector3.FORWARD, Vector3.UP, siding, 0.6)
+		else:
+			_tri(st, p2, p1, p0, n, Vector3.BACK, Vector3.UP, siding, 0.6)
+	# Roof: two slabs meeting at the ridge, overhanging the walls
+	var run := depth * 0.5 + 0.6
+	var rise := (ridge - top) * run / (depth * 0.5)
+	var slope := atan2(rise, run)
+	var slab_len := sqrt(run * run + rise * rise)
+	var roof_col := Color(0.38, 0.33, 0.34)
+	for s: float in [1.0, -1.0]:
+		var zc := wall_z - depth * 0.5 + s * run * 0.5
+		var yc := ridge + 0.1 - rise * 0.5
+		var b := Basis(Vector3.RIGHT, slope * s)
+		_sbox("shingle", Vector3(2 * w + 1.0, 0.16, slab_len), Transform3D(b, Vector3(0, yc, zc)), roof_col, 0.7)
+	_bx("flat", Vector3(2 * w + 1.0, 0.14, 0.14), Vector3(0, top - 0.32, wall_z + 0.62), trim)  # gutter
+	_bx("flat", Vector3(1.0, 2.6, 1.0), Vector3(5.5, ridge + 0.4, wall_z - 2.8), Color(0.5, 0.25, 0.2))  # chimney
 
-	# Barricade (black with a blue padded top rail), gap on +x for the entrance aisle
-	var bar_c := Color(0.08, 0.08, 0.1)
-	var rail_c := Color(0.15, 0.35, 0.95)
-	var e := 7.2
-	_box(Vector3(2 * e, 0.9, 0.2), Vector3(0, 0.45, -e), bar_c)
-	_box(Vector3(2 * e, 0.12, 0.3), Vector3(0, 0.96, -e), rail_c)
-	_box(Vector3(2 * e, 0.9, 0.2), Vector3(0, 0.45, e + 0.3), bar_c)
-	_box(Vector3(0.2, 0.9, 2 * e), Vector3(-e, 0.45, 0), bar_c)
-	_box(Vector3(0.3, 0.12, 2 * e), Vector3(-e, 0.96, 0), rail_c)
-	for s in [-1.0, 1.0]:
-		var zc: float = s * (e + 1.3) * 0.5
-		_box(Vector3(0.2, 0.9, e - 1.3), Vector3(e, 0.45, zc), bar_c)
-		_box(Vector3(0.3, 0.12, e - 1.3), Vector3(e, 0.96, zc), rail_c)
+	# Windows: upstairs (some lit warm, one TV-blue, one dark), kitchen window downstairs.
+	var wf := wall_z + 0.02
+	var ups: Array[float] = [-6.5, -2.4, 2.0, 6.2]
+	var up_cols: Array[Color] = [Color(1.0, 0.82, 0.45), Color(0.08, 0.08, 0.12), Color(0.45, 0.6, 1.0), Color(1.0, 0.75, 0.4)]
+	for i in ups.size():
+		_bx("flat", Vector3(1.5, 1.4, 0.06), Vector3(ups[i], 4.55, wf), trim)
+		_bx("glow", Vector3(1.3, 1.2, 0.06), Vector3(ups[i], 4.55, wf + 0.03), up_cols[i])
+		_bx("flat", Vector3(0.06, 1.2, 0.07), Vector3(ups[i], 4.55, wf + 0.04), trim)
+		_bx("flat", Vector3(1.3, 0.06, 0.07), Vector3(ups[i], 4.55, wf + 0.04), trim)
+		_bx("flat", Vector3(0.3, 1.4, 0.06), Vector3(ups[i] - 0.92, 4.55, wf), Color(0.2, 0.28, 0.35))  # shutters
+		_bx("flat", Vector3(0.3, 1.4, 0.06), Vector3(ups[i] + 0.92, 4.55, wf), Color(0.2, 0.28, 0.35))
+	_bx("flat", Vector3(1.6, 1.2, 0.06), Vector3(4.2, 1.9, wf), trim)
+	_bx("glow", Vector3(1.4, 1.0, 0.06), Vector3(4.2, 1.9, wf + 0.03), Color(1.0, 0.9, 0.62))
+	_bx("flat", Vector3(1.4, 0.3, 0.07), Vector3(4.2, 2.25, wf + 0.04), Color(0.75, 0.3, 0.25))  # valance
+	# Sliding glass door + porch light
+	_bx("flat", Vector3(2.6, 2.3, 0.06), Vector3(-2.6, 1.6, wf), Color(0.75, 0.75, 0.78))
+	_bx("glow", Vector3(2.4, 2.1, 0.06), Vector3(-2.6, 1.6, wf + 0.03), Color(0.62, 0.5, 0.34))
+	_bx("flat", Vector3(0.08, 2.1, 0.08), Vector3(-2.6, 1.6, wf + 0.05), Color(0.75, 0.75, 0.78))
+	_bx("flat", Vector3(0.7, 2.0, 0.07), Vector3(-3.45, 1.6, wf + 0.05), Color(0.55, 0.45, 0.3))  # half-drawn curtain
+	_bx("glow", Vector3(0.2, 0.3, 0.16), Vector3(-0.9, 2.45, wf + 0.08), Color(1.0, 0.8, 0.45))
 
-	# ---- Entrance aisle + stage on the +x side
-	_box(Vector3(9.5, 0.3, 2.0), Vector3(11.6, 0.15, 0), Color(0.2, 0.2, 0.28))
-	for s in [-1.0, 1.0]:
-		_box(Vector3(9.5, 0.06, 0.08), Vector3(11.6, 0.32, s * 1.0), Color(1.0, 0.3, 0.8), true)
-	_box(Vector3(4.0, 1.2, 10.0), Vector3(18.4, 0.6, 0), Color(0.12, 0.1, 0.18))
-	_box(Vector3(0.4, 7.0, 12.0), Vector3(20.6, 3.5, 0), Color(0.06, 0.04, 0.12))
-	var stripe_cols: Array[Color] = [Color(1.0, 0.8, 0.2), Color(1.0, 0.25, 0.7), Color(0.2, 0.75, 1.0)]
-	for i in 3:
-		_box(Vector3(0.05, 0.25, 11.0), Vector3(20.38, 1.8 + i * 0.6, 0), stripe_cols[i], true)
-	var stage_sign := Label3D.new()
-	stage_sign.text = "THUNDER"
-	stage_sign.font_size = 200
-	stage_sign.outline_size = 28
-	stage_sign.modulate = Color(1.0, 0.82, 0.2)
-	stage_sign.position = Vector3(20.3, 4.6, 0)
-	stage_sign.rotation_degrees = Vector3(0, -90, 0)
-	add_child(stage_sign)
+	# Back porch: wooden deck, steps, posts, railing and a low flat roof friends climb onto.
+	var deck_y := 0.45
+	var wood := Color(0.6, 0.45, 0.3)
+	_bx("wood", Vector3(8.4, deck_y, 3.2), Vector3(-3.0, deck_y * 0.5, wall_z + 1.6), wood)
+	_bx("wood", Vector3(1.6, 0.22, 0.4), Vector3(0.0, 0.11, wall_z + 3.4), wood.darkened(0.1))
+	var roof_y := 3.05
+	for px: float in [-7.0, -3.0, 1.0]:
+		_bx("wood", Vector3(0.16, roof_y - deck_y, 0.16), Vector3(px, deck_y + (roof_y - deck_y) * 0.5, wall_z + 3.05), wood.lightened(0.15))
+	_bx("wood", Vector3(4.0, 0.08, 0.08), Vector3(-5.0, deck_y + 0.85, wall_z + 3.05), wood.lightened(0.15))
+	_bx("wood", Vector3(0.08, 0.08, 3.0), Vector3(-7.0, deck_y + 0.85, wall_z + 1.55), wood.lightened(0.15))
+	for k in 9:
+		_bx("wood", Vector3(0.05, 0.85, 0.05), Vector3(-6.6 + k * 0.42, deck_y + 0.42, wall_z + 3.05), wood.lightened(0.15))
+	_bx("shingle", Vector3(8.8, 0.18, 3.6), Vector3(-3.0, roof_y + 0.09, wall_z + 1.75), Color(0.42, 0.38, 0.38), 0.0, 0.7)
+	_bx("flat", Vector3(8.8, 0.22, 0.06), Vector3(-3.0, roof_y + 0.05, wall_z + 3.57), trim)
+	# Hand-painted bedsheet banner hanging off the porch roof
+	var sheet_z := wall_z + 3.62
+	_bx("flat", Vector3(5.4, 0.9, 0.03), Vector3(-3.4, roof_y - 0.42, sheet_z), Color(0.9, 0.88, 0.8))
+	_bx("flat", Vector3(5.4, 0.04, 0.035), Vector3(-3.4, roof_y - 0.1, sheet_z), Color(0.75, 0.72, 0.65))
+	var lines: Array[String] = ["CITY 2 CITY WRESTLING", "BACKYARD BRAWL"]
+	var line_cols: Array[Color] = [Color(0.75, 0.08, 0.08), Color(0.08, 0.12, 0.45)]
+	for li in 2:
+		var lab := Label3D.new()
+		lab.text = lines[li]
+		lab.font_size = 52 if li == 0 else 44
+		lab.outline_size = 0
+		lab.modulate = line_cols[li]
+		lab.shaded = true
+		lab.position = Vector3(-3.4, roof_y - 0.28 - li * 0.3, sheet_z + 0.025)
+		lab.rotation_degrees = Vector3(0, 0, -1.5 + li * 2.5)  # wonky hand lettering
+		add_child(lab)
+	# Ladder up to the porch roof
+	var lb := Vector3(1.6, 0, wall_z + 3.9)
+	var lt := Vector3(1.6, roof_y + 0.6, wall_z + 3.3)
+	for s: float in [-0.25, 0.25]:
+		_beam("wood", lb + Vector3(s, 0, 0), lt + Vector3(s, 0, 0), 0.07, Color(0.75, 0.6, 0.35))
+	for k in 8:
+		var t := (k + 0.6) / 8.6
+		_bx("wood", Vector3(0.5, 0.05, 0.05), lb.lerp(lt, t), Color(0.75, 0.6, 0.35))
 
-	# ---- Video wall above the far (-z) crowd: the backdrop the camera always sees
-	var wall_z := -16.9
-	_box(Vector3(46, 9.0, 0.4), Vector3(0, 4.5, wall_z - 0.4), Color(0.05, 0.03, 0.09))
-	_box(Vector3(17.0, 3.6, 0.3), Vector3(0, 5.9, wall_z), Color(0.12, 0.12, 0.16))
-	_box(Vector3(16.2, 2.9, 0.1), Vector3(0, 5.9, wall_z + 0.17), Color(0.06, 0.08, 0.3), true)
-	_box(Vector3(16.2, 0.12, 0.1), Vector3(0, 7.45, wall_z + 0.2), Color(1.0, 0.3, 0.8), true)
-	_box(Vector3(16.2, 0.12, 0.1), Vector3(0, 4.45, wall_z + 0.2), Color(0.2, 0.8, 1.0), true)
-	var sign3d := Label3D.new()
-	sign3d.text = "TURNBUCKLE THUNDER"
-	sign3d.font_size = 150
-	sign3d.outline_size = 24
-	sign3d.modulate = Color(1.0, 0.82, 0.2)
-	sign3d.position = Vector3(0, 6.3, wall_z + 0.3)
-	add_child(sign3d)
-	var sub := Label3D.new()
-	sub.text = "made with Xogot"
-	sub.font_size = 64
-	sub.outline_size = 12
-	sub.modulate = Color(0.6, 0.85, 1.0)
-	sub.position = Vector3(0, 5.25, wall_z + 0.3)
-	add_child(sub)
+	# Neighbour's house beyond the left fence + a dark tree line.
+	var nb := Vector3(-23.0, 0, -15.0)
+	_bx("siding", Vector3(9.0, 5.6, 7.0), nb + Vector3(0, 2.8, 0), Color(0.82, 0.72, 0.55), PI * 0.5, 0.6)
+	for s: float in [-1.0, 1.0]:
+		_sbox("shingle", Vector3(4.2, 0.2, 9.6), Transform3D(Basis(Vector3.BACK, -0.5 * s), nb + Vector3(1.85 * s, 6.6, 0)), Color(0.3, 0.26, 0.26), 0.7)
+	_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(3.52, 3.8, 1.8), Color(1.0, 0.85, 0.5))
+	_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(3.52, 1.6, -2.0), Color(0.5, 0.65, 1.0))
+	var trees: Array[Vector3] = [Vector3(-14.0, 0, -21.0), Vector3(-17.5, 0, -6.0), Vector3(13.0, 0, -21.0), Vector3(17.0, 0, -16.0), Vector3(19.0, 0, -6.0), Vector3(-11.5, 0, -24.0)]
+	for t in trees:
+		var th := randf_range(6.0, 9.0)
+		_cy("flat", 0.25, 0.2, 1.6, t + Vector3(0, 0.8, 0), Color(0.15, 0.1, 0.07), 6)
+		_cy("flat", 2.4, 0.0, th * 0.6, t + Vector3(0, 1.4 + th * 0.3, 0), Color(0.05, 0.11, 0.08), 7)
+		_cy("flat", 1.8, 0.0, th * 0.5, t + Vector3(0, 1.4 + th * 0.65, 0), Color(0.06, 0.13, 0.09), 7)
+
+
+func _build_fence() -> void:
+	# Wooden privacy fence: side runs at x = +/-14, back runs beside the house.
+	var fh := 1.9
+	var runs: Array = [
+		[Vector3(-14, 0, -15), Vector3(-14, 0, 10)],
+		[Vector3(14, 0, -15), Vector3(14, 0, 10)],
+		[Vector3(-14, 0, -15), Vector3(-9.15, 0, -15)],
+		[Vector3(9.15, 0, -15), Vector3(14, 0, -15)],
+	]
+	for r: Array in runs:
+		var a: Vector3 = r[0]
+		var b: Vector3 = r[1]
+		var d := b - a
+		var run_len := d.length()
+		var dir := d / run_len
+		var yaw := atan2(-dir.z, dir.x)
+		var count := int(run_len / 0.32)
+		for k in count:
+			var p := a + dir * ((k + 0.5) * run_len / count)
+			var tint := randf_range(-0.06, 0.06)
+			var bh := fh + (0.08 if k % 2 == 0 else 0.0)
+			_bx("wood", Vector3(run_len / count - 0.02, bh, 0.04), p + Vector3(0, bh * 0.5, 0), Color(0.52 + tint, 0.4 + tint, 0.28 + tint), yaw)
+		var posts := int(run_len / 2.4)
+		for k in posts + 1:
+			var pp := a + dir * (k * run_len / posts)
+			_bx("wood", Vector3(0.12, fh + 0.1, 0.12), pp + Vector3(0, (fh + 0.1) * 0.5, 0), Color(0.42, 0.32, 0.22), yaw)
+		_bx("wood", Vector3(run_len, 0.08, 0.1), (a + b) * 0.5 + Vector3(0, fh - 0.25, 0), Color(0.45, 0.34, 0.23), yaw)
+
+
+func _lawn_chair(pos: Vector3, face: Vector3, col: Color) -> void:
+	var b := Basis.looking_at(face)
+	var frame := Color(0.75, 0.76, 0.8)
+	var xf := Transform3D(b, pos)
+	_sbox("flat", Vector3(0.52, 0.04, 0.46), xf * Transform3D(Basis(), Vector3(0, 0.42, 0)), col)
+	_sbox("flat", Vector3(0.52, 0.55, 0.04), xf * Transform3D(Basis(Vector3.RIGHT, 0.25), Vector3(0, 0.72, 0.25)), col)
+	for sx: float in [-0.26, 0.26]:
+		_beam("flat", xf * Vector3(sx, 0, -0.22), xf * Vector3(sx, 0.42, 0.18), 0.03, frame)
+		_beam("flat", xf * Vector3(sx, 0, 0.22), xf * Vector3(sx, 0.42, -0.18), 0.03, frame)
+		_beam("flat", xf * Vector3(sx, 0.62, -0.2), xf * Vector3(sx, 0.62, 0.2), 0.03, frame)
+
+
+func _build_props() -> void:
+	# Work light tripod (ring_spot sits in its lamp head)
+	var wl := Vector3(-6.4, 0, 2.6)
+	var black := Color(0.08, 0.08, 0.09)
+	for k in 3:
+		var a := TAU * k / 3.0
+		_beam("flat", wl + Vector3(cos(a) * 0.7, 0, sin(a) * 0.7), wl + Vector3(0, 1.4, 0), 0.05, black)
+	_beam("flat", wl + Vector3(0, 1.3, 0), wl + Vector3(0, 5.8, 0), 0.06, Color(0.85, 0.7, 0.1))
+	var head_xf := Transform3D(Basis.looking_at(Vector3(0.6, 1.0, -0.6) - Vector3(-6.4, 6.0, 2.6)), Vector3(-6.4, 6.0, 2.6))
+	_sbox("flat", Vector3(0.6, 0.45, 0.25), head_xf, Color(0.95, 0.75, 0.1))
+	_sbox("glow", Vector3(0.5, 0.36, 0.05), head_xf * Transform3D(Basis(), Vector3(0, 0, -0.14)), Color(1.0, 0.97, 0.85))
+	_beam("flat", wl + Vector3(0, 0.05, 0), Vector3(-5.2, 0.03, 4.8), 0.03, Color(1.0, 0.45, 0.06))  # extension cord
+
+	# Trampoline (left)
+	var tp := Vector3(-9.6, 0, -8.0)
+	_cy("flat", 2.0, 2.0, 0.1, tp + Vector3(0, 0.88, 0), Color(0.15, 0.35, 0.8), 12)
+	_cy("flat", 1.75, 1.75, 0.04, tp + Vector3(0, 0.94, 0), Color(0.04, 0.04, 0.05), 12)
+	for k in 6:
+		var a2 := TAU * k / 6.0
+		var lp := tp + Vector3(cos(a2) * 1.9, 0, sin(a2) * 1.9)
+		_beam("metal", lp, lp + Vector3(0, 0.86, 0), 0.06, Color(0.6, 0.62, 0.65))
+
+	# Kiddie pool (right)
+	var kp := Vector3(7.4, 0, -7.2)
+	_cy("flat", 1.15, 1.2, 0.3, kp + Vector3(0, 0.15, 0), Color(0.3, 0.6, 0.95), 12)
+	_cy("glow", 1.02, 1.02, 0.02, kp + Vector3(0, 0.25, 0), Color(0.22, 0.42, 0.55), 12)
+	_bx("flat", Vector3(0.5, 0.06, 0.25), kp + Vector3(0.3, 0.27, 0.2), Color(1.0, 0.85, 0.2), 0.6)  # floatie
+	# Grill by the porch, coals glowing
+	var gp := Vector3(3.3, 0, -11.8)
+	_cy("flat", 0.32, 0.42, 0.35, gp + Vector3(0, 0.95, 0), black, 8)
+	_cy("flat", 0.42, 0.25, 0.25, gp + Vector3(0, 1.25, 0), Color(0.12, 0.12, 0.13), 8)
+	_cy("glow", 0.33, 0.33, 0.02, gp + Vector3(0, 1.12, 0), Color(1.0, 0.35, 0.08), 8)
+	for k in 3:
+		var a3 := TAU * k / 3.0 + 0.3
+		_beam("flat", gp + Vector3(cos(a3) * 0.35, 0, sin(a3) * 0.35), gp + Vector3(0, 0.85, 0), 0.04, black)
+	# Beat-up couch on the porch
+	var cp := Vector3(-4.6, 0.45, -13.9)
+	var couch := Color(0.42, 0.38, 0.2)
+	_bx("flat", Vector3(2.4, 0.45, 0.95), cp + Vector3(0, 0.22, 0), couch)
+	_bx("flat", Vector3(2.4, 0.6, 0.28), cp + Vector3(0, 0.6, -0.36), couch.darkened(0.1))
+	for s: float in [-1.0, 1.0]:
+		_bx("flat", Vector3(0.26, 0.62, 0.95), cp + Vector3(s * 1.2, 0.31, 0), couch.darkened(0.15))
+	_bx("flat", Vector3(0.7, 0.12, 0.6), cp + Vector3(-0.4, 0.5, 0.05), Color(0.55, 0.5, 0.3))  # mismatched cushion
+	_bx("flat", Vector3(0.3, 0.06, 0.2), cp + Vector3(0.65, 0.48, 0.1), Color(0.6, 0.6, 0.58), 0.4)  # tape patch
+	# Shed (right) with a flat-ish roof people sit on, and a ladder
+	var sp := Vector3(10.6, 0, -11.0)
+	var shed := Color(0.46, 0.55, 0.45)
+	_bx("wood", Vector3(3.2, 2.5, 2.6), sp + Vector3(0, 1.25, 0), shed)
+	_bx("shingle", Vector3(3.6, 0.15, 3.0), sp + Vector3(0, 2.58, 0), Color(0.32, 0.3, 0.3), 0.0, 0.7)
+	_bx("wood", Vector3(1.2, 2.0, 0.05), sp + Vector3(-0.5, 1.0, 1.32), shed.darkened(0.25))
+	_bx("flat", Vector3(0.6, 0.5, 0.05), sp + Vector3(0.9, 1.6, 1.32), Color(0.1, 0.12, 0.16))  # window
+	var slb := sp + Vector3(-1.9, 0, 1.0)
+	var slt := sp + Vector3(-1.65, 2.9, 0.6)
+	for s: float in [-0.22, 0.22]:
+		_beam("metal", slb + Vector3(0, 0, s), slt + Vector3(0, 0, s), 0.06, Color(0.7, 0.72, 0.75))
+	for k in 7:
+		_bx("metal", Vector3(0.05, 0.04, 0.44), slb.lerp(slt, (k + 0.7) / 7.6), Color(0.7, 0.72, 0.75))
+	# Trash cans by the house corner
+	for tc: Vector3 in [Vector3(7.6, 0, -14.4), Vector3(8.4, 0, -14.2)]:
+		_cy("metal", 0.3, 0.33, 0.85, tc + Vector3(0, 0.425, 0), Color(0.6, 0.62, 0.62), 8)
+		_cy("metal", 0.36, 0.3, 0.08, tc + Vector3(0, 0.89, 0), Color(0.65, 0.67, 0.67), 8)
+	_bx("flat", Vector3(0.6, 1.0, 0.65), Vector3(6.7, 0.5, -14.4), Color(0.15, 0.3, 0.7))  # recycling bin
+	# Garden gnomes
+	var gnomes: Array[Vector3] = [Vector3(-12.8, 0, -3.0), Vector3(-8.0, 0, -12.6), Vector3(6.0, 0, -8.3), Vector3(12.6, 0, -6.0), Vector3(-12.4, 0, -10.5), Vector3(0.9, 0, -12.5)]
+	var gnome_cols: Array[Color] = [Color(0.2, 0.35, 0.8), Color(0.2, 0.6, 0.3)]
+	for i in gnomes.size():
+		var g: Vector3 = gnomes[i]
+		_cy("flat", 0.13, 0.09, 0.22, g + Vector3(0, 0.11, 0), gnome_cols[i % 2], 6)
+		_bx("flat", Vector3(0.13, 0.12, 0.13), g + Vector3(0, 0.28, 0), Color(0.9, 0.72, 0.6))
+		_bx("flat", Vector3(0.14, 0.1, 0.06), g + Vector3(0, 0.22, 0.07), Color(0.95, 0.95, 0.95))
+		_cy("flat", 0.09, 0.0, 0.22, g + Vector3(0, 0.45, 0), Color(0.85, 0.12, 0.1), 6)
+	# Lawn chairs
+	_lawn_chair(Vector3(-6.9, 0, -1.4), Vector3(1, 0, 0.1), Color(0.2, 0.55, 0.35))
+	_lawn_chair(Vector3(-7.1, 0, 0.9), Vector3(1, 0, -0.1), Color(0.85, 0.3, 0.25))
+	_lawn_chair(Vector3(6.9, 0, -0.9), Vector3(-1, 0, 0.1), Color(0.25, 0.4, 0.85))
+	_lawn_chair(Vector3(6.7, 0, 1.4), Vector3(-1, 0, -0.1), Color(0.9, 0.75, 0.2))
+	_lawn_chair(Vector3(-2.6, 0, -7.9), Vector3(0.2, 0, 1), Color(0.2, 0.55, 0.35))
+	_lawn_chair(Vector3(2.5, 0, -8.1), Vector3(-0.2, 0, 1), Color(0.85, 0.3, 0.25))
+	# A cooler
+	_bx("flat", Vector3(0.7, 0.42, 0.42), Vector3(-5.8, 0.21, -6.6), Color(0.85, 0.2, 0.15), 0.3)
+	_bx("flat", Vector3(0.72, 0.08, 0.44), Vector3(-5.8, 0.44, -6.6), Color(0.95, 0.95, 0.95), 0.3)
+
+
+func _build_car() -> void:
+	# Beat-up sedan pulled onto the lawn at the front-right, headlights on the ring.
+	var pos := Vector3(9.0, 0, 6.4)
+	var face := Vector3(-pos.x, 0, -pos.z).normalized()
+	var xf := Transform3D(Basis.looking_at(face), pos)
+	var body := Color(0.45, 0.12, 0.12)
+	var glass := Color(0.07, 0.09, 0.13)
+	_sbox("flat", Vector3(1.8, 0.65, 4.4), xf * Transform3D(Basis(), Vector3(0, 0.62, 0)), body)
+	_sbox("flat", Vector3(1.6, 0.55, 2.2), xf * Transform3D(Basis(), Vector3(0, 1.2, 0.3)), body.darkened(0.1))
+	_sbox("flat", Vector3(1.64, 0.4, 2.0), xf * Transform3D(Basis(), Vector3(0, 1.2, 0.3)), glass)
+	_sbox("flat", Vector3(1.4, 0.42, 2.24), xf * Transform3D(Basis(), Vector3(0, 1.2, 0.3)), glass)
+	_sbox("flat", Vector3(1.0, 0.3, 0.9), xf * Transform3D(Basis(), Vector3(0.2, 0.95, -1.5)), Color(0.55, 0.55, 0.5))  # primer hood patch
+	_sbox("flat", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, -2.22)), Color(0.6, 0.6, 0.62))  # bumper
+	_sbox("flat", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, 2.22)), Color(0.6, 0.6, 0.62))
+	for sx: float in [-0.65, 0.65]:
+		_sbox("glow", Vector3(0.36, 0.2, 0.06), xf * Transform3D(Basis(), Vector3(sx, 0.72, -2.21)), Color(1.0, 0.97, 0.85))
+		_sbox("glow", Vector3(0.3, 0.16, 0.06), xf * Transform3D(Basis(), Vector3(sx, 0.75, 2.21)), Color(0.8, 0.08, 0.06))
+		for sz: float in [-1.35, 1.35]:
+			_scyl("flat", 0.33, 0.33, 0.24, xf * Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx * 1.38, 0.33, sz)), Color(0.05, 0.05, 0.05), 8)
+	# One spot for both headlamps (cheaper than two)
+	var hp := xf * Vector3(0, 0.8, -2.3)
+	var head := SpotLight3D.new()
+	head.transform = Transform3D(Basis.looking_at(Vector3(0, 1.7, 0) - hp), hp)
+	head.spot_angle = 26.0
+	head.spot_angle_attenuation = 1.2
+	head.spot_range = 20.0
+	head.spot_attenuation = 0.4
+	head.light_energy = 3.2
+	head.light_color = Color(1.0, 0.96, 0.82)
+	add_child(head)
+
+
+func _hang(a: Vector3, b: Vector3, sag: float, t: float) -> Vector3:
+	return a.lerp(b, t) - Vector3(0, sag * 4.0 * t * (1.0 - t), 0)
+
+
+func _build_string_lights() -> void:
+	# Two zig-zag strands from the house eaves over the ring to poles at the sides.
+	var poles: Array[Vector3] = [Vector3(-7.4, 0, -9.5), Vector3(7.4, 0, -9.5), Vector3(-7.4, 0, -4.0), Vector3(7.4, 0, -4.0),
+		Vector3(-7.6, 0, 1.6), Vector3(7.6, 0, 1.6), Vector3(-7.6, 0, 4.4), Vector3(7.6, 0, 4.4)]
+	for p in poles:
+		_bx("wood", Vector3(0.12, 5.0, 0.12), p + Vector3(0, 2.5, 0), Color(0.55, 0.42, 0.3), 0.0, 2.0)
+	var strand_a: Array[Vector3] = [Vector3(-7.0, 5.9, -14.9), Vector3(7.4, 4.95, -9.5), Vector3(-7.4, 4.95, -4.0), Vector3(7.6, 4.95, 1.6), Vector3(-7.6, 4.95, 4.4)]
+	var strand_b: Array[Vector3] = [Vector3(7.0, 5.9, -14.9), Vector3(-7.4, 4.95, -9.5), Vector3(7.4, 4.95, -4.0), Vector3(-7.6, 4.95, 1.6), Vector3(7.6, 4.95, 4.4)]
+	var cols: Array[Color] = [Color(1.0, 0.85, 0.5), Color(1.0, 0.85, 0.5), Color(1.0, 0.3, 0.2), Color(0.3, 1.0, 0.4), Color(0.35, 0.55, 1.0), Color(1.0, 0.65, 0.15)]
+	var wire := Color(0.05, 0.05, 0.05)
+	for strand: Array in [strand_a, strand_b]:
+		for i in strand.size() - 1:
+			var a: Vector3 = strand[i]
+			var b: Vector3 = strand[i + 1]
+			var sag := 0.55
+			var segs := 8
+			var prev := a
+			for k in range(1, segs + 1):
+				var p := _hang(a, b, sag, float(k) / segs)
+				_beam("flat", prev, p, 0.025, wire)
+				prev = p
+			var nb := int(a.distance_to(b) / 0.75)
+			for k in nb:
+				var bp := _hang(a, b, sag, (k + 0.5) / nb) - Vector3(0, 0.07, 0)
+				_bulb_xforms.append(Transform3D(Basis(), bp))
+				_bulb_cols.append(cols[randi() % cols.size()])
+	var sm := SphereMesh.new()
+	sm.radius = 0.065
+	sm.height = 0.13
+	sm.radial_segments = 6
+	sm.rings = 3
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = sm
+	mm.instance_count = _bulb_xforms.size()
+	for i in _bulb_xforms.size():
+		mm.set_instance_transform(i, _bulb_xforms[i])
+		mm.set_instance_color(i, _bulb_cols[i])
+	var bm := StandardMaterial3D.new()
+	bm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	bm.vertex_color_use_as_albedo = true
+	bm.vertex_color_is_srgb = true
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	mmi.material_override = bm
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mmi)
+
+
+# ---- the friends watching
+
+func _add_fan(p: Vector3, variant: int, lit := 0.5, bob := 1.0) -> void:
+	# p = feet position. The quad's +Z (its front) faces the broadcast camera side.
+	var s := randf_range(0.92, 1.06)
+	var c := p + Vector3(0, 0.85 * s, 0)
+	var focus := Vector3(0, c.y, 9.0)
+	var away := c - focus
+	away.y = 0.0
+	var tr := Transform3D(Basis(), c).looking_at(c + away, Vector3.UP)
+	tr.basis = tr.basis.scaled(Vector3(s, s, s))
+	_fan_xforms.append(tr)
+	var sitting := variant == FAN_SIT or variant == FAN_SIT_CUP
+	var cheer := 0.0 if sitting or randf() < 0.4 else 1.0
+	_fan_custom.append(Color(variant / 8.0, bob * (0.5 if sitting else 1.0), lit, cheer))
+	if variant == FAN_PHONE or randf() < 0.25:
+		crowd_spots.append(c + Vector3(0, 0.55 * s, 0))
+
+
+func _stand_variant() -> int:
+	var standing: Array[int] = [FAN_HOODIE, FAN_CAP, FAN_CHEER, FAN_PHONE, FAN_PHONE, FAN_CUP, FAN_CUP, FAN_HAIR]
+	return standing[randi() % standing.size()]
 
 
 func _build_crowd() -> void:
-	# Bleachers on the far (-z) side and the two flanks, filled with billboard pixel fans.
+	# ~45 friends hanging around the yard: one MultiMesh of camera-facing pixel quads.
+	_fan_xforms.clear()
+	_fan_custom.clear()
+	crowd_spots = PackedVector3Array()
+	# Standing behind the far side of the ring (gaps left so the porch stays visible)
+	var x := -7.2
+	while x < 7.2:
+		if absf(x) > 1.2 or randf() < 0.3:
+			_add_fan(Vector3(x, 0, randf_range(-6.0, -7.4)), _stand_variant(), 0.55)
+		x += randf_range(0.75, 1.1)
+	# Along the side fences
+	for z: float in [-2.5, -4.0, -5.6, -10.5, -12.2]:
+		_add_fan(Vector3(-12.6 + randf_range(-0.3, 0.3), 0, z), _stand_variant(), 0.38)
+	for z: float in [-2.0, -3.6, -5.0, -13.2]:
+		_add_fan(Vector3(12.4 + randf_range(-0.3, 0.3), 0, z), _stand_variant(), 0.38)
+	# Lawn chairs (sitting, slightly in front of each chair)
+	for c: Vector3 in [Vector3(-6.8, 0, -1.25), Vector3(-7.0, 0, 1.05), Vector3(6.8, 0, -0.75), Vector3(6.6, 0, 1.55), Vector3(-2.55, 0, -7.75), Vector3(2.45, 0, -7.95)]:
+		_add_fan(c, FAN_SIT if randf() < 0.5 else FAN_SIT_CUP, 0.55)
+	# Porch: couch sitters + friends at the railing
+	for cx: float in [-5.3, -4.6, -3.9]:
+		_add_fan(Vector3(cx, 0.45, -13.7), FAN_SIT if randf() < 0.5 else FAN_SIT_CUP, 0.62)
+	for rx: float in [-6.5, -2.0, -1.2, 0.2]:
+		_add_fan(Vector3(rx, 0.45, -12.4), _stand_variant(), 0.65)
+	# Up on the porch roof
+	for rx: float in [-6.2, -4.6, -3.2, -1.4, 0.3]:
+		var v := FAN_SIT if rx < -4.0 else _stand_variant()
+		_add_fan(Vector3(rx, 3.14, -11.7), v, 0.5, 1.4)
+	# On the shed roof
+	for sx: float in [9.8, 10.8, 11.6]:
+		_add_fan(Vector3(sx, 2.66, -10.2), FAN_SIT if sx > 11.0 else _stand_variant(), 0.45, 1.4)
+	# Bouncing on the trampoline
+	_add_fan(Vector3(-10.1, 0.96, -7.6), FAN_CHEER, 0.45, 3.0)
+	_add_fan(Vector3(-9.0, 0.96, -8.3), FAN_PHONE, 0.45, 3.0)
+	# Grill master + a friend at the pool + two by the camera-side corners
+	_add_fan(Vector3(3.3, 0, -11.1), FAN_CUP, 0.6)
+	_add_fan(Vector3(8.6, 0, -6.6), FAN_CUP, 0.45)
+	_add_fan(Vector3(-5.6, 0, 4.4), FAN_PHONE, 0.6)
+	_add_fan(Vector3(5.8, 0, 4.0), FAN_HOODIE, 0.55)
+
 	var quad := QuadMesh.new()
-	quad.size = Vector2(0.48, 0.96)
+	quad.size = Vector2(0.85, 1.7)
 	var sh := Shader.new()
 	sh.code = CROWD_SHADER
 	crowd_mat = ShaderMaterial.new()
@@ -522,57 +1253,26 @@ func _build_crowd() -> void:
 	crowd_mat.set_shader_parameter("tex", _make_crowd_texture())
 	crowd_mat.set_shader_parameter("hype", 0.0)
 
-	var xforms: Array[Transform3D] = []
-	var seat_cols: Array[Color] = [Color(0.12, 0.09, 0.18), Color(0.17, 0.12, 0.24)]
-	var step := 0.75
-	var rows := 9
-	for row in rows:
-		var dist := 9.5 + row * step
-		var top := 0.3 + row * 0.38
-		var seat: Color = seat_cols[row % 2]
-		var half := step * 0.5
-		# far side (-z): spans x inside the flank steps so step tops never overlap
-		_box(Vector3(2.0 * (dist - half), top, step), Vector3(0, top * 0.5, -dist), seat)
-		# left flank (-x), full length to just past the ring
-		var lz0 := -dist - half
-		var lz1 := 2.0
-		_box(Vector3(step, top, lz1 - lz0), Vector3(-dist, top * 0.5, (lz0 + lz1) * 0.5), seat)
-		# right flank (+x), stops before the entrance aisle
-		var rz1 := -3.0
-		_box(Vector3(step, top, rz1 - lz0), Vector3(dist, top * 0.5, (lz0 + rz1) * 0.5), seat)
-
-		var y := top + 0.48
-		var x := -dist + randf() * 0.3
-		while x < dist:
-			_add_fan(xforms, Vector3(x, y, -dist + randf_range(-0.12, 0.12)))
-			x += randf_range(0.42, 0.56)
-		var z := -dist + 0.5 + randf() * 0.3
-		while z < lz1:
-			_add_fan(xforms, Vector3(-dist + randf_range(-0.12, 0.12), y, z))
-			if z < rz1:
-				_add_fan(xforms, Vector3(dist + randf_range(-0.12, 0.12), y, z + randf_range(-0.1, 0.1)))
-			z += randf_range(0.42, 0.56)
-
-	# LED ribbon board along the front of the far bleachers
-	_box(Vector3(2.0 * 9.1, 0.3, 0.05), Vector3(0, 0.2, -9.5 + step * 0.5 + 0.03), Color(1.0, 0.25, 0.7), true)
-
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
+	mm.use_custom_data = true
 	mm.mesh = quad
-	mm.instance_count = xforms.size()
+	mm.instance_count = _fan_xforms.size()
 	var palette: Array[Color] = [Color(0.95, 0.2, 0.2), Color(0.2, 0.45, 1.0), Color(1.0, 0.9, 0.2), Color(0.95, 0.95, 0.95),
-		Color(0.2, 0.8, 0.35), Color(0.65, 0.3, 0.9), Color(0.2, 0.2, 0.22), Color(1.0, 0.55, 0.15), Color(1.0, 0.4, 0.75)]
-	for i in xforms.size():
-		mm.set_instance_transform(i, xforms[i])
+		Color(0.2, 0.8, 0.35), Color(0.55, 0.3, 0.85), Color(0.25, 0.25, 0.28), Color(1.0, 0.55, 0.15), Color(0.5, 0.5, 0.55),
+		Color(0.35, 0.25, 0.18), Color(0.15, 0.3, 0.2)]
+	for i in _fan_xforms.size():
+		mm.set_instance_transform(i, _fan_xforms[i])
 		mm.set_instance_color(i, palette[randi() % palette.size()])
+		mm.set_instance_custom_data(i, _fan_custom[i])
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	mmi.material_override = crowd_mat
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mmi)
 
-	# Camera-flash pops: tiny additive billboards that blink at random spots in the crowd.
+	# Phone-camera flash pops: tiny additive billboards that blink at random friends.
 	var fm := StandardMaterial3D.new()
 	fm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	fm.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
@@ -582,10 +1282,10 @@ func _build_crowd() -> void:
 	fm.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
 	fm.albedo_color = Color(1.0, 1.0, 0.95)
 	var fq := QuadMesh.new()
-	fq.size = Vector2(0.7, 0.7)
+	fq.size = Vector2(0.5, 0.5)
 	flash_nodes.clear()
 	flash_timers = PackedFloat32Array()
-	for i in 10:
+	for i in 6:
 		var f := MeshInstance3D.new()
 		f.mesh = fq
 		f.material_override = fm
@@ -594,20 +1294,6 @@ func _build_crowd() -> void:
 		add_child(f)
 		flash_nodes.append(f)
 		flash_timers.append(randf_range(0.1, 2.5))
-
-
-func _add_fan(xforms: Array[Transform3D], p: Vector3) -> void:
-	if randf() < 0.06:
-		return  # empty seat
-	# Quad's +Z (its front) faces the ring / broadcast camera side.
-	var focus := Vector3(0, p.y, 2.0)
-	var away := p - focus
-	away.y = 0.0
-	var tr := Transform3D(Basis(), p).looking_at(p + away, Vector3.UP)
-	var s := randf_range(0.9, 1.1)
-	tr.basis = tr.basis.scaled(Vector3(s, s, s))
-	xforms.append(tr)
-	crowd_spots.append(p + Vector3(0, 0.3, 0))
 
 
 func _update_crowd(delta: float) -> void:
@@ -624,7 +1310,7 @@ func _update_crowd(delta: float) -> void:
 			continue
 		if f.visible:
 			f.visible = false
-			flash_timers[i] = randf_range(0.4, 3.5) / (1.0 + crowd_hype_shown * 4.0)
+			flash_timers[i] = randf_range(0.6, 4.0) / (1.0 + crowd_hype_shown * 4.0)
 		else:
 			f.position = crowd_spots[randi() % crowd_spots.size()] + Vector3(0, 0, 0.15)
 			f.scale = Vector3.ONE * randf_range(0.7, 1.3)
