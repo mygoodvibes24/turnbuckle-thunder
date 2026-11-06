@@ -1,4 +1,4 @@
-# Turnbuckle Thunder (prototype)
+# City 2 City Wrestling (prototype)
 
 A 3D grappling-style pro wrestling prototype in the spirit of late-90s console
 wrestling games, built for **Xogot** (Godot 4 on iPad / iPhone). Everything

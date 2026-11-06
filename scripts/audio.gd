@@ -1,5 +1,5 @@
 extends Node
-## Turnbuckle Thunder - procedural audio (no audio assets; everything is synthesized here).
+## City 2 City Wrestling - procedural audio (no audio assets; everything is synthesized here).
 ##
 ## Usage (from main.gd):
 ##   var audio: Node = preload("res://scripts/audio.gd").new()
