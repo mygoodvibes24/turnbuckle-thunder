@@ -1052,11 +1052,11 @@ func _build_hud() -> void:
 
 func _build_help_panel() -> PanelContainer:
 	var panel := PanelContainer.new()
-	var sb := _hud_box(Color(0.02, 0.02, 0.06, 0.9), HUD_GOLD, 20, 3)
-	sb.content_margin_left = 28
-	sb.content_margin_right = 28
-	sb.content_margin_top = 16
-	sb.content_margin_bottom = 16
+	var sb := _hud_box(Color(0.02, 0.02, 0.06, 0.92), HUD_GOLD, 20, 3)
+	sb.content_margin_left = 24
+	sb.content_margin_right = 24
+	sb.content_margin_top = 10
+	sb.content_margin_bottom = 10
 	panel.add_theme_stylebox_override("panel", sb)
 	panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
 	panel.grow_vertical = Control.GROW_DIRECTION_BOTH
@@ -1066,53 +1066,125 @@ func _build_help_panel() -> PanelContainer:
 
 	var col := VBoxContainer.new()
 	col.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	col.add_theme_constant_override("separation", 10)
+	col.add_theme_constant_override("separation", 4)
 	panel.add_child(col)
-	var title := _big_label(36)
+	var title := _big_label(32)
 	title.text = "HOW TO PLAY"
 	title.add_theme_font_override("font", hud_font_italic)
 	title.add_theme_color_override("font_color", HUD_GOLD)
 	title.add_theme_constant_override("outline_size", 8)
 	col.add_child(title)
 
-	var grid := GridContainer.new()
-	grid.columns = 2
-	grid.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	grid.add_theme_constant_override("h_separation", 22)
-	grid.add_theme_constant_override("v_separation", 4)
-	col.add_child(grid)
-	var rows: Array[PackedStringArray] = [
-		PackedStringArray(["STICK", "Move around the ring"]),
-		PackedStringArray(["STRIKE", "Punch  (3 in a row = combo)"]),
-		PackedStringArray(["GRAB", "Lock up when close"]),
-		PackedStringArray(["RUN", "Hit the ropes, STRIKE = Clothesline"]),
-		PackedStringArray(["PIN", "Cover a downed foe (far: Taunt)"]),
-		PackedStringArray(["LOCK-UP", "STRIKE Knee  /  STICK+STRIKE Suplex"]),
-		PackedStringArray(["", "GRAB Slam  /  STICK+GRAB DDT"]),
-		PackedStringArray(["SPECIAL", "Full spirit: lock up + STICK+GRAB"]),
-		PackedStringArray(["CAUGHT", "Tap GRAB or STRIKE to reverse"]),
-		PackedStringArray(["PINNED", "Mash any button to kick out!"]),
+	# Two columns of sections: [header, rows, first_row_is_column_header].
+	# STRIKE is the red PUNCH button; STICK+ means "hold a direction while pressing".
+	var left: Array = [
+		["CONTROLS", [
+			["STICK", "Move  (also aims whips and moves)"],
+			["PUNCH", "Strike  (3 in a row knocks down)"],
+			["GRAB", "Tap: lock-up   Hold: STRONG lock-up"],
+			["RUN", "Hit the ropes   +STRIKE: Clothesline"],
+			["PIN", "Cover a downed foe, else TAUNT"],
+		], false],
+		["LOCK-UP MOVES", [
+			["", "TAP GRAB", "HOLD GRAB"],
+			["STRIKE", "Knee Lift", "Thunder Tombstone"],
+			["STICK+STRIKE", "Suplex", "Storm Powerbomb"],
+			["GRAB", "Body Slam", "Spinebuster"],
+			["STICK+GRAB", "DDT", "Swinging Neckbreaker"],
+			["RUN", "Irish Whip", "Irish Whip"],
+			["SPECIAL", "STICK+GRAB:", "THUNDER DRIVER!!"],
+		], true],
+		["IRISH WHIP  (as he rebounds)", [
+			["STRIKE", "Clothesline"],
+			["GRAB", "Back Body Drop"],
+			["STICK+GRAB", "Running Powerslam"],
+		], false],
 	]
-	for row in rows:
-		var key := Label.new()
-		key.text = row[0]
-		key.add_theme_font_override("font", hud_font)
-		key.add_theme_font_size_override("font_size", 24)
-		key.add_theme_color_override("font_color", HUD_GOLD)
-		key.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		key.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		grid.add_child(key)
-		var desc := Label.new()
-		desc.text = row[1]
-		desc.add_theme_font_override("font", hud_font)
-		desc.add_theme_font_size_override("font_size", 24)
-		desc.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		grid.add_child(desc)
+	var right: Array = [
+		["FOE ON THE MAT", [
+			["STRIKE", "Stomp"],
+			["GRAB", "Pick him up (free lock-up)"],
+			["RUN+STRIKE", "Flying Elbow Drop"],
+			["RUN+GRAB", "Running Knee Drop  (miss = ouch)"],
+		], false],
+		["REVERSALS", [
+			["REVERSE!", "Press GRAB or STRIKE right then"],
+			["", "Counters lock-ups, whips, punches"],
+			["", "Arm Drag / Hip Toss / Back Body Drop"],
+			["TOO EARLY", "Early presses lock you out"],
+		], false],
+		["PINS", [
+			["PIN", "3-count wins; big moves are harder"],
+			["PINNED", "MASH any button to kick out!"],
+		], false],
+		["SPIRIT", [
+			["METER", "Fills with hits, taunts, near falls"],
+			["TAUNT", "+Spirit (more if he's down), 6s wait"],
+			["SPECIAL", "Full meter = 15s to hit the finisher"],
+		], false],
+	]
+	var columns := HBoxContainer.new()
+	columns.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	columns.add_theme_constant_override("separation", 36)
+	col.add_child(columns)
+	for side in [left, right]:
+		var sections: Array = side
+		var vbox := VBoxContainer.new()
+		vbox.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		vbox.add_theme_constant_override("separation", 2)
+		columns.add_child(vbox)
+		for sec in sections:
+			var header_text: String = sec[0]
+			var rows: Array = sec[1]
+			var has_col_header: bool = sec[2]
+			var head := Label.new()
+			head.text = header_text
+			head.add_theme_font_override("font", hud_font_italic)
+			head.add_theme_font_size_override("font_size", 22)
+			head.add_theme_color_override("font_color", Color(0.45, 0.8, 1.0))
+			head.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			vbox.add_child(head)
+			var first: Array = rows[0]
+			var grid := GridContainer.new()
+			grid.columns = first.size()
+			grid.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			grid.add_theme_constant_override("h_separation", 16)
+			grid.add_theme_constant_override("v_separation", -2)
+			vbox.add_child(grid)
+			for r in rows.size():
+				var row: Array = rows[r]
+				for c in row.size():
+					var cell := Label.new()
+					var txt: String = row[c]
+					cell.text = txt
+					cell.add_theme_font_override("font", hud_font)
+					cell.add_theme_font_size_override("font_size", 22)
+					cell.mouse_filter = Control.MOUSE_FILTER_IGNORE
+					if c == 0:
+						cell.custom_minimum_size = Vector2(150, 0)
+						cell.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+						cell.add_theme_color_override("font_color", HUD_GOLD)
+					elif has_col_header and r == 0:
+						cell.add_theme_color_override("font_color", Color(0.7, 0.75, 0.9))
+					grid.add_child(cell)
 	var foot := _big_label(20)
 	foot.text = "Tap here or ? to close"
 	foot.add_theme_color_override("font_color", Color(0.7, 0.75, 0.9))
 	foot.add_theme_constant_override("outline_size", 4)
 	col.add_child(foot)
+
+	# Shrink the whole panel if it would not fit the screen (small or narrow devices).
+	var fit := func() -> void:
+		if not panel.is_inside_tree():
+			return
+		var need: Vector2 = panel.get_combined_minimum_size()
+		if need.x <= 0.0 or need.y <= 0.0:
+			return
+		var avail: Vector2 = panel.get_viewport_rect().size * 0.96
+		var s: float = minf(1.0, minf(avail.x / need.x, avail.y / need.y))
+		panel.pivot_offset = need * 0.5
+		panel.scale = Vector2(s, s)
+	panel.visibility_changed.connect(fit)
 	return panel
 
 
