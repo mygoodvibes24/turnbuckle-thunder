@@ -1164,7 +1164,7 @@ func _build_lawn() -> void:
 	# Spray-painted "C2C" on the patio: the backyard federation's "logo".
 	var spray := _tex_mat(_make_spray_texture(), false, true)
 	spray.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_ground_quad(Vector3(-2.3, 0.025, -2.75), Vector2(2.4, 1.2), spray, 0.08)
+	_ground_quad(Vector3(-2.4, 0.025, -2.9), Vector2(3.2, 1.6), spray, 0.08)
 
 
 func _build_house() -> void:
@@ -1363,8 +1363,8 @@ func _build_fence() -> void:
 	# The gate swung open outward against the car's side of the driveway.
 	_fence_run(Vector3(FENCE_X, 0, 4.1), Vector3(FENCE_X + 1.9, 0, 4.9), FENCE_H)
 	# Camera side: low picket fence at the corners; the middle panels lie knocked flat on the grass.
-	_fence_run(Vector3(-FENCE_X, 0, fz), Vector3(-2.6, 0, fz), 0.85, true)
-	_fence_run(Vector3(2.6, 0, fz), Vector3(FENCE_X, 0, fz), 0.85, true)
+	_fence_run(Vector3(-FENCE_X, 0, fz), Vector3(-2.6, 0, fz), 0.65, true)
+	_fence_run(Vector3(2.6, 0, fz), Vector3(FENCE_X, 0, fz), 0.65, true)
 	for k in 2:
 		var cx := -1.3 + k * 2.6
 		_bx("wood", Vector3(2.5, 0.05, 0.85), Vector3(cx, 0.04, fz + 0.55 + k * 0.1), Color(0.6, 0.53, 0.44), randf_range(-0.12, 0.12))
@@ -1652,8 +1652,8 @@ func _build_crowd() -> void:
 	# By the car on the driveway, and two in the camera-side corners beyond the picket fence
 	_add_fan(Vector3(8.3, 0.015, 4.7), FAN_CUP, 0.55)
 	_add_fan(Vector3(9.4, 0.015, 0.7), FAN_PHONE, 0.5)
-	_add_fan(Vector3(-6.4, 0, 6.3), FAN_PHONE, 0.6)
-	_add_fan(Vector3(6.3, 0, 6.2), FAN_HOODIE, 0.55)
+	_add_fan(Vector3(-8.6, 0, 6.6), FAN_PHONE, 0.6)
+	_add_fan(Vector3(9.4, 0.015, 3.0), FAN_HOODIE, 0.55)
 
 	var quad := QuadMesh.new()
 	quad.size = Vector2(0.85, 1.7)
