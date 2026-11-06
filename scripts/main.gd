@@ -4,7 +4,7 @@ extends Node3D
 
 const Wrestler := preload("res://scripts/wrestler.gd")
 const TouchControls := preload("res://scripts/touch_controls.gd")
-const RING_TOP := 1.0
+const RING_TOP := 0.0  # no ring any more: the yard ground is y 0 (yard_contract.md)
 
 var p1: Node3D
 var p2: Node3D
@@ -60,7 +60,7 @@ func _ready() -> void:
 	_build_crowd()
 
 	ring_root = Node3D.new()
-	ring_root.position.y = RING_TOP
+	ring_root.position.y = 0.0   # ground level: they fight on the grass and the patio
 	add_child(ring_root)
 	# Each look: street clothes + style switches used by wrestler.gd's model.
 	# "gear" is the wrestler's signature colour (HUD, win banner).
@@ -148,7 +148,7 @@ func _setup_input() -> void:
 var cam_fov_kick := 0.0          # degrees added to the 45 deg broadcast FOV; decays back to 0
 var crowd_hype := 0.0            # 0..1, crowd excitement; drifts back down slowly on its own
 var rope_nodes: Array[Node3D] = []  # 12 ropes: for each height (bottom, middle, top): +z, -z, +x, -x
-var ring_spot: SpotLight3D       # the work light on a stand: key light over the ring
+var ring_spot: SpotLight3D       # the front floodlight: key light over the yard
 var crowd_mat: ShaderMaterial    # the friends-in-the-yard billboard material
 var crowd_hype_shown := 0.0
 var crowd_spots := PackedVector3Array()
@@ -389,6 +389,10 @@ func _batch_mat(key: String) -> Material:
 			m.albedo_texture = _make_siding_texture()
 		"shingle":
 			m.albedo_texture = _make_shingle_texture()
+		"brick":
+			m.albedo_texture = _make_brick_texture()
+		"block":
+			m.albedo_texture = _make_concrete_texture(128, false, 0)
 		"metal":
 			m.metallic = 0.6
 			m.roughness = 0.45
@@ -456,114 +460,292 @@ func _soft_dot(img: Image, cx: float, cy: float, rx: float, ry: float, col: Colo
 			_blend_px(img, x, y, col, clampf(edge / feather + 0.5, 0.0, 1.0) * a)
 
 
-func _make_grass_texture() -> ImageTexture:
-	# Dark night lawn: green-black with soft clumps and a few dry patches.
-	var n := 64
-	var big := _noise_img(n, n, 0.05, 3)
-	var fine := _noise_img(n, n, 0.3, 2)
+func _sharp_tex(img: Image) -> ImageTexture:
+	# Full-res (PS2-era detail), still mipmapped and bilinear filtered.
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+
+func _line_px(img: Image, a: Vector2, b: Vector2, col: Color, k: float) -> void:
+	# Anti-aliased-ish 1 px stroke (cracks, seams): stamps the coverage along the segment.
+	var steps := maxi(1, int(a.distance_to(b) * 1.5))
+	for i in steps + 1:
+		var p := a.lerp(b, float(i) / steps)
+		var fx := p.x - floorf(p.x)
+		var fy := p.y - floorf(p.y)
+		var x0 := int(floorf(p.x))
+		var y0 := int(floorf(p.y))
+		_blend_px(img, x0, y0, col, k * (1.0 - fx) * (1.0 - fy) * 0.9)
+		_blend_px(img, x0 + 1, y0, col, k * fx * (1.0 - fy) * 0.9)
+		_blend_px(img, x0, y0 + 1, col, k * (1.0 - fx) * fy * 0.9)
+		_blend_px(img, x0 + 1, y0 + 1, col, k * fx * fy * 0.9)
+
+
+func _crack(img: Image, start: Vector2, ang: float, segs: int, seg_len: float, dark: Color) -> void:
+	# Wandering hairline crack with a faint lit lip, sometimes forking.
+	var p := start
+	for i in segs:
+		ang += randf_range(-0.55, 0.55)
+		var q := p + Vector2(cos(ang), sin(ang)) * seg_len * randf_range(0.6, 1.3)
+		_line_px(img, p + Vector2(0.8, 0.8), q + Vector2(0.8, 0.8), Color(0.75, 0.74, 0.7), 0.12)
+		_line_px(img, p, q, dark, 0.75 - 0.4 * float(i) / segs)
+		if randf() < 0.12 and segs > 6:
+			_crack(img, q, ang + randf_range(-1.2, 1.2), segs / 3, seg_len * 0.8, dark)
+		p = q
+
+
+func _make_grass_detail() -> ImageTexture:
+	# 128 px tileable grey grass detail (averages ~0.5): clumps, blade tips, dark gaps. The lawn
+	# shader multiplies it (x2) over the painted lawn map; it is also the far ground's texture.
+	var n := 128
+	var clump := _noise_img(n, n, 0.06, 3)
+	var fine := _noise_img(n, n, 0.35, 2)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
-	var dark := Color(0.045, 0.07, 0.035)
-	var mid := Color(0.1, 0.15, 0.065)
-	var dry := Color(0.15, 0.15, 0.08)
 	for y in n:
 		for x in n:
-			var b := big.get_pixel(x, y).r
+			var c := clump.get_pixel(x, y).r
 			var f := fine.get_pixel(x, y).r
-			var c := dark.lerp(mid, clampf(b * 0.7 + f * 0.45 - 0.1, 0.0, 1.0))
-			c = c.lerp(dry, smoothstep(0.72, 0.95, b) * 0.45)
+			var g := 0.5 + (c - 0.5) * 0.32 + (f - 0.5) * 0.4
+			img.set_pixel(x, y, Color(g * 0.98, g, g * 0.94))
+	# Blades: short slanted strokes, lit tips and shadowed roots (wrapped, so it still tiles).
+	for i in 900:
+		var bx := randf() * n
+		var by := randf() * n
+		var ln := randf_range(2.0, 5.0)
+		var lean := randf_range(-0.6, 0.6)
+		var lit := randf() < 0.55
+		var col := Color(0.72, 0.76, 0.58) if lit else Color(0.24, 0.26, 0.22)
+		for s in int(ln * 2.0):
+			var t := s / (ln * 2.0)
+			var px := int(fposmod(bx + lean * t * ln, n))
+			var py := int(fposmod(by - t * ln, n))
+			_blend_px(img, px, py, col, 0.35 * (0.4 + t * 0.6) if lit else 0.35 * (1.0 - t * 0.6))
+	return _sharp_tex(img)
+
+
+func _make_grass_texture() -> ImageTexture:
+	return _make_grass_detail()
+
+
+const LAWN_RECT := Rect2(-7.6, -8.6, 15.2, 15.2)  # painted lawn quad: x -7.6..7.6, z -8.6..6.6
+
+
+func _lawn_px(x: float, z: float, n: int) -> Vector2:
+	return Vector2((x - LAWN_RECT.position.x) / LAWN_RECT.size.x * n, (z - LAWN_RECT.position.y) / LAWN_RECT.size.y * n)
+
+
+func _lawn_dot(img: Image, x: float, z: float, rx: float, rz: float, col: Color, a: float) -> void:
+	# A soft blotch in yard metres on the lawn map.
+	var n := img.get_width()
+	var p := _lawn_px(x, z, n)
+	var s := n / LAWN_RECT.size.x
+	_soft_dot(img, p.x, p.y, rx * s, rz * s, col, a, maxf(rx, rz) * s * 0.7)
+
+
+func _make_lawn_map() -> ImageTexture:
+	# The whole yard's grass in one painted map (painted 256, used at 128 under the detail tile):
+	# mowing stripes, dry patches, a trampled dirt arena where they always fight, bald spots at the
+	# foot of every perch, tyre ruts to the driveway and a dead ring under the trampoline.
+	var n := 256
+	var big := _noise_img(n, n, 0.018, 3, false)
+	var mid := _noise_img(n, n, 0.07, 2, false)
+	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	var dark := Color(0.1, 0.2, 0.055)
+	var lush := Color(0.2, 0.34, 0.085)
+	var dry := Color(0.33, 0.31, 0.13)
+	var dirt := Color(0.3, 0.21, 0.13)
+	var ppm := n / LAWN_RECT.size.x
+	var wc := _lawn_px(0.0, -0.3, n)
+	for y in n:
+		var wz := LAWN_RECT.position.y + (y + 0.5) / ppm
+		for x in n:
+			var wx := LAWN_RECT.position.x + (x + 0.5) / ppm
+			var b := big.get_pixel(x, y).r
+			var m := mid.get_pixel(x, y).r
+			var band := sin((wx + sin(wz * 0.6) * 0.12) / 1.2 * PI)
+			var stripe := smoothstep(-0.3, 0.3, band)
+			var c := dark.lerp(lush, clampf(0.3 + stripe * 0.45 + (m - 0.5) * 0.4, 0.0, 1.0))
+			c = c.lerp(dry, smoothstep(0.6, 0.9, b) * 0.5)
+			var d := Vector2((x - wc.x) / (ppm * 4.6), (y - wc.y) / (ppm * 3.2)).length()
+			var wear := (1.0 - smoothstep(0.25, 1.05, d)) * (0.6 + (m - 0.5) * 0.9)
+			c = c.lerp(dry.lerp(dirt, 0.4), clampf(wear * 0.7, 0.0, 0.8))
+			c = c.lerp(dirt, smoothstep(0.5, 0.8, wear + (b - 0.5) * 0.5) * 0.85)
+			# Fence-line shade and longer, darker grass along the edges.
+			var edge := minf(minf(wx + 7.5, 7.5 - wx), wz + 8.6)
+			c = c.darkened((1.0 - smoothstep(0.0, 0.9, edge)) * 0.35)
 			img.set_pixel(x, y, c)
-	return _soft_tex(img, 32, 32)
+	# Dead circle under the trampoline, bald spots in front of the perches, random patches.
+	_lawn_dot(img, 5.0, -2.6, 1.5, 1.5, dry, 0.5)
+	_lawn_dot(img, 5.0, -2.6, 1.0, 1.0, dirt, 0.25)
+	for p: Vector2 in [Vector2(-4.4, -2.3), Vector2(1.6, -4.4), Vector2(3.5, -2.0), Vector2(4.2, 2.6),
+			Vector2(-5.7, 0.4), Vector2(-4.9, 3.4)]:
+		_lawn_dot(img, p.x, p.y, randf_range(0.6, 0.9), randf_range(0.45, 0.7), dirt, 0.7)
+		_lawn_dot(img, p.x + randf_range(-0.3, 0.3), p.y + randf_range(-0.3, 0.3), 0.3, 0.25, dirt.darkened(0.25), 0.5)
+	for i in 10:
+		_lawn_dot(img, randf_range(-6.5, 6.5), randf_range(-4.5, 5.5), randf_range(0.2, 0.55), randf_range(0.2, 0.45), dirt if randf() < 0.5 else dry, 0.55)
+	# Tyre ruts across the lawn into the driveway.
+	for rz: float in [1.9, 3.4]:
+		var x := 7.5
+		while x > 1.0:
+			_lawn_dot(img, x, rz + sin(x * 0.7) * 0.15, 0.4, 0.14, dirt.darkened(0.15), 0.35 * smoothstep(1.0, 4.0, x))
+			x -= 0.25
+	return _soft_tex(img, 128, 128)
+
+
+func _make_concrete_texture(n: int, joints: bool, stains: int) -> ImageTexture:
+	# Grungy poured concrete: mottled grey with aggregate specks, tooled expansion joints,
+	# hairline cracks, oil stains, rust drips and dirt creeping in from the edges.
+	var mot := _noise_img(n, n, 0.035, 3, false)
+	var grit := _noise_img(n, n, 0.6, 1, false)
+	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	var base := Color(0.5, 0.49, 0.46)
+	for y in n:
+		for x in n:
+			var m := mot.get_pixel(x, y).r
+			var g := grit.get_pixel(x, y).r
+			var c := base.darkened((m - 0.5) * 0.4 + (g - 0.5) * 0.18)
+			if randf() < 0.03:
+				c = c.lightened(0.15) if randf() < 0.5 else c.darkened(0.2)
+			var e := float(mini(mini(x, y), mini(n - 1 - x, n - 1 - y))) / n
+			c = c.lerp(Color(0.24, 0.22, 0.17), (1.0 - smoothstep(0.0, 0.06, e)) * 0.6)
+			img.set_pixel(x, y, c)
+	var dark := Color(0.1, 0.1, 0.1)
+	if joints:
+		var step := n / 4
+		for k in range(step, n, step):
+			for t in n:
+				_blend_px(img, k, t, dark, 0.6)
+				_blend_px(img, k + 1, t, Color(0.78, 0.77, 0.72), 0.15)
+				_blend_px(img, t, k, dark, 0.6)
+				_blend_px(img, t, k + 1, Color(0.78, 0.77, 0.72), 0.15)
+	for i in maxi(3, n / 40):
+		_crack(img, Vector2(randf() * n, randf() * n), randf() * TAU, randi_range(8, 22), n / 40.0, dark)
+	for i in stains:
+		var c := Vector2(randf_range(0.1, 0.9) * n, randf_range(0.1, 0.9) * n)
+		var r := randf_range(0.035, 0.09) * n
+		for k in 5:
+			_soft_dot(img, c.x + randf_range(-r, r) * 0.5, c.y + randf_range(-r, r) * 0.5, r * randf_range(0.5, 1.0), r * randf_range(0.4, 0.9),
+				Color(0.06, 0.06, 0.07), randf_range(0.18, 0.32), r * 0.5)
+		_soft_dot(img, c.x, c.y, r * 0.35, r * 0.3, Color(0.03, 0.03, 0.04), 0.4, r * 0.25)
+	for i in 3:
+		var c := Vector2(randf() * n, randf() * n)
+		_soft_dot(img, c.x, c.y, n * 0.02, n * 0.05, Color(0.4, 0.22, 0.1), 0.2, n * 0.02)  # rust
+	return _sharp_tex(img)
+
+
+func _make_spray_texture() -> ImageTexture:
+	# Spray-painted "C2C" on the patio: hard core, fuzzy overspray halo, spatter, worn by feet.
+	var w := 256
+	var h := 128
+	var img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
+	var paint := Color(0.86, 0.14, 0.1)
+	var sc := 19.0
+	var x0 := (w - _text_w("C2C", sc)) * 0.5
+	var y0 := 14.0
+	var x := x0
+	for ch in "C2C":
+		var rows: Array = PIXEL_FONT[ch]
+		for ry in 5:
+			var row: String = rows[ry]
+			for rx in 3:
+				if row[rx] == "1":
+					var cx := x + (rx + 0.5) * sc
+					var cy := y0 + (ry + 0.5) * sc
+					_soft_dot(img, cx, cy, sc * 0.95, sc * 0.95, paint, 0.16, sc * 0.6)
+		x += 4.0 * sc
+	_soft_text(img, "C2C", x0, y0, sc, paint, 0.95)
+	_soft_rect(img, x0 - 4.0, y0 + 5.0 * sc + 8.0, _text_w("C2C", sc) + 8.0, 5.0, paint, 0.8, 2.0)  # underline swoosh
+	for i in 140:
+		var a := randf() * TAU
+		var r := randf_range(0.3, 1.0) * 120.0
+		_soft_dot(img, w * 0.5 + cos(a) * r, h * 0.5 + sin(a) * r * 0.5, 1.0, 1.0, paint, randf_range(0.3, 0.8), 0.8)
+	var nz := _noise_img(w, h, 0.06, 3, false)
+	for yy in h:
+		for xx in w:
+			var c := img.get_pixel(xx, yy)
+			if c.a > 0.0:
+				c.a *= clampf(0.5 + nz.get_pixel(xx, yy).r * 0.75, 0.0, 0.92)
+				img.set_pixel(xx, yy, c)
+	return _sharp_tex(img)
 
 
 func _make_wood_texture() -> ImageTexture:
-	# Greyscale-ish weathered grain (tinted per vertex): soft wavy stripes, a board seam, grime.
-	var n := 64
-	var nz := _noise_img(n, n, 0.07, 2)
+	# Weathered fence wood, 128 px per metre (tinted per vertex): vertical grain, grey sun-bleaching,
+	# dark water streaks, knots and nail heads.
+	var n := 128
+	var nz := _noise_img(n, n, 0.05, 2)
+	var streak := _noise_img(n, n, 0.12, 2)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
 	for y in n:
 		for x in n:
 			var w := nz.get_pixel(x, y).r
-			var g := 0.8 + 0.05 * sin(y * TAU * 9.0 / n + sin(x * TAU / n) * 1.5 + w * 4.0) + (w - 0.5) * 0.1
-			var d := fposmod(float(y) + sin(x * TAU * 2.0 / n) * 1.5, 32.0)
-			if d < 2.5:
-				g -= 0.12 * (1.0 - d / 2.5)
-			img.set_pixel(x, y, Color(g, g * 0.97, g * 0.93))
-	_soft_dot(img, 18.0, 40.0, 3.0, 2.0, Color(0.55, 0.5, 0.45), 0.5, 2.0)  # knot
-	return _soft_tex(img, 32, 32)
+			var s := streak.get_pixel(x, (y / 8) % n).r
+			var g := 0.78 + 0.07 * sin(x * TAU * 11.0 / n + sin(y * TAU / n) * 2.0 + w * 6.0) + (w - 0.5) * 0.12
+			g -= smoothstep(0.55, 0.85, s) * 0.16
+			img.set_pixel(x, y, Color(g, g * 0.96, g * 0.9))
+	for i in 3:
+		var k := Vector2(randf() * n, randf() * n)
+		_soft_dot(img, k.x, k.y, 3.0, 4.5, Color(0.32, 0.26, 0.2), 0.7, 1.5)
+		_soft_dot(img, k.x, k.y, 1.2, 1.8, Color(0.15, 0.12, 0.1), 0.8, 0.8)
+	for i in 6:
+		_soft_dot(img, randf() * n, randf() * n, 1.1, 1.1, Color(0.2, 0.18, 0.17), 0.8, 0.6)
+	return _sharp_tex(img)
 
 
 func _make_siding_texture() -> ImageTexture:
-	# Horizontal lap siding: each board shades from its overlap shadow to its lit lower edge.
-	var n := 64
-	var streak := _noise_img(n, n, 0.06, 2)
+	# Vinyl lap siding, 128 px: board shading from overlap shadow to lit lip, mildew streaks, grime.
+	var n := 128
+	var streak := _noise_img(n, n, 0.05, 2)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
 	for y in n:
-		var r := float(y % 8) / 7.0
+		var r := float(y % 16) / 15.0
 		for x in n:
-			var g := 0.74 + 0.2 * sqrt(r)
-			g *= 0.92 + 0.08 * streak.get_pixel(x, (y / 4) % n).r
-			img.set_pixel(x, y, Color(g, g, g))
-	return _soft_tex(img, 32, 32)
+			var g := 0.66 + 0.26 * sqrt(r)
+			if y % 16 == 15:
+				g *= 0.55
+			var s := streak.get_pixel(x, (y / 6) % n).r
+			g *= 0.86 + 0.14 * s
+			img.set_pixel(x, y, Color(g, g, g * 0.97))
+	return _sharp_tex(img)
 
 
-func _make_shingle_texture() -> ImageTexture:
-	var n := 64
-	var grain := _noise_img(n, n, 0.25, 2)
+func _make_brick_texture() -> ImageTexture:
+	# Red brick, running bond: 16 courses of 8 px with mortar lines and per-brick tone (128 px / metre).
+	var n := 128
+	var grit := _noise_img(n, n, 0.4, 2)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	var tones: Array[Color] = [Color(0.55, 0.24, 0.16), Color(0.48, 0.2, 0.14), Color(0.6, 0.3, 0.2), Color(0.42, 0.19, 0.15)]
 	for y in n:
 		var row := y / 8
 		for x in n:
-			var sx := (x + (row % 2) * 8) % n
-			var tab := sx / 16
-			var g := 0.72 + 0.14 * fposmod(sin(float(tab * 7 + row * 13)) * 43.7, 1.0)
-			var ry := float(y % 8) / 7.0
-			g *= 1.0 - 0.25 * smoothstep(0.6, 1.0, ry)
-			var ex := absf(float(sx % 16) - 7.5) / 7.5
-			g *= 1.0 - 0.15 * smoothstep(0.75, 1.0, ex)
-			g += (grain.get_pixel(x, y).r - 0.5) * 0.08
-			img.set_pixel(x, y, Color(g, g, g))
-	return _soft_tex(img, 32, 32)
+			var sx := (x + (row % 2) * 10) % n
+			var col := sx / 21
+			var c: Color = tones[(row * 7 + col * 3) % tones.size()]
+			var gv := grit.get_pixel(x, y).r
+			c = c.darkened((gv - 0.5) * 0.35)
+			if y % 8 == 7 or sx % 21 == 20:
+				c = Color(0.42, 0.4, 0.36).darkened((gv - 0.5) * 0.3)
+			img.set_pixel(x, y, c)
+	return _sharp_tex(img)
 
 
-func _make_tarp_texture() -> ImageTexture:
-	# Faded blue tarp: soft blotchy stains, sun-bleached patches, faint fold creases, hem, grommets, tape.
+func _make_shingle_texture() -> ImageTexture:
 	var n := 128
-	var blot := _noise_img(n, n, 0.022, 3, false)
-	var grain := _noise_img(n, n, 0.35, 1, false)
+	var grain := _noise_img(n, n, 0.3, 2)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
-	var base := Color(0.28, 0.39, 0.62)  # ~Color(0.30, 0.40, 0.58), nudged bluer to survive the N64 post desaturation
-	var dirt := Color(0.25, 0.26, 0.29)
 	for y in n:
+		var row := y / 16
 		for x in n:
-			var b := blot.get_pixel(x, y).r
-			var c := base.lerp(dirt, smoothstep(0.55, 0.92, b) * 0.5)
-			c = c.lightened((1.0 - smoothstep(0.08, 0.35, b)) * 0.06)
-			var crease := 0.0
-			for cx: float in [43.0, 85.0]:
-				crease = maxf(crease, exp(-pow((x + 0.5 - cx) / 1.6, 2.0)))
-			crease = maxf(crease, exp(-pow((y + 0.5 - 64.0) / 1.6, 2.0)))
-			c = c.lightened(crease * 0.06)
-			var rad := maxf(absf(x + 0.5 - n * 0.5), absf(y + 0.5 - n * 0.5)) / (n * 0.5)
-			c = c.darkened(smoothstep(0.7, 1.0, rad) * 0.12)
-			var e := float(mini(mini(x, y), mini(n - 1 - x, n - 1 - y)))
-			if e < 5.0:
-				c = c.darkened(0.22 * (1.0 - e / 5.0))
-			var j := (grain.get_pixel(x, y).r - 0.5) * 0.035
-			img.set_pixel(x, y, Color(c.r + j, c.g + j, c.b + j))
-	var grommet := Color(0.62, 0.62, 0.58)
-	for i in range(8, n - 4, 16):
-		for p: Vector2 in [Vector2(i, 2.5), Vector2(i, n - 2.5), Vector2(2.5, i), Vector2(n - 2.5, i)]:
-			_soft_dot(img, p.x, p.y, 1.6, 1.6, grommet, 0.8, 1.0)
-	var stains: Array[Vector3] = [Vector3(24, 28, 9), Vector3(100, 40, 6), Vector3(32, 100, 10), Vector3(88, 92, 7), Vector3(68, 18, 5), Vector3(14, 68, 6)]
-	for s in stains:
-		_soft_dot(img, s.x, s.y, s.z * randf_range(0.8, 1.2), s.z * randf_range(0.7, 1.1), Color(0.2, 0.2, 0.18), 0.28, s.z * 0.6)
-	var tape := Color(0.55, 0.55, 0.52)
-	_soft_rect(img, 12, 12, 18, 6, tape, 0.75, 1.2)
-	_soft_rect(img, 98, 104, 6, 16, tape, 0.75, 1.2)
-	_soft_rect(img, 92, 110, 18, 6, tape, 0.75, 1.2)
-	_soft_rect(img, 104, 16, 14, 4, tape, 0.7, 1.2)
-	_soft_rect(img, 16, 110, 20, 6, tape, 0.7, 1.2)
-	return _soft_tex(img, 64, 64)
+			var sx := (x + (row % 2) * 16) % n
+			var tab := sx / 32
+			var g := 0.7 + 0.16 * fposmod(sin(float(tab * 7 + row * 13)) * 43.7, 1.0)
+			var ry := float(y % 16) / 15.0
+			g *= 1.0 - 0.3 * smoothstep(0.65, 1.0, ry)
+			var ex := absf(float(sx % 32) - 15.5) / 15.5
+			g *= 1.0 - 0.2 * smoothstep(0.85, 1.0, ex)
+			g += (grain.get_pixel(x, y).r - 0.5) * 0.14
+			img.set_pixel(x, y, Color(g, g, g))
+	return _sharp_tex(img)
 
 
 const PIXEL_FONT := {
@@ -592,31 +774,6 @@ func _soft_text(img: Image, text: String, x0: float, y0: float, sc: float, col: 
 
 func _text_w(text: String, sc: float) -> float:
 	return text.length() * 4.0 * sc - sc
-
-
-func _make_logo_texture() -> ImageTexture:
-	# Worn painted decal: dark oval badge, faded "C2C" and "WRESTLING", painted 256x128 -> 128x64.
-	var w := 256
-	var h := 128
-	var img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0.13, 0.17, 0.27, 0.0))
-	var badge := Color(0.13, 0.17, 0.27)
-	var letters := Color(0.44, 0.2, 0.18)
-	var cream := Color(0.42, 0.42, 0.4)
-	_soft_dot(img, w * 0.5, h * 0.5, 124.0, 60.0, badge, 1.0, 3.0)
-	_soft_dot(img, w * 0.5, h * 0.5, 116.0, 53.0, badge.lightened(0.08), 1.0, 2.0)
-	var sc := 12.0
-	_soft_text(img, "C2C", (w - _text_w("C2C", sc)) * 0.5, 18.0, sc, letters)
-	_soft_text(img, "WRESTLING", (w - _text_w("WRESTLING", 3.0)) * 0.5, 88.0, 3.0, cream)
-	# Scuffed, sprayed-on: break up the alpha with noise and cap it at ~0.85.
-	var nz := _noise_img(w, h, 0.05, 3, false)
-	for y in h:
-		for x in w:
-			var c := img.get_pixel(x, y)
-			if c.a > 0.0:
-				c.a *= 0.85 * (0.8 + 0.2 * nz.get_pixel(x, y).r)
-				img.set_pixel(x, y, c)
-	return _soft_tex(img, 128, 64)
 
 
 func _fr(img: Image, x: float, y: float, w: float, h: float, c: Color) -> void:
@@ -800,7 +957,7 @@ func _build_environment() -> void:
 
 	# Dim cool light by the sliding door: the house reads at ~40% next to the ring.
 	var porch := OmniLight3D.new()
-	porch.position = Vector3(-0.9, 2.4, -14.3)
+	porch.position = Vector3(-0.9, 2.4, -8.0)
 	porch.omni_range = 6.5
 	porch.light_energy = 0.9
 	porch.light_color = Color(0.72, 0.8, 1.0)
@@ -903,110 +1060,126 @@ func _update_low_res_shrink() -> void:
 	low_res_container.stretch_shrink = maxi(1, roundi(h / 240.0))
 
 
-# ---- the yard and the homemade ring
+# ---- the backyard (no ring: they fight on the lawn and the concrete patio)
+# Everything is in ring_root-local == world coordinates (ring_root sits at the origin), ground y 0.
+# See yard_contract.md: fighting area x -7..7, z -5..5; house at -z, camera on +z.
+
+var yard_bounds := Rect2(-7.0, -5.0, 14.0, 10.0)   # x, z, width, depth of the fighting area
+const PATIO_RECT := Rect2(-7.5, -8.6, 7.0, 7.1)     # concrete slab: x -7.5..-0.5, z -8.6..-1.5
+const DRIVE_RECT := Rect2(4.3, 1.2, 9.5, 2.9)       # driveway strip under the car: x 4.3..13.8, z 1.2..4.1
+const HOUSE_Z := -8.6                               # back wall of the house
+const FENCE_X := 7.5                                # side privacy fences
+const FENCE_Z := 5.6                                # low picket fence on the camera side
+const FENCE_H := 1.9
+# Perches (replace the turnbuckles). Each: {"pos", "approach", "height", "kind", "name"}.
+var perches: Array = []
+
+const LAWN_SHADER := """
+shader_type spatial;
+render_mode diffuse_lambert, specular_disabled, cull_disabled;
+
+uniform sampler2D map : source_color, filter_linear_mipmap;
+uniform sampler2D detail : source_color, filter_linear_mipmap, repeat_enable;
+uniform float detail_scale = 10.0;
+
+void fragment() {
+	vec3 m = texture(map, UV).rgb;
+	vec3 d = texture(detail, UV * detail_scale).rgb;
+	ALBEDO = m * d * 2.0;
+	ROUGHNESS = 0.95;
+}
+"""
+
+
+func surface_at(p: Vector3) -> String:
+	var q := Vector2(p.x, p.z)
+	if PATIO_RECT.has_point(q) or DRIVE_RECT.has_point(q):
+		return "concrete"
+	return "grass"
+
+
+func _add_perch(perch_name: String, kind: String, pos: Vector3, approach: Vector3) -> void:
+	perches.append({"pos": pos, "approach": approach, "height": pos.y, "kind": kind, "name": perch_name})
+
+
+func _ground_quad(center: Vector3, size: Vector2, m: Material, yaw := 0.0, uv_scale := Vector2.ONE) -> MeshInstance3D:
+	# Flat upward quad with explicit UVs: u along +x, v along +z (image top = far side from the camera).
+	var b := Basis(Vector3.UP, yaw)
+	var hx := size.x * 0.5
+	var hz := size.y * 0.5
+	var pts: Array[Vector3] = [Vector3(-hx, 0, -hz), Vector3(hx, 0, -hz), Vector3(hx, 0, hz), Vector3(-hx, 0, hz)]
+	var uvs: Array[Vector2] = [Vector2(0, 0), Vector2(uv_scale.x, 0), uv_scale, Vector2(0, uv_scale.y)]
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i: int in [0, 1, 2, 0, 2, 3]:
+		st.set_normal(Vector3.UP)
+		st.set_uv(uvs[i])
+		st.add_vertex(center + b * pts[i])
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	return mi
+
 
 func _build_arena() -> void:
-	_plane(Vector2(70, 70), Vector3(0, 0, 0), _grass_mat())
-	_build_ring()
+	perches.clear()
+	rope_nodes.clear()   # no ring, no ropes: the rope FX no-ops
+	var far := _tex_mat(_make_grass_detail())
+	far.albedo_color = Color(0.2, 0.32, 0.1)
+	far.uv1_scale = Vector3(60, 60, 1)
+	far.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_plane(Vector2(90, 90), Vector3(0, -0.01, 0), far)
+	_build_lawn()
 	_build_house()
 	_build_fence()
 	_build_props()
+	_build_perches()
 	_build_car()
 	_build_string_lights()
+	_build_yard_lights()
 	_flush_batches()
 
 
-func _grass_mat() -> StandardMaterial3D:
-	var m := _tex_mat(_make_grass_texture())
-	m.uv1_scale = Vector3(28, 28, 1)
-	return m
-
-
-func _build_ring() -> void:
-	var gap := Color(0.03, 0.025, 0.02)
-	var cinder := Color(0.38, 0.38, 0.37)
-	var ply := Color(0.5, 0.42, 0.32)
-	var h := 4.15
-	# Shadowy underside, cinder blocks at the corners + side midpoints, plywood skirt and apron.
-	_bx("flat", Vector3(8.2, 0.4, 8.2), Vector3(0, 0.2, 0), gap)
-	for gx: float in [-1.0, 0.0, 1.0]:
-		for gz: float in [-1.0, 0.0, 1.0]:
-			if gx == 0.0 and gz == 0.0:
-				continue
-			var bp := Vector3(gx * 4.1, 0, gz * 4.1)
-			for k in 2:
-				var yaw := 0.0 if k == 0 else PI * 0.5
-				_bx("flat", Vector3(0.4, 0.2, 0.2), bp + Vector3(0, 0.1 + k * 0.2, 0), cinder.darkened(randf() * 0.15), yaw)
-				for sgn: float in [-1.0, 1.0]:
-					var along := Basis(Vector3.UP, yaw) * Vector3(sgn * 0.1, 0, 0)
-					_bx("flat", Vector3(0.12, 0.11, 0.205), bp + Vector3(0, 0.1 + k * 0.2, 0) + along, gap, yaw)
-	_bx("wood", Vector3(8.8, 0.56, 8.8), Vector3(0, 0.66, 0), ply)                   # plywood skirt
-	_bx("wood", Vector3(8.7, 0.1, 8.7), Vector3(0, 0.94, 0), ply.lightened(0.08))   # apron edge, top 0.99
-	_bx("flat", Vector3(8.84, 0.06, 0.04), Vector3(0, 0.55, 4.41), Color(0.42, 0.42, 0.41))  # duct tape seam
-	# Faded tarp canvas + a worn painted decal in the middle (alpha-blended, soft edges)
-	_plane(Vector2(8.3, 8.3), Vector3(0, RING_TOP, 0), _tex_mat(_make_tarp_texture()))
-	_plane(Vector2(3.5, 1.75), Vector3(0, RING_TOP + 0.01, 0), _tex_mat(_make_logo_texture(), false, true))
-
-	# Wooden 4x4 posts with taped-pillow turnbuckle pads
-	var corners: Array[Vector2] = [Vector2(-h, -h), Vector2(h, -h), Vector2(-h, h), Vector2(h, h)]
-	# Turnbuckle pads: dark red, wrapped in black tape.
-	var pillow_cols: Array[Color] = [Color(0.4, 0.09, 0.08), Color(0.36, 0.08, 0.08), Color(0.42, 0.1, 0.09), Color(0.38, 0.09, 0.08)]
-	var tape := Color(0.06, 0.06, 0.065)
-	for ci in corners.size():
-		var cpos: Vector2 = corners[ci]
-		_bx("wood", Vector3(0.2, 2.1, 0.2), Vector3(cpos.x, 1.45, cpos.y), Color(0.4, 0.33, 0.25), 0.0, 2.0)
-		var inward := Vector3(-signf(cpos.x), 0, -signf(cpos.y)).normalized()
-		var b := Basis.looking_at(inward)
-		var pc := Vector3(cpos.x, RING_TOP + 1.05, cpos.y) + inward * 0.16
-		_sbox("flat", Vector3(0.44, 0.6, 0.2), Transform3D(b, pc), pillow_cols[ci])
-		for s: float in [-0.17, 0.17]:
-			_sbox("flat", Vector3(0.46, 0.06, 0.22), Transform3D(b, pc + Vector3(0, s, 0)), tape)
-		_sbox("flat", Vector3(0.3, 0.22, 0.22), Transform3D(b, Vector3(cpos.x, RING_TOP + 0.45, cpos.y) + inward * 0.14), Color(0.3, 0.08, 0.07))
-		_sbox("flat", Vector3(0.32, 0.05, 0.24), Transform3D(b, Vector3(cpos.x, RING_TOP + 0.45, cpos.y) + inward * 0.14), tape)
-
-	# Ropes: sober faded blue (bottom), off-white (middle), red (top); 6-sided cylinders.
-	var heights: Array[float] = [0.45, 0.85, 1.25]
-	var rope_cols: Array[Color] = [Color(0.3, 0.39, 0.72), Color(0.75, 0.73, 0.68), Color(0.75, 0.3, 0.28)]
-	var rope_mesh := CylinderMesh.new()
-	rope_mesh.top_radius = 0.035
-	rope_mesh.bottom_radius = 0.035
-	rope_mesh.height = 2 * h
-	rope_mesh.radial_segments = 6
-	rope_mesh.rings = 1
-	rope_nodes.clear()
-	for i in 3:
-		var y: float = RING_TOP + heights[i]
-		var rm := _mat(rope_cols[i])
-		rm.roughness = 0.8
-		var spots: Array[Vector3] = [Vector3(0, y, h), Vector3(0, y, -h), Vector3(h, y, 0), Vector3(-h, y, 0)]
-		for si in 4:
-			var r := MeshInstance3D.new()
-			r.mesh = rope_mesh
-			r.material_override = rm
-			r.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-			r.position = spots[si]
-			if si < 2:
-				r.rotation_degrees = Vector3(0, 0, 90)   # along x
-			else:
-				r.rotation_degrees = Vector3(90, 0, 0)   # along z
-			add_child(r)
-			rope_nodes.append(r)
+func _build_lawn() -> void:
+	var sh := Shader.new()
+	sh.code = LAWN_SHADER
+	var lm := ShaderMaterial.new()
+	lm.shader = sh
+	lm.set_shader_parameter("map", _make_lawn_map())
+	lm.set_shader_parameter("detail", _make_grass_detail())
+	lm.set_shader_parameter("detail_scale", 10.0)
+	_ground_quad(Vector3(LAWN_RECT.get_center().x, 0.0, LAWN_RECT.get_center().y), LAWN_RECT.size, lm)
+	# Concrete patio slab by the house (+ a thin raised edge) and the driveway strip.
+	var pm := _tex_mat(_make_concrete_texture(256, true, 5))
+	pm.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_ground_quad(Vector3(PATIO_RECT.get_center().x, 0.015, PATIO_RECT.get_center().y), PATIO_RECT.size, pm)
+	var edge := Color(0.42, 0.41, 0.38)
+	_bx("block", Vector3(PATIO_RECT.size.x, 0.03, 0.08), Vector3(PATIO_RECT.get_center().x, 0.012, PATIO_RECT.end.y), edge)
+	_bx("block", Vector3(0.08, 0.03, PATIO_RECT.size.y), Vector3(PATIO_RECT.end.x, 0.012, PATIO_RECT.get_center().y), edge)
+	var dm := _tex_mat(_make_concrete_texture(128, true, 4))
+	dm.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_ground_quad(Vector3(DRIVE_RECT.get_center().x, 0.015, DRIVE_RECT.get_center().y), DRIVE_RECT.size, dm, 0.0, Vector2(3.0, 1.0))
+	# Spray-painted "C2C" on the patio: the backyard federation's "logo".
+	var spray := _tex_mat(_make_spray_texture(), false, true)
+	spray.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_ground_quad(Vector3(-2.4, 0.025, -2.9), Vector2(3.2, 1.6), spray, 0.08)
 
 
 func _build_house() -> void:
 	# Back of a two-story house at -z: the backdrop of the broadcast shot.
-	var wall_z := -15.0
+	var wall_z := HOUSE_Z
 	var depth := 8.0
 	var w := 9.0
 	var top := 6.2
 	var ridge := 8.4
-	var siding := Color(0.4, 0.42, 0.45)
-	var trim := Color(0.52, 0.52, 0.5)
+	var siding := Color(0.62, 0.6, 0.52)
+	var trim := Color(0.82, 0.8, 0.74)
 	_bx("siding", Vector3(2 * w, top, 0.3), Vector3(0, top * 0.5, wall_z - 0.15), siding, 0.0, 0.6)
 	_bx("siding", Vector3(0.3, top, depth), Vector3(-w, top * 0.5, wall_z - depth * 0.5), siding, 0.0, 0.6)
 	_bx("siding", Vector3(0.3, top, depth), Vector3(w, top * 0.5, wall_z - depth * 0.5), siding, 0.0, 0.6)
-	_bx("flat", Vector3(2 * w + 0.3, 0.5, 0.35), Vector3(0, 0.25, wall_z - 0.12), Color(0.26, 0.25, 0.24))  # foundation
-	# Gable ends (triangles) on both sides
+	_bx("brick", Vector3(2 * w + 0.3, 0.6, 0.36), Vector3(0, 0.3, wall_z - 0.12), Color(1, 1, 1))  # brick foundation
 	var st := _st("siding")
 	for s: float in [-1.0, 1.0]:
 		var x := s * (w + 0.15)
@@ -1018,127 +1191,189 @@ func _build_house() -> void:
 			_tri(st, p0, p1, p2, n, Vector3.FORWARD, Vector3.UP, siding, 0.6)
 		else:
 			_tri(st, p2, p1, p0, n, Vector3.BACK, Vector3.UP, siding, 0.6)
-	# Roof: two slabs meeting at the ridge, overhanging the walls
 	var run := depth * 0.5 + 0.6
 	var rise := (ridge - top) * run / (depth * 0.5)
 	var slope := atan2(rise, run)
 	var slab_len := sqrt(run * run + rise * rise)
-	var roof_col := Color(0.22, 0.2, 0.21)
+	var roof_col := Color(0.3, 0.27, 0.27)
 	for s: float in [1.0, -1.0]:
 		var zc := wall_z - depth * 0.5 + s * run * 0.5
 		var yc := ridge + 0.1 - rise * 0.5
 		var b := Basis(Vector3.RIGHT, slope * s)
 		_sbox("shingle", Vector3(2 * w + 1.0, 0.16, slab_len), Transform3D(b, Vector3(0, yc, zc)), roof_col, 0.7)
 	_bx("flat", Vector3(2 * w + 1.0, 0.14, 0.14), Vector3(0, top - 0.32, wall_z + 0.62), trim)  # gutter
-	_bx("flat", Vector3(1.0, 2.6, 1.0), Vector3(5.5, ridge + 0.4, wall_z - 2.8), Color(0.3, 0.18, 0.15))  # chimney
+	_bx("flat", Vector3(0.1, top - 0.4, 0.1), Vector3(-8.7, (top - 0.4) * 0.5, wall_z + 0.1), trim.darkened(0.2))  # downspout
+	_bx("brick", Vector3(1.0, 2.6, 1.0), Vector3(5.5, ridge + 0.4, wall_z - 2.8), Color(0.9, 0.85, 0.85))  # chimney
 
-	# Windows: upstairs (some lit warm, one TV-blue, one dark), kitchen window downstairs.
+	# Upstairs windows (lit warm, TV-blue, dark), kitchen window over the patio.
 	var wf := wall_z + 0.02
 	var ups: Array[float] = [-6.5, -2.4, 2.0, 6.2]
-	var up_cols: Array[Color] = [Color(0.8, 0.62, 0.36), Color(0.05, 0.05, 0.07), Color(0.34, 0.42, 0.62), Color(0.75, 0.56, 0.32)]
+	var up_cols: Array[Color] = [Color(0.95, 0.7, 0.36), Color(0.05, 0.05, 0.07), Color(0.35, 0.48, 0.85), Color(0.9, 0.62, 0.3)]
 	for i in ups.size():
 		_bx("flat", Vector3(1.5, 1.4, 0.06), Vector3(ups[i], 4.55, wf), trim)
 		_bx("glow", Vector3(1.3, 1.2, 0.06), Vector3(ups[i], 4.55, wf + 0.03), up_cols[i])
 		_bx("flat", Vector3(0.06, 1.2, 0.07), Vector3(ups[i], 4.55, wf + 0.04), trim)
 		_bx("flat", Vector3(1.3, 0.06, 0.07), Vector3(ups[i], 4.55, wf + 0.04), trim)
-		_bx("flat", Vector3(0.3, 1.4, 0.06), Vector3(ups[i] - 0.92, 4.55, wf), Color(0.14, 0.17, 0.2))  # shutters
-		_bx("flat", Vector3(0.3, 1.4, 0.06), Vector3(ups[i] + 0.92, 4.55, wf), Color(0.2, 0.28, 0.35))
-	_bx("flat", Vector3(1.6, 1.2, 0.06), Vector3(4.2, 1.9, wf), trim)
-	_bx("glow", Vector3(1.4, 1.0, 0.06), Vector3(4.2, 1.9, wf + 0.03), Color(0.8, 0.68, 0.46))
-	_bx("flat", Vector3(1.4, 0.3, 0.07), Vector3(4.2, 2.25, wf + 0.04), Color(0.45, 0.22, 0.19))  # valance
-	# Sliding glass door + porch light
-	_bx("flat", Vector3(2.6, 2.3, 0.06), Vector3(-2.6, 1.6, wf), Color(0.42, 0.42, 0.44))
-	_bx("glow", Vector3(2.4, 2.1, 0.06), Vector3(-2.6, 1.6, wf + 0.03), Color(0.42, 0.34, 0.24))
-	_bx("flat", Vector3(0.08, 2.1, 0.08), Vector3(-2.6, 1.6, wf + 0.05), Color(0.42, 0.42, 0.44))
-	_bx("flat", Vector3(0.7, 2.0, 0.07), Vector3(-3.45, 1.6, wf + 0.05), Color(0.32, 0.27, 0.2))  # half-drawn curtain
-	_bx("glow", Vector3(0.2, 0.3, 0.16), Vector3(-0.9, 2.45, wf + 0.08), Color(0.95, 0.75, 0.45))
+		_bx("flat", Vector3(0.3, 1.4, 0.06), Vector3(ups[i] - 0.92, 4.55, wf), Color(0.14, 0.2, 0.26))  # shutters
+		_bx("flat", Vector3(0.3, 1.4, 0.06), Vector3(ups[i] + 0.92, 4.55, wf), Color(0.14, 0.2, 0.26))
+	_bx("flat", Vector3(1.6, 1.2, 0.06), Vector3(-6.3, 1.9, wf), trim)
+	_bx("glow", Vector3(1.4, 1.0, 0.06), Vector3(-6.3, 1.9, wf + 0.03), Color(0.92, 0.75, 0.46))
+	_bx("flat", Vector3(1.4, 0.3, 0.07), Vector3(-6.3, 2.25, wf + 0.04), Color(0.55, 0.2, 0.16))  # valance
+	# Sliding glass door onto the patio, with a lamp over it.
+	_bx("flat", Vector3(2.6, 2.3, 0.06), Vector3(-3.4, 1.2, wf), Color(0.5, 0.5, 0.52))
+	_bx("glow", Vector3(2.4, 2.1, 0.06), Vector3(-3.4, 1.2, wf + 0.03), Color(0.46, 0.36, 0.24))
+	_bx("flat", Vector3(0.08, 2.1, 0.08), Vector3(-3.4, 1.2, wf + 0.05), Color(0.5, 0.5, 0.52))
+	_bx("flat", Vector3(0.7, 2.0, 0.07), Vector3(-4.25, 1.2, wf + 0.05), Color(0.36, 0.28, 0.2))  # half-drawn curtain
+	_bx("glow", Vector3(0.2, 0.3, 0.16), Vector3(-1.8, 2.6, wf + 0.08), Color(1.0, 0.82, 0.5))
+	# Back door up on the porch, its light.
+	_bx("flat", Vector3(1.1, 2.15, 0.06), Vector3(3.2, 1.0 + 1.07, wf), trim)
+	_bx("flat", Vector3(0.95, 2.05, 0.07), Vector3(3.2, 1.0 + 1.03, wf + 0.01), Color(0.32, 0.12, 0.1))
+	_bx("glow", Vector3(0.5, 0.6, 0.08), Vector3(3.2, 2.45, wf + 0.04), Color(0.95, 0.75, 0.45))  # door window
+	_bx("glow", Vector3(0.2, 0.3, 0.16), Vector3(4.2, 2.9, wf + 0.08), Color(1.0, 0.82, 0.5))
+	# AC unit and a coiled hose on the patio by the wall.
+	_bx("metal", Vector3(0.8, 0.75, 0.8), Vector3(-0.95, 0.4, wall_z + 0.55), Color(0.62, 0.62, 0.6))
+	_bx("flat", Vector3(0.7, 0.03, 0.7), Vector3(-0.95, 0.79, wall_z + 0.55), Color(0.12, 0.12, 0.12))
+	_cy("flat", 0.3, 0.3, 0.12, Vector3(-7.0, 0.07, wall_z + 0.5), Color(0.15, 0.4, 0.18), 10)
 
-	# Back porch: wooden deck, steps, posts, railing and a low flat roof friends climb onto.
-	var deck_y := 0.45
-	var wood := Color(0.38, 0.31, 0.24)
-	_bx("wood", Vector3(8.4, deck_y, 3.2), Vector3(-3.0, deck_y * 0.5, wall_z + 1.6), wood)
-	_bx("wood", Vector3(1.6, 0.22, 0.4), Vector3(0.0, 0.11, wall_z + 3.4), wood.darkened(0.1))
-	var roof_y := 3.05
-	for px: float in [-7.0, -3.0, 1.0]:
-		_bx("wood", Vector3(0.16, roof_y - deck_y, 0.16), Vector3(px, deck_y + (roof_y - deck_y) * 0.5, wall_z + 3.05), wood.lightened(0.15))
-	_bx("wood", Vector3(4.0, 0.08, 0.08), Vector3(-5.0, deck_y + 0.85, wall_z + 3.05), wood.lightened(0.15))
-	_bx("wood", Vector3(0.08, 0.08, 3.0), Vector3(-7.0, deck_y + 0.85, wall_z + 1.55), wood.lightened(0.15))
-	for k in 9:
-		_bx("wood", Vector3(0.05, 0.85, 0.05), Vector3(-6.6 + k * 0.42, deck_y + 0.42, wall_z + 3.05), wood.lightened(0.15))
-	_bx("shingle", Vector3(8.8, 0.18, 3.6), Vector3(-3.0, roof_y + 0.09, wall_z + 1.75), Color(0.24, 0.22, 0.22), 0.0, 0.7)
-	_bx("flat", Vector3(8.8, 0.22, 0.06), Vector3(-3.0, roof_y + 0.05, wall_z + 3.57), trim)
+	# Raised wooden porch (x 0..6, top y 1.0) with steps down to the yard, railing, roof.
+	var deck_y := 1.0
+	var wood := Color(0.5, 0.4, 0.3)
+	var px0 := 0.0
+	var px1 := 6.0
+	var front := -5.7
+	var dz := front - wall_z
+	_bx("wood", Vector3(px1 - px0, 0.1, dz), Vector3((px0 + px1) * 0.5, deck_y - 0.05, (wall_z + front) * 0.5), wood)
+	_bx("flat", Vector3(px1 - px0, deck_y - 0.1, 0.04), Vector3((px0 + px1) * 0.5, (deck_y - 0.1) * 0.5, front + 0.05), Color(0.12, 0.1, 0.08))  # dark lattice skirt
+	for k in 15:
+		_bx("wood", Vector3(0.03, 0.03, 1.2), Vector3(px0 + 0.2 + k * 0.4, 0.45, front + 0.02), wood, PI * 0.25)
+	for sx: float in [px0, px1]:
+		_bx("flat", Vector3(0.04, deck_y - 0.1, dz), Vector3(sx, (deck_y - 0.1) * 0.5, (wall_z + front) * 0.5), Color(0.12, 0.1, 0.08))
+	# Steps (three 0.25 m risers) centred on x 1.6
+	var sx0 := 1.6
+	for k in 3:
+		var h := deck_y - 0.25 * (k + 1)
+		var z0 := front + 0.3 * k
+		_bx("wood", Vector3(1.4, h, 0.32), Vector3(sx0, h * 0.5, z0 + 0.15), wood.lightened(0.05 * k))
+	# Railing (top y deck+0.95) with balusters, gap for the steps.
+	var rail := wood.lightened(0.12)
+	var rail_top := deck_y + 0.95
+	var segs: Array = [[Vector3(px0, 0, front), Vector3(sx0 - 0.75, 0, front)], [Vector3(sx0 + 0.75, 0, front), Vector3(px1, 0, front)],
+		[Vector3(px1, 0, front), Vector3(px1, 0, wall_z)], [Vector3(px0, 0, front), Vector3(px0, 0, wall_z)]]
+	for sg: Array in segs:
+		var a: Vector3 = sg[0]
+		var b2: Vector3 = sg[1]
+		var d := b2 - a
+		var yaw := atan2(-d.z, d.x)
+		var l := d.length()
+		_bx("wood", Vector3(l, 0.07, 0.12), (a + b2) * 0.5 + Vector3(0, rail_top, 0), rail, yaw)
+		_bx("wood", Vector3(l, 0.05, 0.05), (a + b2) * 0.5 + Vector3(0, deck_y + 0.12, 0), rail, yaw)
+		var nb := int(l / 0.16)
+		for k in nb:
+			_bx("wood", Vector3(0.04, 0.8, 0.04), a + d * ((k + 0.5) / nb) + Vector3(0, deck_y + 0.52, 0), rail, yaw)
+	for k in 2:
+		var hx := sx0 + (0.72 if k == 0 else -0.72)
+		_beam("wood", Vector3(hx, rail_top, front), Vector3(hx, 0.95, front + 0.95), 0.06, rail)  # step handrails
+		_bx("wood", Vector3(0.1, 1.0, 0.1), Vector3(hx, 0.5, front + 0.92), rail)
+	var roof_y := 3.4
+	for ppx: float in [px0 + 0.1, 3.0, px1 - 0.1]:
+		_bx("wood", Vector3(0.16, roof_y - deck_y, 0.16), Vector3(ppx, deck_y + (roof_y - deck_y) * 0.5, front + 0.1), rail)
+	_bx("shingle", Vector3(px1 - px0 + 0.6, 0.18, dz + 0.6), Vector3((px0 + px1) * 0.5, roof_y + 0.09, (wall_z + front) * 0.5 + 0.3), Color(0.3, 0.27, 0.27), 0.0, 0.7)
+	_bx("flat", Vector3(px1 - px0 + 0.6, 0.22, 0.06), Vector3((px0 + px1) * 0.5, roof_y + 0.05, front + 0.6), trim)
 	# Hand-painted bedsheet banner hanging off the porch roof
-	var sheet_z := wall_z + 3.62
-	_bx("flat", Vector3(5.4, 0.9, 0.03), Vector3(-3.4, roof_y - 0.42, sheet_z), Color(0.62, 0.6, 0.55))
-	_bx("flat", Vector3(5.4, 0.04, 0.035), Vector3(-3.4, roof_y - 0.1, sheet_z), Color(0.5, 0.48, 0.44))
+	var sheet_z := front + 0.66
+	_bx("flat", Vector3(4.6, 0.9, 0.03), Vector3(3.6, roof_y - 0.42, sheet_z), Color(0.86, 0.84, 0.78))
+	_bx("flat", Vector3(4.6, 0.04, 0.035), Vector3(3.6, roof_y - 0.1, sheet_z), Color(0.5, 0.48, 0.44))
 	var lines: Array[String] = ["CITY 2 CITY WRESTLING", "BACKYARD BRAWL"]
-	var line_cols: Array[Color] = [Color(0.5, 0.12, 0.1), Color(0.12, 0.15, 0.32)]
+	var line_cols: Array[Color] = [Color(0.7, 0.1, 0.08), Color(0.1, 0.16, 0.45)]
 	for li in 2:
 		var lab := Label3D.new()
 		lab.text = lines[li]
-		lab.font_size = 52 if li == 0 else 44
+		lab.font_size = 46 if li == 0 else 40
 		lab.outline_size = 0
 		lab.modulate = line_cols[li]
 		lab.shaded = true
-		lab.position = Vector3(-3.4, roof_y - 0.28 - li * 0.3, sheet_z + 0.025)
-		lab.rotation_degrees = Vector3(0, 0, -1.5 + li * 2.5)  # wonky hand lettering
+		lab.position = Vector3(3.6, roof_y - 0.28 - li * 0.3, sheet_z + 0.025)
+		lab.rotation_degrees = Vector3(0, 0, -1.5 + li * 2.5)
 		add_child(lab)
-	# Ladder up to the porch roof
-	var lb := Vector3(1.6, 0, wall_z + 3.9)
-	var lt := Vector3(1.6, roof_y + 0.6, wall_z + 3.3)
-	for s: float in [-0.25, 0.25]:
-		_beam("wood", lb + Vector3(s, 0, 0), lt + Vector3(s, 0, 0), 0.07, Color(0.48, 0.4, 0.28))
-	for k in 8:
-		var t := (k + 0.6) / 8.6
-		_bx("wood", Vector3(0.5, 0.05, 0.05), lb.lerp(lt, t), Color(0.48, 0.4, 0.28))
-
-	# Neighbour's house beyond the left fence + a dark tree line.
-	var nb := Vector3(-23.0, 0, -15.0)
-	_bx("siding", Vector3(9.0, 5.6, 7.0), nb + Vector3(0, 2.8, 0), Color(0.36, 0.33, 0.27), PI * 0.5, 0.6)
+	# Couch + grill on the porch
+	var cp := Vector3(4.5, deck_y, wall_z + 0.75)
+	var couch := Color(0.36, 0.33, 0.2)
+	_bx("flat", Vector3(2.2, 0.45, 0.95), cp + Vector3(0, 0.22, 0), couch)
+	_bx("flat", Vector3(2.2, 0.6, 0.28), cp + Vector3(0, 0.6, -0.36), couch.darkened(0.1))
 	for s: float in [-1.0, 1.0]:
-		_sbox("shingle", Vector3(4.2, 0.2, 9.6), Transform3D(Basis(Vector3.BACK, -0.5 * s), nb + Vector3(1.85 * s, 6.6, 0)), Color(0.18, 0.16, 0.16), 0.7)
-	_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(3.52, 3.8, 1.8), Color(0.72, 0.58, 0.36))
-	_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(3.52, 1.6, -2.0), Color(0.3, 0.38, 0.55))
-	var trees: Array[Vector3] = [Vector3(-14.0, 0, -21.0), Vector3(-17.5, 0, -6.0), Vector3(13.0, 0, -21.0), Vector3(17.0, 0, -16.0), Vector3(19.0, 0, -6.0), Vector3(-11.5, 0, -24.0)]
+		_bx("flat", Vector3(0.26, 0.62, 0.95), cp + Vector3(s * 1.1, 0.31, 0), couch.darkened(0.15))
+	_bx("flat", Vector3(0.7, 0.12, 0.6), cp + Vector3(-0.4, 0.5, 0.05), Color(0.5, 0.42, 0.26))
+	var gp := Vector3(0.8, deck_y, wall_z + 0.9)
+	_cy("flat", 0.3, 0.4, 0.35, gp + Vector3(0, 0.95, 0), Color(0.07, 0.07, 0.08), 10)
+	_cy("flat", 0.4, 0.24, 0.25, gp + Vector3(0, 1.25, 0), Color(0.08, 0.08, 0.09), 10)
+	_cy("glow", 0.31, 0.31, 0.02, gp + Vector3(0, 1.12, 0), Color(1.0, 0.4, 0.1), 10)
+	for k in 3:
+		var a3 := TAU * k / 3.0 + 0.3
+		_beam("flat", gp + Vector3(cos(a3) * 0.35, 0, sin(a3) * 0.35), gp + Vector3(0, 0.85, 0), 0.04, Color(0.07, 0.07, 0.08))
+
+	# Neighbours' houses beyond the side fences + a dark tree line.
+	for nb: Vector3 in [Vector3(-17.5, 0, -6.0), Vector3(17.5, 0, -9.0)]:
+		_bx("siding", Vector3(9.0, 5.6, 7.0), nb + Vector3(0, 2.8, 0), Color(0.5, 0.46, 0.38) if nb.x < 0.0 else Color(0.4, 0.45, 0.5), PI * 0.5, 0.6)
+		for s: float in [-1.0, 1.0]:
+			_sbox("shingle", Vector3(4.2, 0.2, 9.6), Transform3D(Basis(Vector3.BACK, -0.5 * s), nb + Vector3(1.85 * s, 6.6, 0)), Color(0.22, 0.2, 0.2), 0.7)
+		var face := -signf(nb.x) * 3.52
+		_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(face, 3.8, 1.8), Color(0.85, 0.62, 0.34))
+		_bx("glow", Vector3(0.06, 1.0, 1.2), nb + Vector3(face, 1.6, -2.0), Color(0.3, 0.4, 0.65))
+	var trees: Array[Vector3] = [Vector3(-11.0, 0, -12.5), Vector3(-12.0, 0, 2.5), Vector3(11.0, 0, -14.0), Vector3(12.5, 0, -2.5),
+		Vector3(12.0, 0, 9.0), Vector3(-11.5, 0, 9.5), Vector3(-3.0, 0, -19.0), Vector3(6.0, 0, -19.5)]
 	for t in trees:
 		var th := randf_range(6.0, 9.0)
-		_cy("flat", 0.25, 0.2, 1.6, t + Vector3(0, 0.8, 0), Color(0.09, 0.07, 0.05), 6)
-		_cy("flat", 2.4, 0.0, th * 0.6, t + Vector3(0, 1.4 + th * 0.3, 0), Color(0.03, 0.06, 0.045), 7)
-		_cy("flat", 1.8, 0.0, th * 0.5, t + Vector3(0, 1.4 + th * 0.65, 0), Color(0.035, 0.07, 0.05), 7)
+		_cy("flat", 0.25, 0.2, 1.6, t + Vector3(0, 0.8, 0), Color(0.12, 0.09, 0.06), 6)
+		_cy("flat", 2.4, 0.0, th * 0.6, t + Vector3(0, 1.4 + th * 0.3, 0), Color(0.04, 0.08, 0.05), 8)
+		_cy("flat", 1.8, 0.0, th * 0.5, t + Vector3(0, 1.4 + th * 0.65, 0), Color(0.05, 0.1, 0.06), 8)
+
+
+func _fence_run(a: Vector3, b: Vector3, fh: float, picket := false) -> void:
+	# Weathered board-on-board privacy fence (or a low picket fence) from a to b.
+	var d := b - a
+	var run_len := d.length()
+	if run_len < 0.1:
+		return
+	var dir := d / run_len
+	var yaw := atan2(-dir.z, dir.x)
+	var step := 0.16 if picket else 0.3
+	var count := maxi(1, int(run_len / step))
+	for k in count:
+		var p := a + dir * ((k + 0.5) * run_len / count)
+		var tint := randf_range(-0.05, 0.05)
+		var bh := fh + (0.06 if k % 2 == 0 else 0.0) + randf_range(-0.03, 0.03)
+		var bw := run_len / count - (0.07 if picket else 0.015)
+		var lean := randf_range(-0.02, 0.02)
+		_sbox("wood", Vector3(bw, bh, 0.035), Transform3D(Basis(Vector3.UP, yaw) * Basis(Vector3.BACK, lean), p + Vector3(0, bh * 0.5, 0)), Color(0.66 + tint, 0.58 + tint, 0.48 + tint))
+	var posts := maxi(1, int(run_len / 2.4))
+	for k in posts + 1:
+		var pp := a + dir * (k * run_len / posts)
+		_bx("wood", Vector3(0.11, fh + 0.12, 0.11), pp + Vector3(0, (fh + 0.12) * 0.5, 0), Color(0.42, 0.36, 0.3), yaw)
+	for ry: float in ([fh * 0.75, fh * 0.25] if picket else [fh - 0.3, 0.3]):
+		_bx("wood", Vector3(run_len, 0.08, 0.05), (a + b) * 0.5 + Vector3(0, ry, 0) - Vector3(dir.z, 0, -dir.x) * 0.04, Color(0.45, 0.38, 0.3), yaw)
 
 
 func _build_fence() -> void:
-	# Wooden privacy fence: side runs at x = +/-14, back runs beside the house.
-	var fh := 1.9
-	var runs: Array = [
-		[Vector3(-14, 0, -15), Vector3(-14, 0, 10)],
-		[Vector3(14, 0, -15), Vector3(14, 0, 10)],
-		[Vector3(-14, 0, -15), Vector3(-9.15, 0, -15)],
-		[Vector3(9.15, 0, -15), Vector3(14, 0, -15)],
-	]
-	for r: Array in runs:
-		var a: Vector3 = r[0]
-		var b: Vector3 = r[1]
-		var d := b - a
-		var run_len := d.length()
-		var dir := d / run_len
-		var yaw := atan2(-dir.z, dir.x)
-		var count := int(run_len / 0.32)
-		for k in count:
-			var p := a + dir * ((k + 0.5) * run_len / count)
-			var tint := randf_range(-0.04, 0.04)
-			var bh := fh + (0.08 if k % 2 == 0 else 0.0)
-			_bx("wood", Vector3(run_len / count - 0.02, bh, 0.04), p + Vector3(0, bh * 0.5, 0), Color(0.33 + tint, 0.29 + tint, 0.24 + tint), yaw)
-		var posts := int(run_len / 2.4)
-		for k in posts + 1:
-			var pp := a + dir * (k * run_len / posts)
-			_bx("wood", Vector3(0.12, fh + 0.1, 0.12), pp + Vector3(0, (fh + 0.1) * 0.5, 0), Color(0.26, 0.22, 0.18), yaw)
-		_bx("wood", Vector3(run_len, 0.08, 0.1), (a + b) * 0.5 + Vector3(0, fh - 0.25, 0), Color(0.28, 0.24, 0.19), yaw)
+	# Side runs just outside the fighting area; -x has a gap filled by the shed, +x a gate for the driveway.
+	var fz := FENCE_Z
+	_fence_run(Vector3(-FENCE_X, 0, HOUSE_Z), Vector3(-FENCE_X, 0, -1.0), FENCE_H)
+	_fence_run(Vector3(-FENCE_X, 0, 1.8), Vector3(-FENCE_X, 0, fz), FENCE_H)
+	_fence_run(Vector3(FENCE_X, 0, HOUSE_Z), Vector3(FENCE_X, 0, 1.2), FENCE_H)
+	_fence_run(Vector3(FENCE_X, 0, 4.1), Vector3(FENCE_X, 0, fz), FENCE_H)
+	# The gate swung open outward against the car's side of the driveway.
+	_fence_run(Vector3(FENCE_X, 0, 4.1), Vector3(FENCE_X + 1.9, 0, 4.9), FENCE_H)
+	# Camera side: low picket fence at the corners; the middle panels lie knocked flat on the grass.
+	_fence_run(Vector3(-FENCE_X, 0, fz), Vector3(-2.6, 0, fz), 0.65, true)
+	_fence_run(Vector3(2.6, 0, fz), Vector3(FENCE_X, 0, fz), 0.65, true)
+	for k in 2:
+		var cx := -1.3 + k * 2.6
+		_bx("wood", Vector3(2.5, 0.05, 0.85), Vector3(cx, 0.04, fz + 0.55 + k * 0.1), Color(0.6, 0.53, 0.44), randf_range(-0.12, 0.12))
+		_bx("wood", Vector3(2.5, 0.08, 0.06), Vector3(cx, 0.09, fz + 0.4 + k * 0.1), Color(0.45, 0.38, 0.3))
 
 
 func _lawn_chair(pos: Vector3, face: Vector3, col: Color) -> void:
 	var b := Basis.looking_at(face)
-	var frame := Color(0.51, 0.52, 0.54)
+	var frame := Color(0.6, 0.61, 0.63)
 	var xf := Transform3D(b, pos)
 	_sbox("flat", Vector3(0.52, 0.04, 0.46), xf * Transform3D(Basis(), Vector3(0, 0.42, 0)), col)
 	_sbox("flat", Vector3(0.52, 0.55, 0.04), xf * Transform3D(Basis(Vector3.RIGHT, 0.25), Vector3(0, 0.72, 0.25)), col)
@@ -1149,108 +1384,158 @@ func _lawn_chair(pos: Vector3, face: Vector3, col: Color) -> void:
 
 
 func _build_props() -> void:
-	var black := Color(0.08, 0.08, 0.09)
-
-	# Trampoline (left)
-	var tp := Vector3(-9.6, 0, -8.0)
-	_cy("flat", 2.0, 2.0, 0.1, tp + Vector3(0, 0.88, 0), Color(0.14, 0.24, 0.46), 12)
-	_cy("flat", 1.75, 1.75, 0.04, tp + Vector3(0, 0.94, 0), Color(0.03, 0.03, 0.03), 12)
-	for k in 6:
-		var a2 := TAU * k / 6.0
-		var lp := tp + Vector3(cos(a2) * 1.9, 0, sin(a2) * 1.9)
-		_beam("metal", lp, lp + Vector3(0, 0.86, 0), 0.06, Color(0.41, 0.42, 0.44))
-
-	# Kiddie pool (right)
-	var kp := Vector3(7.4, 0, -7.2)
-	_cy("flat", 1.15, 1.2, 0.3, kp + Vector3(0, 0.15, 0), Color(0.25, 0.4, 0.57), 12)
-	_cy("glow", 1.02, 1.02, 0.02, kp + Vector3(0, 0.25, 0), Color(0.13, 0.23, 0.3), 12)
-	_bx("flat", Vector3(0.5, 0.06, 0.25), kp + Vector3(0.3, 0.27, 0.2), Color(0.65, 0.57, 0.25), 0.6)  # floatie
-	# Grill by the porch, coals glowing
-	var gp := Vector3(3.3, 0, -11.8)
-	_cy("flat", 0.32, 0.42, 0.35, gp + Vector3(0, 0.95, 0), black, 8)
-	_cy("flat", 0.42, 0.25, 0.25, gp + Vector3(0, 1.25, 0), Color(0.08, 0.08, 0.09), 8)
-	_cy("glow", 0.33, 0.33, 0.02, gp + Vector3(0, 1.12, 0), Color(1.0, 0.35, 0.08), 8)
-	for k in 3:
-		var a3 := TAU * k / 3.0 + 0.3
-		_beam("flat", gp + Vector3(cos(a3) * 0.35, 0, sin(a3) * 0.35), gp + Vector3(0, 0.85, 0), 0.04, black)
-	# Beat-up couch on the porch
-	var cp := Vector3(-4.6, 0.45, -13.9)
-	var couch := Color(0.28, 0.26, 0.17)
-	_bx("flat", Vector3(2.4, 0.45, 0.95), cp + Vector3(0, 0.22, 0), couch)
-	_bx("flat", Vector3(2.4, 0.6, 0.28), cp + Vector3(0, 0.6, -0.36), couch.darkened(0.1))
-	for s: float in [-1.0, 1.0]:
-		_bx("flat", Vector3(0.26, 0.62, 0.95), cp + Vector3(s * 1.2, 0.31, 0), couch.darkened(0.15))
-	_bx("flat", Vector3(0.7, 0.12, 0.6), cp + Vector3(-0.4, 0.5, 0.05), Color(0.36, 0.34, 0.24))  # mismatched cushion
-	_bx("flat", Vector3(0.3, 0.06, 0.2), cp + Vector3(0.65, 0.48, 0.1), Color(0.41, 0.41, 0.4), 0.4)  # tape patch
-	# Shed (right) with a flat-ish roof people sit on, and a ladder
-	var sp := Vector3(10.6, 0, -11.0)
-	var shed := Color(0.32, 0.37, 0.32)
-	_bx("wood", Vector3(3.2, 2.5, 2.6), sp + Vector3(0, 1.25, 0), shed)
-	_bx("shingle", Vector3(3.6, 0.15, 3.0), sp + Vector3(0, 2.58, 0), Color(0.21, 0.21, 0.21), 0.0, 0.7)
-	_bx("wood", Vector3(1.2, 2.0, 0.05), sp + Vector3(-0.5, 1.0, 1.32), shed.darkened(0.25))
-	_bx("flat", Vector3(0.6, 0.5, 0.05), sp + Vector3(0.9, 1.6, 1.32), Color(0.07, 0.08, 0.1))  # window
-	var slb := sp + Vector3(-1.9, 0, 1.0)
-	var slt := sp + Vector3(-1.65, 2.9, 0.6)
-	for s: float in [-0.22, 0.22]:
-		_beam("metal", slb + Vector3(0, 0, s), slt + Vector3(0, 0, s), 0.06, Color(0.48, 0.49, 0.5))
-	for k in 7:
-		_bx("metal", Vector3(0.05, 0.04, 0.44), slb.lerp(slt, (k + 0.7) / 7.6), Color(0.48, 0.49, 0.5))
-	# Trash cans by the house corner
-	for tc: Vector3 in [Vector3(7.6, 0, -14.4), Vector3(8.4, 0, -14.2)]:
-		_cy("metal", 0.3, 0.33, 0.85, tc + Vector3(0, 0.425, 0), Color(0.41, 0.42, 0.42), 8)
-		_cy("metal", 0.36, 0.3, 0.08, tc + Vector3(0, 0.89, 0), Color(0.44, 0.45, 0.45), 8)
-	_bx("flat", Vector3(0.6, 1.0, 0.65), Vector3(6.7, 0.5, -14.4), Color(0.13, 0.2, 0.4))  # recycling bin
-	# Garden gnomes
-	var gnomes: Array[Vector3] = [Vector3(-12.8, 0, -3.0), Vector3(-8.0, 0, -12.6), Vector3(6.0, 0, -8.3), Vector3(12.6, 0, -6.0), Vector3(-12.4, 0, -10.5), Vector3(0.9, 0, -12.5)]
-	var gnome_cols: Array[Color] = [Color(0.17, 0.24, 0.46), Color(0.18, 0.38, 0.23)]
+	# Decoration outside the fighting area (the perches are in _build_perches).
+	# Lawn chairs at the back of the patio
+	_lawn_chair(Vector3(-6.4, 0.015, -6.2), Vector3(0.3, 0, 1), Color(0.2, 0.45, 0.3))
+	_lawn_chair(Vector3(-5.6, 0.015, -6.5), Vector3(0.1, 0, 1), Color(0.65, 0.25, 0.2))
+	_lawn_chair(Vector3(-1.6, 0.015, -6.6), Vector3(-0.2, 0, 1), Color(0.22, 0.32, 0.62))
+	# Coolers
+	_bx("flat", Vector3(0.7, 0.42, 0.42), Vector3(-4.6, 0.225, -6.9), Color(0.65, 0.18, 0.14), 0.3)
+	_bx("flat", Vector3(0.72, 0.08, 0.44), Vector3(-4.6, 0.46, -6.9), Color(0.85, 0.85, 0.82), 0.3)
+	_bx("flat", Vector3(0.6, 0.38, 0.38), Vector3(8.6, 0.2, 4.6), Color(0.15, 0.3, 0.6), -0.4)
+	# Garbage cans + recycling bin in the back corner by the porch
+	for tc: Vector3 in [Vector3(6.75, 0, -7.9), Vector3(6.85, 0, -7.2)]:
+		_cy("metal", 0.3, 0.33, 0.85, tc + Vector3(0, 0.425, 0), Color(0.5, 0.51, 0.5), 10)
+		_cy("metal", 0.36, 0.3, 0.08, tc + Vector3(0, 0.89, 0), Color(0.55, 0.56, 0.55), 10)
+	_bx("flat", Vector3(0.6, 1.0, 0.65), Vector3(6.8, 0.5, -6.4), Color(0.12, 0.25, 0.55))
+	# Garden gnomes (outside the fighting area)
+	var gnomes: Array[Vector3] = [Vector3(-0.9, 0, -7.6), Vector3(6.6, 0, -5.4), Vector3(-3.6, 0, 6.1), Vector3(3.4, 0, 6.0), Vector3(-7.0, 0, -5.6)]
 	for i in gnomes.size():
 		var g: Vector3 = gnomes[i]
-		_cy("flat", 0.13, 0.09, 0.22, g + Vector3(0, 0.11, 0), gnome_cols[i % 2], 6)
-		_bx("flat", Vector3(0.13, 0.12, 0.13), g + Vector3(0, 0.28, 0), Color(0.59, 0.5, 0.44))
-		_bx("flat", Vector3(0.14, 0.1, 0.06), g + Vector3(0, 0.22, 0.07), Color(0.65, 0.65, 0.65))
-		_cy("flat", 0.09, 0.0, 0.22, g + Vector3(0, 0.45, 0), Color(0.48, 0.12, 0.11), 6)
-	# Lawn chairs
-	_lawn_chair(Vector3(-6.9, 0, -1.4), Vector3(1, 0, 0.1), Color(0.18, 0.35, 0.25))
-	_lawn_chair(Vector3(-7.1, 0, 0.9), Vector3(1, 0, -0.1), Color(0.5, 0.23, 0.21))
-	_lawn_chair(Vector3(6.9, 0, -0.9), Vector3(-1, 0, 0.1), Color(0.2, 0.27, 0.49))
-	_lawn_chair(Vector3(6.7, 0, 1.4), Vector3(-1, 0, -0.1), Color(0.58, 0.51, 0.24))
-	_lawn_chair(Vector3(-2.6, 0, -7.9), Vector3(0.2, 0, 1), Color(0.18, 0.35, 0.25))
-	_lawn_chair(Vector3(2.5, 0, -8.1), Vector3(-0.2, 0, 1), Color(0.5, 0.23, 0.21))
-	# A cooler
-	_bx("flat", Vector3(0.7, 0.42, 0.42), Vector3(-5.8, 0.21, -6.6), Color(0.49, 0.17, 0.15), 0.3)
-	_bx("flat", Vector3(0.72, 0.08, 0.44), Vector3(-5.8, 0.44, -6.6), Color(0.65, 0.65, 0.65), 0.3)
+		_cy("flat", 0.13, 0.09, 0.22, g + Vector3(0, 0.11, 0), [Color(0.17, 0.3, 0.6), Color(0.18, 0.48, 0.25)][i % 2], 8)
+		_bx("flat", Vector3(0.13, 0.12, 0.13), g + Vector3(0, 0.28, 0), Color(0.8, 0.62, 0.5))
+		_bx("flat", Vector3(0.14, 0.1, 0.06), g + Vector3(0, 0.22, 0.07), Color(0.85, 0.85, 0.85))
+		_cy("flat", 0.09, 0.0, 0.22, g + Vector3(0, 0.45, 0), Color(0.7, 0.12, 0.1), 8)
+	# Kiddie pool outside the picket fence, camera-left corner
+	var kp := Vector3(-5.6, 0, 7.4)
+	_cy("flat", 1.0, 1.05, 0.3, kp + Vector3(0, 0.15, 0), Color(0.3, 0.5, 0.75), 14)
+	_cy("glow", 0.9, 0.9, 0.02, kp + Vector3(0, 0.25, 0), Color(0.12, 0.25, 0.32), 14)
+
+
+func _build_perches() -> void:
+	# Six things to climb, spread around the edge of the yard; the middle stays open.
+	var wood := Color(0.55, 0.45, 0.33)
+	var metal := Color(0.55, 0.56, 0.58)
+
+	# 1) Picnic table on the patio (top 0.75)
+	var pt := Vector3(-4.4, 0.015, -3.5)
+	_bx("wood", Vector3(1.9, 0.06, 0.8), pt + Vector3(0, 0.72, 0), wood)
+	for s: float in [-1.0, 1.0]:
+		_bx("wood", Vector3(1.9, 0.05, 0.28), pt + Vector3(0, 0.43, s * 0.62), wood.darkened(0.08))
+		for lx: float in [-0.7, 0.7]:
+			_beam("wood", pt + Vector3(lx, 0, s * 0.78), pt + Vector3(lx, 0.7, s * 0.12), 0.08, wood.darkened(0.15))
+	for lx: float in [-0.7, 0.7]:
+		_bx("wood", Vector3(0.08, 0.06, 1.6), pt + Vector3(lx, 0.38, 0), wood.darkened(0.15))
+	_cy("flat", 0.04, 0.04, 0.12, pt + Vector3(0.5, 0.81, 0.1), Color(0.65, 0.12, 0.1), 8)  # red cup
+	_add_perch("picnic table", "table", Vector3(-4.4, 0.75, -3.5), Vector3(-4.4, 0.0, -2.3))
+
+	# 2) Stacked pallets on cinder blocks (top 1.2) by the left fence, camera side
+	var pp := Vector3(-6.0, 0, 3.6)
+	var block := Color(0.75, 0.74, 0.7)
+	for cx: float in [-0.4, 0.4]:
+		for cz: float in [-0.3, 0.3]:
+			for k in 2:
+				_bx("block", Vector3(0.4, 0.2, 0.2), pp + Vector3(cx, 0.1 + k * 0.2, cz), block.darkened(randf() * 0.15), PI * 0.5 * k)
+	for k in 5:
+		var y0 := 0.4 + k * 0.16
+		var jit := Vector3(randf_range(-0.05, 0.05), 0, randf_range(-0.05, 0.05))
+		var pyaw := randf_range(-0.06, 0.06)
+		var pal := wood.darkened(randf_range(0.0, 0.2))
+		for bz: float in [-0.45, 0.0, 0.45]:
+			_bx("wood", Vector3(1.2, 0.02, 0.1), pp + jit + Vector3(0, y0 + 0.01, bz), pal, pyaw)
+			_bx("wood", Vector3(1.2, 0.11, 0.08), pp + jit + Vector3(0, y0 + 0.075, bz), pal.darkened(0.1), pyaw)
+		for sx in 7:
+			_bx("wood", Vector3(0.12, 0.025, 1.0), pp + jit + Vector3(-0.54 + sx * 0.18, y0 + 0.1475, 0), pal.lightened(0.05), pyaw)
+	for k in 2:
+		_bx("block", Vector3(0.4, 0.2, 0.2), Vector3(-5.2, 0.1 + k * 0.2, 3.6), block, PI * 0.5)  # step block
+	_add_perch("pallet stack", "pallets", Vector3(-6.0, 1.2, 3.6), Vector3(-4.8, 0.0, 3.5))
+
+	# 3) Porch steps / railing (deck top 1.0), built with the house
+	_add_perch("porch steps", "porch", Vector3(1.6, 1.0, -5.95), Vector3(1.6, 0.0, -4.3))
+
+	# 4) Car hood: in _build_car
+	# 5) Trampoline (mat 0.9): extra air
+	var tp := Vector3(5.0, 0, -2.6)
+	_cy("flat", 1.45, 1.45, 0.07, tp + Vector3(0, 0.865, 0), Color(0.12, 0.3, 0.7), 16)
+	_cy("flat", 1.22, 1.22, 0.02, tp + Vector3(0, 0.9, 0), Color(0.03, 0.03, 0.035), 16)
+	for k in 8:
+		var a2 := TAU * k / 8.0 + 0.2
+		var lp := tp + Vector3(cos(a2) * 1.38, 0, sin(a2) * 1.38)
+		_beam("metal", lp + Vector3(0, 0.05, 0), lp + Vector3(0, 0.83, 0), 0.05, metal)
+		if k % 2 == 0:
+			var a3 := a2 + TAU / 8.0
+			_beam("metal", lp + Vector3(0, 0.03, 0), tp + Vector3(cos(a3) * 1.38, 0.03, sin(a3) * 1.38), 0.05, metal)
+	_add_perch("trampoline", "trampoline", Vector3(5.0, 0.9, -2.6), Vector3(3.4, 0.0, -2.0))
+
+	# 6) Shed in the left fence line, ladder up to its flat roof (2.4): the biggest dive
+	var shed := Color(0.42, 0.5, 0.42)
+	var sx0 := -8.1
+	var sw := 2.6
+	var sz := 0.4
+	var sd := 2.8
+	_bx("wood", Vector3(sw, 2.25, sd), Vector3(sx0, 1.125, sz), shed)
+	_bx("shingle", Vector3(sw + 0.4, 0.15, sd + 0.4), Vector3(sx0, 2.325, sz), Color(0.26, 0.25, 0.25), 0.0, 0.7)
+	_bx("flat", Vector3(0.04, 0.1, sd + 0.4), Vector3(sx0 + sw * 0.5 + 0.2, 2.3, sz), Color(0.75, 0.75, 0.7))  # drip edge
+	var fxw := sx0 + sw * 0.5 + 0.01
+	_bx("flat", Vector3(0.05, 1.9, 1.3), Vector3(fxw, 0.95, sz - 0.65), shed.darkened(0.3))  # doors
+	_bx("flat", Vector3(0.06, 1.9, 0.04), Vector3(fxw + 0.01, 0.95, sz - 0.65), Color(0.1, 0.1, 0.1))
+	_bx("flat", Vector3(0.06, 0.4, 1.4), Vector3(fxw + 0.01, 0.95, sz - 0.65), Color(0.55, 0.55, 0.5))  # X brace hint
+	_bx("glow", Vector3(0.05, 0.45, 0.5), Vector3(fxw, 1.55, sz + 1.05), Color(0.25, 0.2, 0.12))  # dim window
+	var lb := Vector3(-5.95, 0, 0.9)
+	var lt := Vector3(fxw + 0.1, 2.75, 0.9)
+	for s: float in [-0.22, 0.22]:
+		_beam("metal", lb + Vector3(0, 0, s), lt + Vector3(0, 0, s), 0.06, Color(0.75, 0.72, 0.5))
+	for k in 8:
+		_bx("metal", Vector3(0.05, 0.04, 0.44), lb.lerp(lt, (k + 0.6) / 8.6), Color(0.75, 0.72, 0.5))
+	_add_perch("shed roof", "roof", Vector3(-7.0, 2.4, 0.9), Vector3(-5.6, 0.0, 0.9))
 
 
 func _build_car() -> void:
-	# Beat-up sedan pulled onto the lawn at the front-right, headlights on the ring.
-	var pos := Vector3(9.0, 0, 6.4)
-	var face := Vector3(-pos.x, 0, -pos.z).normalized()
+	# Beat-up sedan on the driveway strip, nose poking through the open gate, headlights on the lawn.
+	var pos := Vector3(6.9, 0, 2.65)
+	var face := Vector3(-1, 0, 0)
 	var xf := Transform3D(Basis.looking_at(face), pos)
-	var body := Color(0.26, 0.1, 0.1)
+	var body := Color(0.45, 0.1, 0.09)
 	var glass := Color(0.05, 0.06, 0.08)
 	_sbox("flat", Vector3(1.8, 0.65, 4.4), xf * Transform3D(Basis(), Vector3(0, 0.62, 0)), body)
 	_sbox("flat", Vector3(1.6, 0.55, 2.2), xf * Transform3D(Basis(), Vector3(0, 1.2, 0.3)), body.darkened(0.1))
 	_sbox("flat", Vector3(1.64, 0.4, 2.0), xf * Transform3D(Basis(), Vector3(0, 1.2, 0.3)), glass)
 	_sbox("flat", Vector3(1.4, 0.42, 2.24), xf * Transform3D(Basis(), Vector3(0, 1.2, 0.3)), glass)
-	_sbox("flat", Vector3(1.0, 0.3, 0.9), xf * Transform3D(Basis(), Vector3(0.2, 0.95, -1.5)), Color(0.37, 0.37, 0.35))  # primer hood patch
-	_sbox("flat", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, -2.22)), Color(0.41, 0.41, 0.42))  # bumper
-	_sbox("flat", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, 2.22)), Color(0.41, 0.41, 0.42))
+	_sbox("flat", Vector3(1.0, 0.02, 0.9), xf * Transform3D(Basis(), Vector3(0.2, 0.955, -1.5)), Color(0.5, 0.5, 0.48))  # primer hood patch
+	_sbox("metal", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, -2.22)), Color(0.6, 0.6, 0.62))
+	_sbox("metal", Vector3(1.9, 0.18, 0.12), xf * Transform3D(Basis(), Vector3(0, 0.38, 2.22)), Color(0.6, 0.6, 0.62))
 	for sx: float in [-0.65, 0.65]:
 		_sbox("glow", Vector3(0.36, 0.2, 0.06), xf * Transform3D(Basis(), Vector3(sx, 0.72, -2.21)), Color(1.0, 0.97, 0.85))
-		_sbox("glow", Vector3(0.3, 0.16, 0.06), xf * Transform3D(Basis(), Vector3(sx, 0.75, 2.21)), Color(0.8, 0.08, 0.06))
+		_sbox("glow", Vector3(0.3, 0.16, 0.06), xf * Transform3D(Basis(), Vector3(sx, 0.75, 2.21)), Color(0.9, 0.08, 0.06))
 		for sz: float in [-1.35, 1.35]:
-			_scyl("flat", 0.33, 0.33, 0.24, xf * Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx * 1.38, 0.33, sz)), Color(0.03, 0.03, 0.03), 8)
-	# One spot for both headlamps (cheaper than two)
+			_scyl("flat", 0.33, 0.33, 0.24, xf * Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx * 1.38, 0.33, sz)), Color(0.03, 0.03, 0.03), 10)
+			_scyl("metal", 0.17, 0.17, 0.26, xf * Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx * 1.38, 0.33, sz)), Color(0.5, 0.5, 0.52), 8)
 	var hp := xf * Vector3(0, 0.8, -2.3)
 	var head := SpotLight3D.new()
-	head.transform = Transform3D(Basis.looking_at(Vector3(0, 1.7, 0) - hp), hp)
-	head.spot_angle = 26.0
-	head.spot_angle_attenuation = 1.2
-	head.spot_range = 20.0
-	head.spot_attenuation = 0.4
-	head.light_energy = 3.2
-	head.light_color = Color(1.0, 0.96, 0.82)
+	head.transform = Transform3D(Basis.looking_at(Vector3(-2.0, 0.0, 0.6) - hp), hp)
+	head.spot_angle = 30.0
+	head.spot_angle_attenuation = 1.1
+	head.spot_range = 13.0
+	head.spot_attenuation = 0.6
+	head.light_energy = 3.0
+	head.light_color = Color(1.0, 0.95, 0.8)
 	add_child(head)
+	_add_perch("car hood", "car", Vector3(5.4, 0.95, 2.65), Vector3(4.15, 0.0, 2.65))
+
+
+func _build_yard_lights() -> void:
+	# Warm pools from the house: the patio lamp and the porch light (the floodlights are in _build_environment).
+	var lamps: Array = [[Vector3(-1.8, 2.5, HOUSE_Z + 0.5), 7.5, 1.6, Color(1.0, 0.78, 0.5)],
+		[Vector3(4.2, 2.8, HOUSE_Z + 0.5), 6.5, 1.3, Color(1.0, 0.8, 0.55)],
+		[Vector3(-6.8, 2.2, 3.0), 5.5, 0.6, Color(0.7, 0.8, 1.0)]]
+	for l: Array in lamps:
+		var o := OmniLight3D.new()
+		o.position = l[0]
+		o.omni_range = l[1]
+		o.light_energy = l[2]
+		o.light_color = l[3]
+		o.omni_attenuation = 1.4
+		add_child(o)
 
 
 func _hang(a: Vector3, b: Vector3, sag: float, t: float) -> Vector3:
@@ -1258,13 +1543,13 @@ func _hang(a: Vector3, b: Vector3, sag: float, t: float) -> Vector3:
 
 
 func _build_string_lights() -> void:
-	# Two zig-zag strands from the house eaves over the ring to poles at the sides.
-	var poles: Array[Vector3] = [Vector3(-7.4, 0, -9.5), Vector3(7.4, 0, -9.5), Vector3(-7.4, 0, -4.0), Vector3(7.4, 0, -4.0),
-		Vector3(-7.6, 0, 1.6), Vector3(7.6, 0, 1.6), Vector3(-7.6, 0, 4.4), Vector3(7.6, 0, 4.4)]
+	# Two zig-zag strands from the house eaves over the yard to poles just outside the side fences.
+	var poles: Array[Vector3] = [Vector3(-7.85, 0, -5.0), Vector3(7.85, 0, -5.0), Vector3(-7.85, 0, -1.6), Vector3(7.85, 0, -1.6),
+		Vector3(-7.85, 0, 2.6), Vector3(7.85, 0, 0.6)]
 	for p in poles:
-		_bx("wood", Vector3(0.12, 5.0, 0.12), p + Vector3(0, 2.5, 0), Color(0.3, 0.25, 0.2), 0.0, 2.0)
-	var strand_a: Array[Vector3] = [Vector3(-7.0, 5.9, -14.9), Vector3(7.4, 4.95, -9.5), Vector3(-7.4, 4.95, -4.0), Vector3(7.6, 4.95, 1.6), Vector3(-7.6, 4.95, 4.4)]
-	var strand_b: Array[Vector3] = [Vector3(7.0, 5.9, -14.9), Vector3(-7.4, 4.95, -9.5), Vector3(7.4, 4.95, -4.0), Vector3(-7.6, 4.95, 1.6), Vector3(7.6, 4.95, 4.4)]
+		_bx("wood", Vector3(0.12, 5.0, 0.12), p + Vector3(0, 2.5, 0), Color(0.42, 0.35, 0.28), 0.0, 2.0)
+	var strand_a: Array[Vector3] = [Vector3(-6.5, 5.9, HOUSE_Z + 0.3), Vector3(7.85, 4.95, -5.0), Vector3(-7.85, 4.95, -1.6), Vector3(7.85, 4.95, 0.6)]
+	var strand_b: Array[Vector3] = [Vector3(6.5, 5.9, HOUSE_Z + 0.3), Vector3(-7.85, 4.95, -5.0), Vector3(7.85, 4.95, -1.6), Vector3(-7.85, 4.95, 2.6)]
 	# Mostly warm incandescent bulbs, a few muted old coloured ones.
 	var cols: Array[Color] = [Color(0.95, 0.72, 0.42), Color(0.9, 0.66, 0.38), Color(0.95, 0.72, 0.42), Color(0.85, 0.6, 0.3),
 		Color(0.75, 0.32, 0.22), Color(0.45, 0.62, 0.38), Color(0.42, 0.5, 0.72), Color(0.9, 0.55, 0.22)]
@@ -1338,40 +1623,37 @@ func _build_crowd() -> void:
 	_fan_xforms.clear()
 	_fan_custom.clear()
 	crowd_spots = PackedVector3Array()
-	# Standing behind the far side of the ring (gaps left so the porch stays visible)
-	var x := -7.2
-	while x < 7.2:
-		if absf(x) > 1.2 or randf() < 0.3:
-			_add_fan(Vector3(x, 0, randf_range(-6.5, -7.9)), _stand_variant(), 0.55)
-		x += randf_range(0.75, 1.1)
-	# Along the side fences
-	for z: float in [-2.5, -4.0, -5.6, -10.5, -12.2]:
-		_add_fan(Vector3(-12.6 + randf_range(-0.3, 0.3), 0, z), _stand_variant(), 0.38)
-	for z: float in [-2.0, -3.6, -5.0, -13.2]:
-		_add_fan(Vector3(12.4 + randf_range(-0.3, 0.3), 0, z), _stand_variant(), 0.38)
-	# Lawn chairs (sitting, slightly in front of each chair)
-	for c: Vector3 in [Vector3(-6.8, 0, -1.25), Vector3(-7.0, 0, 1.05), Vector3(6.8, 0, -0.75), Vector3(6.6, 0, 1.55), Vector3(-2.55, 0, -7.75), Vector3(2.45, 0, -7.95)]:
-		_add_fan(c, FAN_SIT if randf() < 0.5 else FAN_SIT_CUP, 0.55)
-	# Porch: couch sitters + friends at the railing
-	for cx: float in [-5.3, -4.6, -3.9]:
-		_add_fan(Vector3(cx, 0.45, -13.7), FAN_SIT if randf() < 0.5 else FAN_SIT_CUP, 0.62)
-	for rx: float in [-6.5, -2.0, -1.2, 0.2]:
-		_add_fan(Vector3(rx, 0.45, -12.4), _stand_variant(), 0.65)
+	# Nobody stands in the fighting area (x -7..7, z -5..5): friends crowd the back of the patio,
+	# the porch and its roof, peek over the side fences and hang out by the car.
+	var x := -7.0
+	while x < -0.8:
+		if absf(x + 3.4) > 1.1 or randf() < 0.3:   # keep the sliding door visible
+			_add_fan(Vector3(x, 0.015, randf_range(-5.7, -6.4)), _stand_variant(), 0.6)
+		x += randf_range(0.7, 1.0)
+	# Lawn chairs at the back of the patio (sitting, slightly in front of each chair)
+	for c: Vector3 in [Vector3(-6.35, 0.015, -6.05), Vector3(-5.58, 0.015, -6.35), Vector3(-1.63, 0.015, -6.45)]:
+		_add_fan(c, FAN_SIT if randf() < 0.5 else FAN_SIT_CUP, 0.6)
+	# Porch: railing leaners (clear of the steps at x ~1.6) and couch sitters
+	for rx: float in [2.9, 3.7, 4.6, 5.5, 0.4]:
+		_add_fan(Vector3(rx, 1.0, -6.05), _stand_variant(), 0.65)
+	for cx: float in [3.9, 4.6, 5.2]:
+		_add_fan(Vector3(cx, 1.0, HOUSE_Z + 0.95), FAN_SIT if randf() < 0.5 else FAN_SIT_CUP, 0.55)
 	# Up on the porch roof
-	for rx: float in [-6.2, -4.6, -3.2, -1.4, 0.3]:
-		var v := FAN_SIT if rx < -4.0 else _stand_variant()
-		_add_fan(Vector3(rx, 3.14, -11.7), v, 0.5, 1.4)
-	# On the shed roof
-	for sx: float in [9.8, 10.8, 11.6]:
-		_add_fan(Vector3(sx, 2.66, -10.2), FAN_SIT if sx > 11.0 else _stand_variant(), 0.45, 1.4)
-	# Bouncing on the trampoline
-	_add_fan(Vector3(-10.1, 0.96, -7.6), FAN_CHEER, 0.45, 3.0)
-	_add_fan(Vector3(-9.0, 0.96, -8.3), FAN_PHONE, 0.45, 3.0)
-	# Grill master + a friend at the pool + two by the camera-side corners
-	_add_fan(Vector3(3.3, 0, -11.1), FAN_CUP, 0.6)
-	_add_fan(Vector3(8.6, 0, -6.6), FAN_CUP, 0.45)
-	_add_fan(Vector3(-6.0, 0, 4.7), FAN_PHONE, 0.6)
-	_add_fan(Vector3(6.2, 0, 4.3), FAN_HOODIE, 0.55)
+	for rx: float in [0.6, 1.9, 3.3, 4.6, 5.6]:
+		var v := FAN_SIT if rx > 4.0 else _stand_variant()
+		_add_fan(Vector3(rx, 3.58, -6.4), v, 0.5, 1.4)
+	# Peeking over the side fences (standing on buckets) and two sitting on the fence tops
+	for z: float in [-7.4, -6.0, -3.9, -2.6, 2.4, 3.8]:
+		_add_fan(Vector3(-FENCE_X - 0.45, 0.85, z + randf_range(-0.2, 0.2)), _stand_variant(), 0.42)
+	for z: float in [-6.6, -4.6, -3.2, -0.6]:
+		_add_fan(Vector3(FENCE_X + 0.45, 0.85, z + randf_range(-0.2, 0.2)), _stand_variant(), 0.42)
+	_add_fan(Vector3(-FENCE_X, 1.6, -4.9), FAN_SIT, 0.45, 1.6)
+	_add_fan(Vector3(FENCE_X, 1.6, -1.8), FAN_SIT_CUP, 0.45, 1.6)
+	# By the car on the driveway, and two in the camera-side corners beyond the picket fence
+	_add_fan(Vector3(8.3, 0.015, 4.7), FAN_CUP, 0.55)
+	_add_fan(Vector3(9.4, 0.015, 0.7), FAN_PHONE, 0.5)
+	_add_fan(Vector3(-8.6, 0, 6.6), FAN_PHONE, 0.6)
+	_add_fan(Vector3(9.4, 0.015, 3.0), FAN_HOODIE, 0.55)
 
 	var quad := QuadMesh.new()
 	quad.size = Vector2(0.85, 1.7)
@@ -1450,6 +1732,7 @@ func _update_crowd(delta: float) -> void:
 
 func _spawn(n: String, look: Dictionary, cpu: bool, pos: Vector3) -> Node3D:
 	var w: Node3D = Wrestler.new()
+	w.set("arena", self)   # yard bounds / perches / surface_at (yard_contract.md); null-safe on the wrestler side
 	ring_root.add_child(w)
 	w.setup(n, look, cpu)
 	w.position = pos
@@ -1562,6 +1845,16 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_kick_cam(-4.0, st)
 			_buzz(45)
 			_hype(0.15)
+		"thud_concrete":
+			# Slammed on the patio / driveway: harsher, louder, bigger reaction than the lawn.
+			_snd("thud_concrete", 1.0 + 2.0 * clampf(st, 0.0, 1.0), 0.04)
+			_snd("ooh", -9.0, 0.05)
+			_hitstop(0.13)
+			_fx_dust(where, maxf(st, 0.8))
+			_fx_spark(where + Vector3(0, 0.15, 0), maxf(st, 0.7))
+			_kick_cam(-5.0, maxf(st, 0.9))
+			_buzz(60)
+			_hype(0.2)
 		"big_thud":
 			_snd("big_thud", 2.0, 0.03)
 			_snd("ooh", -6.0, 0.05)
@@ -2711,6 +3004,11 @@ func _update_camera(delta: float) -> void:
 	var b: Vector3 = p2.global_position
 	var mid := (a + b) * 0.5
 	var spread := a.distance_to(b)
+	# Keep the shot inside the yard: the target never drifts toward the house or past the fences,
+	# and stays low enough that the perches (up to the 2.4 m shed roof) remain in frame.
+	mid.x = clampf(mid.x, yard_bounds.position.x + 2.0, yard_bounds.end.x - 2.0)
+	mid.z = clampf(mid.z, yard_bounds.position.y + 1.0, yard_bounds.end.y - 1.5)
+	mid.y = clampf(mid.y, 0.0, 1.3)
 	cam_target = cam_target.lerp(mid, clampf(delta * 4.0, 0.0, 1.0))
 	# AKI-style framing: higher and further back (~30 deg pitch), wrestlers ~1/3 of screen height.
 	var want := cam_target + Vector3(0, 3.3 + spread * 0.3, 6.8 + spread * 0.6)
