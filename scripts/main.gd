@@ -900,7 +900,7 @@ func _update_low_res_shrink() -> void:
 	if low_res_container == null:
 		return
 	var h := get_viewport().get_visible_rect().size.y
-	low_res_container.stretch_shrink = maxi(1, roundi(h / 240.0))
+	low_res_container.stretch_shrink = 1
 
 
 # ---- the yard and the homemade ring
@@ -2720,6 +2720,15 @@ func _update_camera(delta: float) -> void:
 	if absf(cam_fov_kick) < 0.01:
 		cam_fov_kick = 0.0
 	camera.fov = clampf(45.0 + cam_fov_kick, 15.0, 90.0)
+	var tsec := Time.get_ticks_msec() * 0.001
+	var fa: Node3D = p1 if fmod(tsec, 10.0) < 5.0 else p2
+	var fb: Node3D = p2 if fa == p1 else p1
+	var fdir: Vector3 = (fb.global_position - fa.global_position)
+	fdir.y = 0.0
+	fdir = fdir.normalized().rotated(Vector3.UP, 0.6 * sin(tsec * 0.9))
+	camera.position = fa.global_position + fdir * 1.7 + Vector3(0, 1.85, 0)
+	camera.look_at(fa.global_position + Vector3(0, 1.55, 0))
+	camera.fov = 34.0
 	if cam_shake > 0.0:
 		camera.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * cam_shake * 0.25
 		cam_shake = max(0.0, cam_shake - delta * 2.5)
