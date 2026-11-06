@@ -2234,7 +2234,7 @@ func _on_win(w: Node3D) -> void:
 	win_header.text = "DEFEAT..." if cpu else "WINNER"
 	var sb := win_banner.get_theme_stylebox("panel") as StyleBoxFlat
 	if sb != null:
-		var bg := gear.darkened(0.72)
+		var bg := gear.darkened(0.7).lerp(Color(0.06, 0.06, 0.08), 0.5)
 		sb.bg_color = Color(bg.r, bg.g, bg.b, 0.9)
 	help_panel.visible = false
 	get_tree().create_timer(1.2).timeout.connect(_show_win)
