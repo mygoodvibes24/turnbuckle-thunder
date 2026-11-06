@@ -8,6 +8,9 @@ extends Node3D
 ##   flash(strength)        # full-screen white flash (finishers)
 ##   splinters(pos, strength)      # 10-20 brown wood shards fly out, spin, bounce once, fade
 ##   debris(pos, strength, color)  # chunkier generic bits (chairs: grey, trash cans, ...)
+##   ground_hit(pos, strength, surface)  # "grass": green-brown clumps + dirt puff; "concrete": grey dust
+##   body_flash(node)       # ~2-frame additive white overlay on every mesh under node (hit victim)
+##   hurt(strength)         # subtle red screen-edge vignette pulse (player took a big hit)
 
 const SPARK_POOL := 12
 const SHARD_POOL := 48            # shared by splinters and debris (ring buffer)
@@ -17,6 +20,16 @@ const MAT_Y := 0.0                # world y of the ground (no ring: everything l
 const RING_EDGE := 4.4            # beyond this |x| or |z| there is no mat under a shard
 var _splinter_colors: Array[Color] = [Color(0.55, 0.38, 0.2), Color(0.68, 0.5, 0.3), Color(0.42, 0.28, 0.15)]
 const SPARK_LIFE := 0.2
+const SPARK_SCALE := 1.4          # night yard: sparks read bigger than in a lit arena
+const BODY_FLASH_TIME := 0.06
+const BODY_FLASH_SLOTS := 2       # one per wrestler
+const HURT_TIME := 0.32
+const HURT_ALPHA := 0.42
+var _grass_colors: Array[Color] = [Color(0.22, 0.42, 0.14), Color(0.3, 0.5, 0.18), Color(0.36, 0.26, 0.15), Color(0.28, 0.2, 0.12)]
+var _concrete_colors: Array[Color] = [Color(0.62, 0.62, 0.6), Color(0.5, 0.5, 0.49), Color(0.72, 0.71, 0.68)]
+const DUST_GREY := Color(0.72, 0.7, 0.68)
+const DUST_DIRT := Color(0.42, 0.33, 0.22)
+const DUST_CONCRETE := Color(0.8, 0.79, 0.76)
 const DUST_SETS := 3
 const DUST_PER_SET := 6
 const DUST_LIFE := 0.45
@@ -39,6 +52,7 @@ var _dust_life := PackedFloat32Array()
 var _dust_dur := PackedFloat32Array()
 var _dust_size := PackedFloat32Array()
 var _dust_vel := PackedVector3Array()
+var _dust_col: Array[Color] = []
 var _next_dust_set := 0
 
 var _shards: Array[MeshInstance3D] = []
@@ -54,6 +68,18 @@ var _shard_color: Array[Color] = []
 var _next_shard := 0
 var _splinter_mesh: BoxMesh
 var _chunk_mesh: BoxMesh
+var _clump_mesh: BoxMesh
+
+# Body flash: a shared additive overlay set on the victim's meshes for a couple of frames.
+var _body_mat: StandardMaterial3D
+var _body_node: Array[Node] = []                 # slot -> flashed node (null = free)
+var _body_meshes: Array = []                     # slot -> Array[MeshInstance3D] currently overlaid
+var _body_life := PackedFloat32Array()
+var _mesh_cache := {}                            # node instance id -> Array[MeshInstance3D]
+
+var _hurt_rect: TextureRect
+var _hurt_life := 0.0
+var _hurt_peak := 0.0
 
 var _flash_layer: CanvasLayer
 var _flash_rect: ColorRect
@@ -114,11 +140,14 @@ func _ready() -> void:
 		_dust_dur.append(DUST_LIFE)
 		_dust_size.append(0.4)
 		_dust_vel.append(Vector3.ZERO)
+		_dust_col.append(DUST_GREY)
 
 	_splinter_mesh = BoxMesh.new()
 	_splinter_mesh.size = Vector3(0.035, 0.025, 0.2)
 	_chunk_mesh = BoxMesh.new()
 	_chunk_mesh.size = Vector3(0.09, 0.05, 0.12)
+	_clump_mesh = BoxMesh.new()
+	_clump_mesh.size = Vector3(0.06, 0.04, 0.06)
 	for i in SHARD_POOL:
 		var m := StandardMaterial3D.new()
 		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -150,6 +179,30 @@ func _ready() -> void:
 	_flash_rect.visible = false
 	_flash_layer.add_child(_flash_rect)
 
+	_body_mat = StandardMaterial3D.new()
+	_body_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_body_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_body_mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	_body_mat.albedo_color = Color(1, 1, 1, 0.6)
+	for i in BODY_FLASH_SLOTS:
+		_body_node.append(null)
+		_body_meshes.append([])
+		_body_life.append(0.0)
+
+	# Damage vignette: below the HUD (layer 1) but above the low-res 3D view (layer -1).
+	var hurt_layer := CanvasLayer.new()
+	hurt_layer.layer = 0
+	add_child(hurt_layer)
+	_hurt_rect = TextureRect.new()
+	_hurt_rect.texture = _make_vignette_texture()
+	_hurt_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	_hurt_rect.stretch_mode = TextureRect.STRETCH_SCALE
+	_hurt_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_hurt_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hurt_rect.modulate = Color(1, 1, 1, 0)
+	_hurt_rect.visible = false
+	hurt_layer.add_child(_hurt_rect)
+
 
 # ---------------------------------------------------------------- public API
 
@@ -161,7 +214,7 @@ func spark(pos: Vector3, strength: float) -> void:
 	mi.global_position = pos
 	_spark_dur[i] = SPARK_LIFE + 0.05 * s
 	_spark_life[i] = _spark_dur[i]
-	_spark_size[i] = 0.35 + 0.55 * s
+	_spark_size[i] = (0.35 + 0.55 * s) * SPARK_SCALE
 	_spark_tint[i] = _tints[randi() % _tints.size()]
 	mi.scale = Vector3.ONE * (_spark_size[i] * 0.4)
 	_spark_mats[i].albedo_color = _spark_tint[i]
@@ -171,7 +224,7 @@ func spark(pos: Vector3, strength: float) -> void:
 		var j: int = _next_spark
 		_next_spark = (_next_spark + 1) % SPARK_POOL
 		var mj: MeshInstance3D = _sparks[j]
-		mj.global_position = pos + Vector3(randf_range(-0.15, 0.15), randf_range(-0.1, 0.15), randf_range(-0.1, 0.1))
+		mj.global_position = pos + Vector3(randf_range(-0.2, 0.2), randf_range(-0.14, 0.2), randf_range(-0.14, 0.14))
 		_spark_dur[j] = SPARK_LIFE * 0.8
 		_spark_life[j] = _spark_dur[j]
 		_spark_size[j] = _spark_size[i] * 0.55
@@ -181,7 +234,7 @@ func spark(pos: Vector3, strength: float) -> void:
 		mj.visible = true
 
 
-func dust(pos: Vector3, strength: float) -> void:
+func dust(pos: Vector3, strength: float, color := DUST_GREY) -> void:
 	var s: float = clampf(strength, 0.1, 1.5)
 	var base: int = _next_dust_set * DUST_PER_SET
 	_next_dust_set = (_next_dust_set + 1) % DUST_SETS
@@ -197,7 +250,8 @@ func dust(pos: Vector3, strength: float) -> void:
 		_dust_life[i] = _dust_dur[i]
 		_dust_size[i] = (0.3 + 0.35 * s) * randf_range(0.8, 1.2)
 		mi.scale = Vector3.ONE * (_dust_size[i] * 0.6)
-		_dust_mats[i].albedo_color = Color(0.72, 0.7, 0.68, 0.0)
+		_dust_col[i] = color
+		_dust_mats[i].albedo_color = Color(color.r, color.g, color.b, 0.0)
 		mi.visible = true
 
 
@@ -218,6 +272,96 @@ func debris(pos: Vector3, strength: float, color: Color) -> void:
 		var c := Color(color.r * v, color.g * v, color.b * v, 1.0)
 		var sc := Vector3(randf_range(0.5, 1.4), randf_range(0.5, 1.2), randf_range(0.5, 1.4))
 		_spawn_shard(pos, s, c, _chunk_mesh, sc, 0.8)
+
+
+func ground_hit(pos: Vector3, strength: float, surface: String) -> void:
+	var s: float = clampf(strength, 0.1, 1.5)
+	var p := Vector3(pos.x, MAT_Y + 0.02, pos.z)
+	if surface == "concrete":
+		dust(p, maxf(s, 0.6), DUST_CONCRETE)
+		var n: int = clampi(int(3.0 + 5.0 * s), 3, 9)
+		for k in n:
+			var c: Color = _concrete_colors[randi() % _concrete_colors.size()]
+			_spawn_shard(p, s, c, _clump_mesh, Vector3.ONE * randf_range(0.4, 0.9), 0.55)
+	else:
+		dust(p, s * 0.8, DUST_DIRT)
+		var n: int = clampi(int(6.0 + 8.0 * s), 6, 16)
+		for k in n:
+			var c: Color = _grass_colors[randi() % _grass_colors.size()]
+			var sc := Vector3(randf_range(0.6, 1.3), randf_range(0.6, 1.6), randf_range(0.6, 1.3))
+			_spawn_shard(p, s, c, _clump_mesh, sc, 0.65)
+
+
+func body_flash(node: Node) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	var slot := -1
+	for i in BODY_FLASH_SLOTS:
+		if _body_node[i] == node:
+			slot = i   # already flashing: just restart the timer
+			break
+	if slot < 0:
+		for i in BODY_FLASH_SLOTS:
+			if _body_life[i] <= 0.0:
+				slot = i
+				break
+	if slot < 0:
+		slot = 0
+		_end_body_flash(0)
+	_body_life[slot] = BODY_FLASH_TIME
+	if _body_node[slot] == node:
+		return
+	var meshes: Array = _meshes_of(node)
+	for mi in meshes:
+		if is_instance_valid(mi) and mi.material_overlay == null:
+			mi.material_overlay = _body_mat
+	_body_node[slot] = node
+	_body_meshes[slot] = meshes
+
+
+func hurt(strength: float) -> void:
+	var peak: float = clampf(HURT_ALPHA * strength, 0.0, 0.55)
+	if peak <= 0.0:
+		return
+	_hurt_peak = maxf(peak, _hurt_peak if _hurt_life > 0.0 else 0.0)
+	_hurt_life = HURT_TIME
+	_hurt_rect.modulate = Color(1, 1, 1, _hurt_peak)
+	_hurt_rect.visible = true
+
+
+func _meshes_of(node: Node) -> Array:
+	var id: int = node.get_instance_id()
+	var cached: Array = _mesh_cache.get(id, [])
+	var ok: bool = not cached.is_empty()
+	for mi in cached:
+		if not is_instance_valid(mi) or not mi.is_inside_tree():
+			ok = false
+			break
+	if ok:
+		return cached
+	var out: Array = []
+	_collect_meshes(node, out)
+	_mesh_cache[id] = out
+	return out
+
+
+func _collect_meshes(n: Node, out: Array) -> void:
+	for c in n.get_children():
+		if c is MeshInstance3D:
+			var cm: Mesh = (c as MeshInstance3D).mesh
+			# skip the flat blob shadow on the ground
+			if not (cm is CylinderMesh and (cm as CylinderMesh).height <= 0.02):
+				out.append(c)
+		_collect_meshes(c, out)
+
+
+func _end_body_flash(slot: int) -> void:
+	for mi in _body_meshes[slot]:
+		if is_instance_valid(mi) and mi.material_overlay == _body_mat:
+			mi.material_overlay = null
+	_body_node[slot] = null
+	_body_meshes[slot] = []
+	_body_life[slot] = 0.0
 
 
 func _spawn_shard(pos: Vector3, s: float, c: Color, mesh: Mesh, sc: Vector3, speed_k: float) -> void:
@@ -294,7 +438,8 @@ func _process(delta: float) -> void:
 		var sc: float = _dust_size[i] * (0.6 + 0.9 * k)
 		mi.scale = Vector3(sc, sc, sc)
 		var a: float = 0.55 * minf(k * 6.0, 1.0) * (1.0 - k)
-		_dust_mats[i].albedo_color = Color(0.72, 0.7, 0.68, a)
+		var dc: Color = _dust_col[i]
+		_dust_mats[i].albedo_color = Color(dc.r, dc.g, dc.b, a)
 
 	for i in SHARD_POOL:
 		var life: float = _shard_life[i]
@@ -336,9 +481,28 @@ func _process(delta: float) -> void:
 		_shard_mats[i].albedo_color = Color(c.r, c.g, c.b, a)
 		mi.scale = _shard_scale[i] * (0.6 + 0.4 * a)
 
+	if _flash_life > 0.0 or _hurt_life > 0.0 or _body_life[0] > 0.0 or _body_life[1] > 0.0:
+		_update_screen_fx(delta / maxf(Engine.time_scale, 0.05))
+
+
+func _update_screen_fx(real_dt: float) -> void:
+	# Body flash and vignette run on real time too: during hit-stop / slow-mo they must stay snappy.
+	for i in BODY_FLASH_SLOTS:
+		if _body_life[i] > 0.0:
+			_body_life[i] -= real_dt
+			if _body_life[i] <= 0.0:
+				_end_body_flash(i)
+	if _hurt_life > 0.0:
+		_hurt_life -= real_dt
+		if _hurt_life <= 0.0:
+			_hurt_life = 0.0
+			_hurt_peak = 0.0
+			_hurt_rect.visible = false
+		else:
+			var hk: float = _hurt_life / HURT_TIME
+			_hurt_rect.modulate = Color(1, 1, 1, _hurt_peak * hk * hk)
 	if _flash_life > 0.0:
 		# The flash runs on real time so slow motion doesn't stretch it into a fade-out.
-		var real_dt: float = delta / maxf(Engine.time_scale, 0.05)
 		_flash_life -= real_dt
 		if _flash_life <= 0.0:
 			_flash_life = 0.0
@@ -362,9 +526,25 @@ func _make_star_texture() -> ImageTexture:
 			var ang: float = d.angle()
 			var long_rays: float = pow(absf(cos(ang * 2.0)), 10.0) * clampf(1.0 - r, 0.0, 1.0)
 			var short_rays: float = pow(absf(sin(ang * 2.0)), 10.0) * clampf(1.0 - r * 1.6, 0.0, 1.0)
-			var core: float = clampf(1.0 - r * 2.4, 0.0, 1.0)
-			var a: float = clampf(core * 1.5 + long_rays + short_rays * 0.8, 0.0, 1.0)
+			var core: float = clampf(1.0 - r * 2.0, 0.0, 1.0)   # wider, hotter core
+			var a: float = clampf(core * 2.2 + long_rays * 1.15 + short_rays * 0.9, 0.0, 1.0)
 			img.set_pixel(x, y, Color(1, 1, 1, a))
+	return ImageTexture.create_from_image(img)
+
+
+func _make_vignette_texture() -> ImageTexture:
+	# 64x36 red edge glow, transparent centre; stretched over the screen (linear filtered).
+	var w := 64
+	var h := 36
+	var img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
+	for y in h:
+		for x in w:
+			var u: float = (float(x) + 0.5) / float(w) * 2.0 - 1.0
+			var v: float = (float(y) + 0.5) / float(h) * 2.0 - 1.0
+			var d: float = Vector2(u, v).length() / 1.4142
+			var a: float = clampf((d - 0.45) / 0.55, 0.0, 1.0)
+			a = a * a * (3.0 - 2.0 * a)
+			img.set_pixel(x, y, Color(0.85, 0.04, 0.02, a))
 	return ImageTexture.create_from_image(img)
 
 
