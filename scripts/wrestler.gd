@@ -6,6 +6,10 @@ signal announce(text: String)
 signal impact(strength: float)
 signal pin_count(count: int)
 signal won()
+## Generic feedback event for audio/FX. kind is one of: "punch", "kick", "thud", "big_thud",
+## "rope", "whoosh", "count", "kickout", "finisher", "reversal", "taunt", "grab".
+## strength is 0..1+, where is the world-space contact point.
+signal sfx(kind: String, strength: float, where: Vector3)
 
 enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THROWING, THROWN,
 	DOWN, GETTING_UP, PINNING, PINNED, TAUNT, WIN, LOSE }
@@ -849,6 +853,7 @@ func _run(delta: float) -> void:
 	if bounced:
 		rope_bounces += 1
 		impact.emit(0.15)
+		sfx.emit("rope", 0.4, global_position + Vector3(0, 1.2, 0))
 		if rope_bounces > 2:
 			set_state(S.IDLE)
 			return
@@ -900,10 +905,12 @@ func receive_strike(attacker: Node3D, dmg: float, knockdown: bool) -> bool:
 		set_state(S.DOWN)
 		down_duration = _down_time()
 		impact.emit(0.5)
+		sfx.emit("kick", 0.7, global_position + Vector3(0, 1.4, 0))
 	else:
 		set_state(S.STUNNED)
 		stun_time = 0.35
 		impact.emit(0.1)
+		sfx.emit("punch", 0.35, global_position + Vector3(0, 1.5, 0))
 	return true
 
 
@@ -956,6 +963,12 @@ func _do_move(key: String) -> void:
 	var m: Dictionary = MOVES[key]
 	announce.emit(m["name"])
 	if key == "finisher":
+		sfx.emit("finisher", 1.0, global_position + Vector3(0, 1.5, 0))
+	elif key == "armdrag":
+		sfx.emit("reversal", 0.6, global_position + Vector3(0, 1.5, 0))
+	elif m["kind"] == "throw":
+		sfx.emit("whoosh", 0.5, global_position + Vector3(0, 1.5, 0))
+	if key == "finisher":
 		spirit = 0.0
 	gain_spirit(float(m["dmg"]) * 1.5)
 	if m["kind"] == "strike":
@@ -964,6 +977,7 @@ func _do_move(key: String) -> void:
 		opponent.stun_time = 0.7
 		opponent.position += facing * 0.4
 		impact.emit(0.25)
+		sfx.emit("kick", 0.5, opponent.global_position + Vector3(0, 1.2, 0))
 		set_state(S.PUNCH)
 		hit_landed = true
 		return
@@ -991,6 +1005,7 @@ func _thrown() -> void:
 		down_duration = _down_time()
 		pose_root.rotation.x = -PI / 2
 		impact.emit(clamp(pending_damage / 20.0, 0.3, 1.2))
+		sfx.emit("big_thud" if pending_damage >= 20.0 else "thud", clamp(pending_damage / 20.0, 0.3, 1.3), global_position + Vector3(0, 0.3, 0))
 
 
 func _try_pin_or_taunt() -> void:
@@ -1013,6 +1028,7 @@ func _pinning() -> void:
 	if c > pin_count_value:
 		pin_count_value = c
 		pin_count.emit(c)
+		sfx.emit("count", 0.6, global_position + Vector3(0, 0.2, 0))
 		if c >= 3:
 			set_state(S.WIN)
 			opponent.set_state(S.LOSE)
@@ -1032,6 +1048,7 @@ func _pinned(delta: float) -> void:
 		set_state(S.DOWN)
 		down_duration = 0.4
 		impact.emit(0.2)
+		sfx.emit("kickout", 0.6, global_position + Vector3(0, 0.6, 0))
 
 
 # ---------------------------------------------------------------- CPU AI
