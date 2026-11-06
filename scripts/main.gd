@@ -791,11 +791,11 @@ func _build_environment() -> void:
 	for corner: Vector3 in [Vector3(-5.0, 6.5, 5.0), Vector3(5.0, 6.5, -5.0)]:
 		var fl := SpotLight3D.new()
 		fl.transform = Transform3D(Basis.looking_at(Vector3(0, RING_TOP, 0) - corner), corner)
-		fl.spot_angle = 34.0
+		fl.spot_angle = 30.0
 		fl.spot_angle_attenuation = 0.55
 		fl.spot_range = 13.0
 		fl.spot_attenuation = 1.15
-		fl.light_energy = 6.0
+		fl.light_energy = 5.5
 		fl.light_specular = 0.7
 		fl.light_color = Color(1.0, 0.84, 0.62)
 		fl.shadow_enabled = false
@@ -851,17 +851,18 @@ shader_type canvas_item;
 // contrast, saturation, warm highlights / cool shadows, and a soft vignette.
 uniform float contrast = 1.12;
 uniform float saturation = 1.15;
-uniform float sharpen = 0.22;
-uniform float bloom_threshold = 0.62;
-uniform float bloom_strength = 0.55;
+uniform float sharpen = 0.14;
+uniform float bloom_threshold = 0.68;
+uniform float bloom_strength = 0.6;
 uniform float bloom_radius = 5.0;
 uniform vec3 shadow_tint = vec3(0.90, 0.97, 1.10);
 uniform vec3 highlight_tint = vec3(1.08, 1.01, 0.88);
 uniform float vignette = 0.25;
 
 vec3 bright(vec3 c) {
-	float l = max(c.r, max(c.g, c.b));
-	return c * smoothstep(bloom_threshold, 1.0, l);
+	// Luminance threshold, so saturated mid-tones (the blue canvas) don't haze over.
+	float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+	return c * smoothstep(bloom_threshold, 0.95, l);
 }
 
 void fragment() {
