@@ -187,7 +187,7 @@ func throw_item(item: Node3D, from: Vector3, to: Vector3) -> void:
 	it.yaw = atan2(d.x, d.z) if Vector2(d.x, d.z).length() > 0.01 else randf() * TAU
 	last_flight_time = it.fly_time
 	# Spin around the middle of the item while flying.
-	_set_model(it, _floor_basis(it), -_floor_basis(it) * Vector3(0.0, it.center_y, 0.0))
+	_set_model(it, _floor_basis(it), -(_floor_basis(it) * Vector3(0.0, it.center_y, 0.0)))
 	it.transform = Transform3D(Basis(Vector3.UP, it.yaw), from)
 
 
@@ -325,7 +325,7 @@ func _lay_on_floor(it: Item, local_pos: Vector3, yaw: float) -> void:
 	it.transform = Transform3D(Basis(Vector3.UP, yaw), _clamp_floor(local_pos, ITEM_CLAMP))
 	var fb := _floor_basis(it)
 	if it.lies_flat:
-		_set_model(it, fb, -fb * Vector3(0.0, it.center_y, 0.0) + Vector3(0.0, it.half_thick, 0.0))
+		_set_model(it, fb, -(fb * Vector3(0.0, it.center_y, 0.0)) + Vector3(0.0, it.half_thick, 0.0))
 	else:
 		_set_model(it, fb, Vector3.ZERO)
 
