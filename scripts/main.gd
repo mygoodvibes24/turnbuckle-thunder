@@ -1061,17 +1061,7 @@ func _lawn_chair(pos: Vector3, face: Vector3, col: Color) -> void:
 
 
 func _build_props() -> void:
-	# Work light tripod (ring_spot sits in its lamp head)
-	var wl := Vector3(-6.4, 0, 2.6)
 	var black := Color(0.08, 0.08, 0.09)
-	for k in 3:
-		var a := TAU * k / 3.0
-		_beam("flat", wl + Vector3(cos(a) * 0.7, 0, sin(a) * 0.7), wl + Vector3(0, 1.4, 0), 0.05, black)
-	_beam("flat", wl + Vector3(0, 1.3, 0), wl + Vector3(0, 5.8, 0), 0.06, Color(0.54, 0.47, 0.18))
-	var head_xf := Transform3D(Basis.looking_at(Vector3(0.6, 1.0, -0.6) - Vector3(-6.4, 6.0, 2.6)), Vector3(-6.4, 6.0, 2.6))
-	_sbox("flat", Vector3(0.6, 0.45, 0.25), head_xf, Color(0.61, 0.51, 0.19))
-	_sbox("glow", Vector3(0.5, 0.36, 0.05), head_xf * Transform3D(Basis(), Vector3(0, 0, -0.14)), Color(1.0, 0.97, 0.85))
-	_beam("flat", wl + Vector3(0, 0.05, 0), Vector3(-5.2, 0.03, 4.8), 0.03, Color(0.6, 0.33, 0.14))  # extension cord
 
 	# Trampoline (left)
 	var tp := Vector3(-9.6, 0, -8.0)
