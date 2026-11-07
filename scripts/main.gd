@@ -3688,6 +3688,11 @@ func _setup_presentation() -> void:
 	mc = Mc.new()
 	add_child(mc)
 	mc.setup(self)
+	get_tree().create_timer(4.0).timeout.connect(func():
+		sig_cam_left = 40.0
+		sig_cam_who = p1
+		_mc_say("brawl", p1)
+		p1.set_meta("dbg_boost", true))
 	for w in [p1, p2]:
 		var wr: Node3D = w
 		if wr.has_signal("signature_started"):
@@ -3820,7 +3825,7 @@ func _update_trick_cam(delta: float) -> float:
 
 ## Boost FOV, speed lines and trails. Returns the boost FOV offset (degrees).
 func _update_boost_fx(delta: float) -> float:
-	var p1_boost := _is_boosting(p1) and not match_over
+	var p1_boost := (_is_boosting(p1) or p1.has_meta("dbg_boost")) and not match_over
 	if p1_boost and not bool(boost_was.get(p1, false)):
 		cam_boost_punch = maxf(cam_boost_punch, BOOST_FOV_PUNCH)
 		_kick_cam(0.0, 0.15)
@@ -3840,7 +3845,7 @@ func _update_boost_fx(delta: float) -> float:
 		for w in [p1, p2]:
 			var wr: Node3D = w
 			var st: int = int(wr.get("state"))
-			var trail_on := _is_boosting(wr) or st == Wrestler.S.DIVING or st == Wrestler.S.JUGGLED \
+			var trail_on := wr.has_meta("dbg_boost") or _is_boosting(wr) orst == Wrestler.S.DIVING or st == Wrestler.S.JUGGLED \
 				or (sig_cam_left > 0.0 and sig_cam_who == wr)
 			if trail_on and not match_over:
 				var tint: Color = Color(1.0, 0.78, 0.25) if bool(wr.get("brawl_mode")) else (wr.gear_color as Color).lightened(0.35)
