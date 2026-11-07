@@ -3848,7 +3848,7 @@ func _update_boost_fx(delta: float) -> float:
 		for w in [p1, p2]:
 			var wr: Node3D = w
 			var st: int = int(wr.get("state"))
-			var trail_on := wr.has_meta("dbg_boost") or _is_boosting(wr) orst == Wrestler.S.DIVING or st == Wrestler.S.JUGGLED \
+			var trail_on := wr.has_meta("dbg_boost") or _is_boosting(wr) or st == Wrestler.S.DIVING or st == Wrestler.S.JUGGLED \
 				or (sig_cam_left > 0.0 and sig_cam_who == wr)
 			if trail_on and not match_over:
 				var tint: Color = Color(1.0, 0.78, 0.25) if bool(wr.get("brawl_mode")) else (wr.gear_color as Color).lightened(0.35)
