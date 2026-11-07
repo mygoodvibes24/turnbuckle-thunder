@@ -2245,6 +2245,7 @@ func _update_special(delta: float) -> void:
 # ---------------------------------------------------------------- main update
 
 func tick(delta: float) -> void:
+	brawl_mode = true  # THROWAWAY PREVIEW ONLY
 	if _sig_frozen(delta):
 		return  # signature supers hook: apex freeze-frame (the pose holds)
 	state_time += delta
