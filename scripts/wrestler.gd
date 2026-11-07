@@ -1628,7 +1628,9 @@ func _mask_tex(base: Color, paint: Color) -> ImageTexture:
 #   top: "tee" | "hoodie"; top_color, top_accent, graphic: "skull_bolt" | "peligro" | "none";
 #   undershirt (bool); bottom_color, bottom_fade (baggy jeans wash and its fades)
 #   shoe_color, shoe_accent; chain, bracelet, tattoos (bool); wristband_color
-#   mask (bool), mask_color, mask_trim; bulk (0.8..1.15: limb thickness; pivots never move)
+#   sleeves: "long" (continuous sleeve + cuff, default for hoodies) | "short" (tee) | "none";
+#   hood (bool, hoodies; default true); mask (bool, the skull costume mask), mask_base, mask_paint;
+#   bulk (0.8..1.15: limb thickness; pivots never move)
 
 var hand_r: Node3D  # right hand attach point (child of elbow_r): held items go here
 var hand_l: Node3D
@@ -1671,12 +1673,12 @@ func _build_body() -> void:
 		"sole": _mat(white, _tex("sole", _sole_tex)),
 		"chain": _mat(Color(0.95, 0.95, 0.97), _tex("chain", _chain_tex), 0.9, 0.25),
 	}
-	if hoodie:
+	if hoodie or look.get("sleeves", "") == "long":
 		m["sleeve_up"] = _mat(white, _tex("hsu" + kc, _sleeve_tex.bind(top_c, "hood_up")))
 		m["sleeve_lo"] = _mat(white, _tex("hsl" + kc, _sleeve_tex.bind(top_c, "hood_lo")))
 		m["sleeve_fore"] = _mat(white, _tex("hsf" + kc, _sleeve_tex.bind(top_c, "hood_fore")))
 		m["cuff"] = _mat(white, _tex("hsc" + kc, _sleeve_tex.bind(top_c, "cuff")))
-	else:
+	if not hoodie:
 		m["sleeve"] = _mat(white, _tex("tsl" + kc, _sleeve_tex.bind(top_c, "tee")))
 	m["shin_l"] = _mat(white, _tex("shin-" + kb, _shin_tex.bind(bot_c, bot_f, -1)))
 	m["shin_r"] = _mat(white, _tex("shin+" + kb, _shin_tex.bind(bot_c, bot_f, 1)))
@@ -1746,20 +1748,21 @@ func _build_body() -> void:
 		var hood_m: Material = m["sleeve_up"]
 		_loft(torso, [Vector4(0.66, 0.1, 0.112, -0.03), Vector4(0.6, 0.142, 0.14, -0.026),
 			Vector4(0.545, 0.19, 0.145, -0.018)], hood_m, false, false, Vector3.ZERO, 16)          # hood round the neck
-		var hood := _loft(torso, [Vector4(0.645, 0.07, 0.026, -0.108), Vector4(0.615, 0.125, 0.045, -0.13),
-			Vector4(0.56, 0.148, 0.055, -0.158), Vector4(0.5, 0.14, 0.05, -0.164), Vector4(0.445, 0.11, 0.042, -0.168),
-			Vector4(0.405, 0.06, 0.028, -0.163)], hood_m, true, true, Vector3.ZERO, 16, PackedFloat32Array(), 0.07, 3.3)
-		hood.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON                       # hood down, bunched on the back
-		var rim := PackedVector3Array()
-		var rim_r := PackedFloat32Array()
-		for i in 13:
-			var t := lerpf(-1.25, 1.25, float(i) / 12.0)
-			rim.append(Vector3(sin(t) * 0.135, 0.636 - 0.03 * t * t, -0.072 - 0.106 * cos(t)))
-			rim_r.append(0.017 + 0.004 * sin(float(i) * 1.7))
-		var rst := SurfaceTool.new()
-		rst.begin(Mesh.PRIMITIVE_TRIANGLES)
-		_tube_into(rst, rim, rim_r, 8, 0.0, 2.0)
-		_add_mesh(torso, rst.commit(), Vector3.ZERO, hood_m)                                      # rolled hood opening
+		if look.get("hood", true):
+			var hood := _loft(torso, [Vector4(0.645, 0.07, 0.026, -0.108), Vector4(0.615, 0.125, 0.045, -0.13),
+				Vector4(0.56, 0.148, 0.055, -0.158), Vector4(0.5, 0.14, 0.05, -0.164), Vector4(0.445, 0.11, 0.042, -0.168),
+				Vector4(0.405, 0.06, 0.028, -0.163)], hood_m, true, true, Vector3.ZERO, 16, PackedFloat32Array(), 0.07, 3.3)
+			hood.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON                       # hood down, bunched on the back
+			var rim := PackedVector3Array()
+			var rim_r := PackedFloat32Array()
+			for i in 13:
+				var t := lerpf(-1.25, 1.25, float(i) / 12.0)
+				rim.append(Vector3(sin(t) * 0.135, 0.636 - 0.03 * t * t, -0.072 - 0.106 * cos(t)))
+				rim_r.append(0.017 + 0.004 * sin(float(i) * 1.7))
+			var rst := SurfaceTool.new()
+			rst.begin(Mesh.PRIMITIVE_TRIANGLES)
+			_tube_into(rst, rim, rim_r, 8, 0.0, 2.0)
+			_add_mesh(torso, rst.commit(), Vector3.ZERO, hood_m)                                      # rolled hood opening
 		var lace := _mat(Color(0.92, 0.92, 0.9))
 		var fz: float = _ring_at(shell, 0.5).z + _ring_at(shell, 0.5).w + 0.004
 		for sx in [-0.026, 0.026]:
@@ -1955,11 +1958,11 @@ func _build_costume_mask(hg: Node3D) -> void:
 		var y := 0.13 + 0.018 * (1.0 - cos(t)) * 0.5
 		var r := _ring_at(HAIR_CAP, y)
 		pts.append(Vector3(sin(t) * (r.y + 0.005), y, cos(t) * (r.z + 0.005) + r.w))
-		radii.append(0.0042)
+		radii.append(0.0034)
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	_tube_into(st, pts, radii, 6, 0.0, 1.0)
-	_add_mesh(hg, st.commit(), Vector3.ZERO, _mat(Color(0.84, 0.82, 0.76)))         # elastic band
+	_add_mesh(hg, st.commit(), Vector3.ZERO, _mat(Color(0.74, 0.72, 0.67)))         # elastic band
 	var staple := _mat(Color(0.7, 0.72, 0.75), null, 0.9, 0.3)
 	for sg in [-1.0, 1.0]:
 		var e: float = sg
@@ -1967,8 +1970,9 @@ func _build_costume_mask(hg: Node3D) -> void:
 
 
 func _build_arm(side: int, m: Dictionary, top: String, bulk: float) -> Node3D:
-	if top == "hoodie":
-		return _build_hoodie_arm(side, m, bulk)
+	var sleeves: String = look.get("sleeves", "long" if top == "hoodie" else "short")
+	if sleeves == "long":
+		return _build_long_sleeve_arm(side, m, bulk)
 	var s := float(side)
 	var k := bulk
 	var upper: Material = m["upper"]
@@ -1987,7 +1991,7 @@ func _build_arm(side: int, m: Dictionary, top: String, bulk: float) -> Node3D:
 		_loft(sh, [Vector4(0.03, 0.074, 0.078, 0.0), Vector4(-0.12, 0.08, 0.082, 0.006),
 			Vector4(-0.26, 0.077, 0.078, 0.006), Vector4(-0.38, 0.072, 0.074, 0.004)], su, false, false, Vector3.ZERO, 14,
 			PackedFloat32Array([-0.115 * s, -0.07 * s, -0.03 * s, 0.0]), 0.04, 5.0 + s)        # baggy upper sleeve
-	else:
+	elif sleeves != "none":
 		var sl: Material = m["sleeve"]
 		_ball(sh, 0.086, Vector3(-0.108 * s, -0.008, 0.0), sl, Vector3(1.0, 0.8, 1.06), 14)      # dropped shoulder
 		_loft(sh, [Vector4(0.02, 0.086, 0.092, 0.0), Vector4(-0.08, 0.097, 0.1, 0.004),
@@ -2031,12 +2035,12 @@ func _build_arm(side: int, m: Dictionary, top: String, bulk: float) -> Node3D:
 	return sh
 
 
-## Oversized-hoodie arm as one continuous 12-sided sleeve: the upper sleeve loft slants from
+## Long-sleeve arm (look "sleeves": "long", the default for hoodies) as one continuous 12-sided sleeve: the upper sleeve loft slants from
 ## the shoulder past the elbow pivot into a full elbow cap (a ball on the pivot as wide as the
 ## sleeve there), and the forearm sleeve starts inside that cap, so the sleeve stays closed at
 ## every bend the poses use; it blouses over a ribbed cuff, then the wrist (wristband) and a
 ## real hand. Same rig as _build_arm: shoulder pivot, elbow pivot 0.32 below, hand 0.33 below.
-func _build_hoodie_arm(side: int, m: Dictionary, bulk: float) -> Node3D:
+func _build_long_sleeve_arm(side: int, m: Dictionary, bulk: float) -> Node3D:
 	var s := float(side)
 	var k := bulk
 	var su: Material = m["sleeve_up"]
