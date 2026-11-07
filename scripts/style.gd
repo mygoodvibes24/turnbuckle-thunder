@@ -29,6 +29,8 @@ const HYPE_TRICK_CAP := 25.0
 const HYPE_PER_BANKED := 0.0025 # bonus hype per banked combo point
 const HYPE_BANK_CAP := 20.0
 const LETTERS := ["B", "R", "A", "W", "L"]
+const HANG_SCALE := 0.6         # "apex hang": brief slow-mo when the player lands a 540+ spin
+const HANG_SECS := 0.12         # real seconds
 
 var w: Node3D                  # the wrestler we belong to
 var score := 0                 # banked style score this match
@@ -93,8 +95,34 @@ func _on_trick(trick_name: String, points: int, kind: String) -> void:
 	var hype_gain := minf(HYPE_TRICK_CAP, float(pts) * HYPE_PER_POINT * (1.0 + 0.15 * float(mult - 1)))
 	w.gain_spirit(hype_gain)
 	popped.emit(nm, pts, kind, mult)
+	if kind == "air_trick":
+		# wrestler.gd plays its own "trick" sting for air tricks; don't double it.
+		if not w.is_cpu and _is_big_spin(nm):
+			_apex_hang()
+		return
 	var loud := clampf(float(pts) / 1500.0, 0.15, 1.0)
 	w.sfx.emit("trick", loud, w.global_position + Vector3(0, 1.6, 0))
+
+
+## "540 SPIN" / "SUPER 720 SPIN" (an in-air spin just completed, not the landing call).
+static func _is_big_spin(nm: String) -> bool:
+	var parts := nm.trim_prefix("SUPER ").split(" ")
+	return parts.size() == 2 and parts[1] == "SPIN" and parts[0].is_valid_int() and parts[0].to_int() >= 540
+
+
+## Tiny hang at the top of a big spin. Only when no other slow-mo / time warp is running, and it
+## only restores time_scale if nobody else changed it meanwhile.
+func _apex_hang() -> void:
+	if not is_equal_approx(Engine.time_scale, 1.0) or not is_inside_tree():
+		return
+	Engine.time_scale = HANG_SCALE
+	var t := get_tree().create_timer(HANG_SECS, true, false, true)
+	t.timeout.connect(_end_hang)
+
+
+func _end_hang() -> void:
+	if is_equal_approx(Engine.time_scale, HANG_SCALE):
+		Engine.time_scale = 1.0
 
 
 func _bank() -> void:
