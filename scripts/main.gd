@@ -67,27 +67,22 @@ func _ready() -> void:
 	# Each look: street clothes + style switches used by wrestler.gd's model.
 	# "gear" is the wrestler's signature colour (HUD, win banner).
 	var tank := {
-		"gear": Color(0.8, 0.14, 0.1), "skin": Color(0.36, 0.22, 0.14),
-		"hair": "dreads", "hair_color": Color(0.09, 0.06, 0.045), "stubble": true, "facial": "goatee",
-		"top": "flannel", "top_color": Color(0.72, 0.12, 0.1), "top_pattern": "plaid",
-		"top_accent": Color(0.08, 0.06, 0.06),
-		"bottom": "cargo_shorts", "bottom_color": Color(0.6, 0.53, 0.38),
-		"shoes": "hightops", "shoe_color": Color(0.1, 0.1, 0.12), "shoe_accent": Color(0.85, 0.15, 0.12),
-		"sock_l": Color(0.95, 0.95, 0.92), "sock_accent": Color(0.8, 0.14, 0.1),
-		"hat": "none", "wristband_color": Color(0.95, 0.95, 0.92),
-		"knee_brace": "left", "bulk": 1.15, "gut": 0.035,
+		"gear": Color(0.8, 0.14, 0.1), "skin": Color(0.42, 0.28, 0.2), "face": "tank",
+		"hair": "locs", "hair_color": Color(0.05, 0.036, 0.03),
+		"top": "tee", "top_color": Color(0.075, 0.072, 0.078), "graphic": "skull_bolt", "undershirt": true,
+		"bottom_color": Color(0.12, 0.115, 0.125), "bottom_fade": Color(0.34, 0.31, 0.28),
+		"shoe_color": Color(0.06, 0.06, 0.065), "shoe_accent": Color(0.92, 0.92, 0.9),
+		"chain": true, "bracelet": true, "tattoos": true, "bulk": 1.0,
 	}
 	var kid := {
-		"gear": Color(0.15, 0.75, 0.3), "skin": Color(0.66, 0.46, 0.32),
+		"gear": Color(0.15, 0.75, 0.3), "skin": Color(0.62, 0.43, 0.3), "face": "kid",
 		"mask": true, "mask_color": Color(0.12, 0.7, 0.28), "mask_trim": Color(1.0, 0.82, 0.1),
-		"hair": "messy", "hair_color": Color(0.09, 0.07, 0.06),
-		"top": "hoodie", "top_color": Color(0.52, 0.52, 0.55), "top_pattern": "logo",
-		"top_accent": Color(0.12, 0.6, 0.25), "sleeves": "long",
-		"bottom": "basketball_shorts", "bottom_color": Color(0.14, 0.26, 0.75),
-		"bottom_accent": Color(0.95, 0.95, 0.95),
-		"shoes": "skate", "shoe_color": Color(0.12, 0.12, 0.14), "shoe_accent": Color(0.95, 0.95, 0.92),
-		"sock_l": Color(0.95, 0.85, 0.15), "sock_r": Color(0.92, 0.92, 0.9), "sock_accent": Color(0.85, 0.15, 0.6),
-		"bulk": 0.85,
+		"hair": "curls", "hair_color": Color(0.07, 0.055, 0.045),
+		"top": "hoodie", "top_color": Color(0.46, 0.47, 0.49), "top_accent": Color(0.12, 0.62, 0.26),
+		"graphic": "peligro",
+		"bottom_color": Color(0.36, 0.47, 0.62), "bottom_fade": Color(0.7, 0.76, 0.84),
+		"shoe_color": Color(0.9, 0.9, 0.88), "shoe_accent": Color(0.13, 0.55, 0.26),
+		"wristband_color": Color(0.1, 0.1, 0.1), "bulk": 0.86,
 	}
 	p1 = _spawn("TANK MAGRUDER", tank, false, Vector3(-1.8, 0, 0.3))
 	p2 = _spawn("LIL PELIGRO", kid, true, Vector3(1.8, 0, -0.3))
