@@ -4,7 +4,10 @@ extends Node
 ## Every move / trick that lands makes the wrestler emit trick(name, points, kind).
 ## - COMBO: tricks less than COMBO_GAP seconds apart chain; the multiplier is the chain length
 ##   (x1 .. x8). COMBO_GAP seconds without a trick BANKS the combo (points x multiplier go to the
-##   score); getting hit / whiffing (kind "break") BREAKS it and the unbanked points are lost.
+##   score). Getting hurt (a "break" that comes with a health drop, or being stunned by a
+##   reversal) BREAKS a 2+ trick combo and its unbanked points are lost; a lone trick has no
+##   multiplier at stake, so it is banked instead. A plain whiff (a "break" with no damage) does
+##   not wipe the combo, it just cuts the gap so the chain banks a moment later.
 ##   Repeating the same trick inside one combo scores less each time.
 ## - HYPE: style points fill the hype meter, which is the wrestler's spirit (so SPECIAL /
 ##   finishers keep working). Every time it fills you earn the next letter of B-R-A-W-L.
@@ -31,6 +34,7 @@ const HYPE_BANK_CAP := 20.0
 const LETTERS := ["B", "R", "A", "W", "L"]
 const HANG_SCALE := 0.6         # "apex hang": brief slow-mo when the player lands a 540+ spin
 const HANG_SECS := 0.12         # real seconds
+const WHIFF_GAP := 0.6          # a whiff leaves at most this much combo gap
 
 var w: Node3D                  # the wrestler we belong to
 var score := 0                 # banked style score this match
@@ -40,6 +44,7 @@ var brawl_left := 0.0          # seconds of BRAWL MODE left
 var best_combo := 0
 var _repeats := {}             # trick name -> times used in this combo
 var _prev_spirit := 0.0
+var _prev_health := 0.0        # health at the end of the last tick: tells "hurt" from "whiffed"
 var _done := false             # match over: freeze
 
 
@@ -50,6 +55,7 @@ func _ready() -> void:
 		return
 	w.connect("trick", _on_trick)
 	_prev_spirit = w.spirit
+	_prev_health = w.health
 
 
 func brawl_fraction() -> float:
@@ -72,7 +78,10 @@ func _on_trick(trick_name: String, points: int, kind: String) -> void:
 	if _done:
 		return
 	if kind == "break":
-		_break()
+		if _was_hurt():
+			_break()
+		elif combo_count > 0:
+			combo_gap = minf(combo_gap, WHIFF_GAP)  # whiffed: the chain banks shortly
 		return
 	if points <= 0:
 		return
@@ -141,7 +150,19 @@ func _bank() -> void:
 	_reset_combo()
 
 
+## A "break" signal is a real combo breaker when we just lost health (wrestler.take_damage
+## emits it right after lowering health) or got stunned (a reversed chain link).
+func _was_hurt() -> bool:
+	var hp: float = w.health
+	var st: int = w.state
+	return hp < _prev_health - 0.001 or st == Wrestler.S.STUNNED
+
+
 func _break() -> void:
+	_prev_health = w.health
+	if combo_count == 1:
+		_bank()  # nothing multiplied yet: a landed lone trick still counts
+		return
 	if combo_count >= 2:
 		broke.emit(w.combo_points * mini(combo_count, _mult_cap()))
 	_reset_combo()
@@ -221,6 +242,7 @@ func _physics_process(delta: float) -> void:
 		if _prev_spirit < 100.0 and sp >= 100.0:
 			_earn_letter()
 	_prev_spirit = w.spirit
+	_prev_health = w.health
 	w.hype = w.spirit
 
 
