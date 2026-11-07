@@ -212,7 +212,7 @@ void vertex() {
 	if (wave > 1.05 - hype * 1.5 * INSTANCE_CUSTOM.w) {
 		frame = 1.0;
 	}
-	if (sin(TIME * (0.3 + 0.3 * h1(id + 5.3)) + ph * 3.0) > 0.965) {
+	if (sin(TIME * (0.3 + 0.3 * h1(id + 5.3)) + ph * 3.0) > 0.98) {
 		frame = 1.0;
 	}
 	float person = floor(INSTANCE_CUSTOM.x * 8.0 + 0.5);
@@ -973,13 +973,13 @@ func _paint_arm(sh: Vector2, side: float, pose: String, sleeve: Color, tint: flo
 	var hd := sh + Vector2(h0.x * side, h0.y)
 	# Upper arm is always sleeved (tees have short sleeves to mid upper arm).
 	if long_sleeve:
-		_cc(sh, el, 3.9, 3.3, sleeve, tint)
-		_cc(el, hd.lerp(el, 0.12), 3.3, 2.9, sleeve, tint)
+		_cc(sh, el, 4.4, 3.7, sleeve, tint)
+		_cc(el, hd.lerp(el, 0.12), 3.7, 3.1, sleeve, tint)
 		_cc(hd.lerp(el, 0.12), hd, 2.4, 2.2, skin)
 	else:
-		_cc(sh, el, 3.2, 2.9, skin)
+		_cc(sh, el, 3.6, 3.1, skin)
 		_cc(el, hd, 2.8, 2.3, skin)
-		_cc(sh, sh.lerp(el, 0.5), 4.2, 3.7, sleeve, tint)
+		_cc(sh, sh.lerp(el, 0.5), 4.6, 4.0, sleeve, tint)
 	if prop == "cup":
 		_cc(hd + Vector2(0, -5.5), hd + Vector2(0, 1.5), 2.7, 2.0, Color(0.72, 0.13, 0.11))
 		_ce(hd + Vector2(0, -6.2), 2.7, 0.9, Color(0.9, 0.88, 0.84), 0.0, 0.0, 999.0, true)
@@ -1062,7 +1062,7 @@ func _paint_person(p: Dictionary, frame: int) -> void:
 	var tint: float = 1.0 if p["tint"] else 0.0
 	var pants: Color = p["pants"]
 	var shoes: Color = p["shoes"]
-	var sw: float = p.get("sw", 11.0)
+	var sw: float = p.get("sw", 12.0)
 	var arms: Array = p["arms"]
 	var props: Array = p["props"]
 	var dy := 30.0 if seated else 0.0
@@ -1081,11 +1081,11 @@ func _paint_person(p: Dictionary, frame: int) -> void:
 			_ce(Vector2(kx + 0.6 * s, 122.5), 4.6, 3.0, shoes)
 			_cc(Vector2(kx - 3.8, 124.8), Vector2(kx + 4.6, 124.8), 0.9, 0.9, sole)
 	else:
-		_ce(Vector2(32, 68 + dy), 9.0, 5.0, pants)
+		_ce(Vector2(32, 68 + dy), sw - 1.8, 5.2, pants)
 		for s: float in [-1.0, 1.0]:
-			var lx := 32.0 + 5.2 * s
-			_cc(Vector2(lx, 64 + dy), Vector2(lx + 0.4 * s, 93 + dy), 5.3, 4.5, pants)
-			_cc(Vector2(lx + 0.4 * s, 93 + dy), Vector2(lx + 0.6 * s, 119 + dy), 4.5, 3.8, pants)
+			var lx := 32.0 + (sw * 0.47) * s
+			_cc(Vector2(lx, 64 + dy), Vector2(lx + 0.4 * s, 93 + dy), 5.9, 4.9, pants)
+			_cc(Vector2(lx + 0.4 * s, 93 + dy), Vector2(lx + 0.6 * s, 119 + dy), 4.9, 4.1, pants)
 			var fo := Vector2(lx + 1.0 * s, 122.5 + dy)
 			_ce(fo, 4.5, 2.9, shoes)
 			_cc(fo + Vector2(-4.0, 2.2), fo + Vector2(4.0, 2.2), 0.9, 0.9, sole)
@@ -1138,8 +1138,8 @@ func _paint_person(p: Dictionary, frame: int) -> void:
 	var pose_r: String = arms[frame * 2 + 1]
 	var prop_l: String = props[frame * 2]
 	var prop_r: String = props[frame * 2 + 1]
-	_paint_arm(Vector2(22.5, sy), 1.0, pose_l, garment, tint, long_sleeve, skin, prop_l)
-	_paint_arm(Vector2(41.5, sy), -1.0, pose_r, garment, tint, long_sleeve, skin, prop_r)
+	_paint_arm(Vector2(32.0 - sw + 1.6, sy), 1.0, pose_l, garment, tint, long_sleeve, skin, prop_l)
+	_paint_arm(Vector2(32.0 + sw - 1.6, sy), -1.0, pose_r, garment, tint, long_sleeve, skin, prop_r)
 
 
 func _crowd_people() -> Array:
@@ -1158,11 +1158,11 @@ func _crowd_people() -> Array:
 			"pants": Color(0.55, 0.48, 0.35), "shoes": Color(0.3, 0.2, 0.14),
 			"arms": ["down", "cup_low", "pump", "cup_up"], "props": ["none", "cup", "none", "cup"]},
 		{"seated": false, "skin": Color(0.66, 0.46, 0.33), "hair": Color(0.15, 0.09, 0.06), "hair_style": "long",
-			"hat": "none", "hat_col": Color.BLACK, "top": "tee", "top_col": Color.WHITE, "tint": true, "sw": 9.6,
+			"hat": "none", "hat_col": Color.BLACK, "top": "tee", "top_col": Color.WHITE, "tint": true, "sw": 10.6,
 			"print": Color(0.2, 0.2, 0.22), "pants": Color(0.45, 0.55, 0.68), "shoes": Color(0.88, 0.86, 0.84),
 			"arms": ["crossed", "crossed", "clap", "clap"], "props": none},
 		{"seated": false, "skin": Color(0.28, 0.18, 0.12), "hair": Color(0.04, 0.03, 0.03), "hair_style": "buzz",
-			"hat": "none", "hat_col": Color.BLACK, "top": "tee", "top_col": Color.WHITE, "tint": true, "sw": 12.5,
+			"hat": "none", "hat_col": Color.BLACK, "top": "tee", "top_col": Color.WHITE, "tint": true, "sw": 13.6,
 			"print": Color(0.75, 0.2, 0.15), "pants": Color(0.42, 0.42, 0.44), "shoes": Color(0.6, 0.13, 0.1),
 			"yell": true, "hop": true, "arms": ["pump", "pump", "v_up", "v_up"], "props": none},
 		{"seated": true, "skin": Color(0.8, 0.6, 0.46), "hair": Color(0.45, 0.3, 0.15), "hair_style": "short",
