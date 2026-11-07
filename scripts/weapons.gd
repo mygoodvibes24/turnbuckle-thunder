@@ -297,9 +297,55 @@ func _flat_dist(a: Vector3, b: Vector3) -> float:
 
 
 func _clamp_floor(p: Vector3, margin: float) -> Vector3:
-	# Onto the ground, inside the yard's fighting area (minus margin).
-	return Vector3(clampf(p.x, YARD_BOUNDS.position.x + margin, YARD_BOUNDS.end.x - margin), 0.0,
+	# Onto the ground, inside the yard's fighting area (minus margin), and not inside a yard prop's
+	# footprint (main.gd perches[].footprint / obstacles): pushed out the shortest way.
+	var q := Vector2(clampf(p.x, YARD_BOUNDS.position.x + margin, YARD_BOUNDS.end.x - margin),
 		clampf(p.z, YARD_BOUNDS.position.y + margin, YARD_BOUNDS.end.y - margin))
+	var r := minf(margin, 0.5)
+	for fp: Dictionary in _footprints():
+		var c: Vector2 = fp["center"]
+		var d := q - c
+		var rad: float = fp.get("radius", 0.0)
+		if rad > 0.0:
+			if d.length() < rad + r:
+				q = c + (d.normalized() if d.length() > 0.001 else Vector2(0.0, 1.0)) * (rad + r)
+			continue
+		var half: Vector2 = fp["half"]
+		var ex := half.x + r
+		var ez := half.y + r
+		if absf(d.x) >= ex or absf(d.y) >= ez:
+			continue
+		var best := Vector2.ZERO
+		for o: Vector2 in [Vector2(ex - d.x, 0.0), Vector2(-ex - d.x, 0.0), Vector2(0.0, ez - d.y), Vector2(0.0, -ez - d.y)]:
+			var t: Vector2 = q + o
+			var inside := YARD_BOUNDS.grow(-margin * 0.5).has_point(t)
+			if inside and (best == Vector2.ZERO or o.length() < best.length()):
+				best = o
+		q += best
+	return Vector3(q.x, 0.0, q.y)
+
+
+var _fps_cache: Array = []
+var _fps_ready := false
+
+
+func _footprints() -> Array:
+	# main.gd (ring_root's parent) owns the footprints; none before it has built the yard.
+	if _fps_ready:
+		return _fps_cache
+	var main_node = get_parent().get_parent() if get_parent() != null else null
+	if main_node == null or not ("perches" in main_node) or (main_node.perches as Array).is_empty():
+		return _fps_cache
+	_fps_ready = true
+	for pr in main_node.perches:
+		var fp = (pr as Dictionary).get("footprint", {})
+		if fp is Dictionary and fp.has("center") and fp.has("half"):
+			_fps_cache.append(fp)
+	if "obstacles" in main_node:
+		for fp in main_node.obstacles:
+			if fp is Dictionary and fp.has("center") and fp.has("half"):
+				_fps_cache.append(fp)
+	return _fps_cache
 
 
 func _floor_basis(it: Item) -> Basis:

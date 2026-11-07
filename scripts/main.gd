@@ -1209,8 +1209,14 @@ const HOUSE_Z := -8.6                               # back wall of the house
 const FENCE_X := 7.5                                # side privacy fences
 const FENCE_Z := 5.6                                # low picket fence on the camera side
 const FENCE_H := 1.9
-# Perches (replace the turnbuckles). Each: {"pos", "approach", "height", "kind", "name"}.
+# Perches (replace the turnbuckles). Each: {"pos", "approach", "height", "kind", "name", "footprint"}.
 var perches: Array = []
+# Solid ground footprints (wrestler.gd pushes bodies out of them, whips into them = prop crash).
+# Each perch has one under "footprint"; `obstacles` holds the other big props. A footprint:
+# {"center": Vector2(x, z), "half": Vector2(hx, hz)} (axis-aligned box; "radius" > 0 = round),
+# plus the crash call: "label" ("THE PALLETS"), "trick" + "points" (attacker's style points
+# when whipped into it), "sfx" ("wood_hit" / "metal_hit" / "thud").
+var obstacles: Array = []
 
 const LAWN_SHADER := """
 shader_type spatial;
@@ -1236,8 +1242,14 @@ func surface_at(p: Vector3) -> String:
 	return "grass"
 
 
-func _add_perch(perch_name: String, kind: String, pos: Vector3, approach: Vector3) -> void:
-	perches.append({"pos": pos, "approach": approach, "height": pos.y, "kind": kind, "name": perch_name})
+func _add_perch(perch_name: String, kind: String, pos: Vector3, approach: Vector3, footprint := {}) -> void:
+	perches.append({"pos": pos, "approach": approach, "height": pos.y, "kind": kind, "name": perch_name,
+		"footprint": footprint})
+
+
+func _footprint(center: Vector2, half: Vector2, label: String, trick_name: String, points: int, snd: String, radius := 0.0) -> Dictionary:
+	return {"center": center, "half": half, "radius": radius, "label": label, "trick": trick_name,
+		"points": points, "sfx": snd}
 
 
 func _ground_quad(center: Vector3, size: Vector2, m: Material, yaw := 0.0, uv_scale := Vector2.ONE) -> MeshInstance3D:
@@ -1408,6 +1420,7 @@ func _build_grime() -> void:
 
 func _build_arena() -> void:
 	perches.clear()
+	obstacles.clear()
 	rope_nodes.clear()   # no ring, no ropes: the rope FX no-ops
 	var far := _tex_mat(_make_grass_detail())
 	far.albedo_color = Color(0.2, 0.32, 0.1)
@@ -1712,7 +1725,8 @@ func _build_perches() -> void:
 	for lx: float in [-0.7, 0.7]:
 		_bx("wood", Vector3(0.08, 0.06, 1.6), pt + Vector3(lx, 0.38, 0), wood.darkened(0.15))
 	_cy("flat", 0.04, 0.04, 0.12, pt + Vector3(0.5, 0.81, 0.1), Color(0.65, 0.12, 0.1), 8)  # red cup
-	_add_perch("picnic table", "table", Vector3(-4.4, 0.75, -3.5), Vector3(-4.4, 0.0, -2.3))
+	_add_perch("picnic table", "table", Vector3(-4.4, 0.75, -3.5), Vector3(-4.4, 0.0, -2.3),
+		_footprint(Vector2(-4.4, -3.5), Vector2(0.97, 0.82), "THE PICNIC TABLE", "Picnic Table Crash", 200, "wood_hit"))
 
 	# 2) Stacked pallets on cinder blocks (top 1.2) by the left fence, camera side
 	var pp := Vector3(-6.0, 0, 3.6)
@@ -1733,10 +1747,14 @@ func _build_perches() -> void:
 			_bx("wood", Vector3(0.12, 0.025, 1.0), pp + jit + Vector3(-0.54 + sx * 0.18, y0 + 0.1475, 0), pal.lightened(0.05), pyaw)
 	for k in 2:
 		_bx("block", Vector3(0.4, 0.2, 0.2), Vector3(-5.2, 0.1 + k * 0.2, 3.6), block, PI * 0.5)  # step block
-	_add_perch("pallet stack", "pallets", Vector3(-6.0, 1.2, 3.6), Vector3(-4.8, 0.0, 3.5))
+	_add_perch("pallet stack", "pallets", Vector3(-6.0, 1.2, 3.6), Vector3(-4.8, 0.0, 3.5),
+		_footprint(Vector2(-5.88, 3.6), Vector2(0.78, 0.56), "THE PALLETS", "Pallet Crash", 200, "wood_hit"))  # + the step block at x -5.2
 
 	# 3) Porch steps / railing (deck top 1.0), built with the house
-	_add_perch("porch steps", "porch", Vector3(1.6, 1.0, -5.95), Vector3(1.6, 0.0, -4.3))
+	# steps x 0.9..2.3 (handrail posts to +-0.77), z -5.7..-4.78; the deck itself is behind the yard's edge
+	_add_perch("porch steps", "porch", Vector3(1.6, 1.0, -5.95), Vector3(1.6, 0.0, -4.3),
+		_footprint(Vector2(1.6, -5.24), Vector2(0.77, 0.47), "THE PORCH STEPS", "Porch Step Crash", 200, "wood_hit"))
+	obstacles.append(_footprint(Vector2(3.0, -7.15), Vector2(3.0, 1.45), "THE PORCH", "Porch Crash", 200, "wood_hit"))
 
 	# 4) Car hood: in _build_car
 	# 5) Trampoline (mat 0.9): extra air
@@ -1750,7 +1768,8 @@ func _build_perches() -> void:
 		if k % 2 == 0:
 			var a3 := a2 + TAU / 8.0
 			_beam("metal", lp + Vector3(0, 0.03, 0), tp + Vector3(cos(a3) * 1.38, 0.03, sin(a3) * 1.38), 0.05, metal)
-	_add_perch("trampoline", "trampoline", Vector3(5.0, 0.9, -2.6), Vector3(3.4, 0.0, -2.0))
+	_add_perch("trampoline", "trampoline", Vector3(5.0, 0.9, -2.6), Vector3(3.4, 0.0, -2.0),
+		_footprint(Vector2(5.0, -2.6), Vector2(1.4, 1.4), "THE TRAMPOLINE", "Trampoline Crash", 200, "metal_hit", 1.4))
 
 	# 6) Shed in the left fence line, ladder up to its flat roof (2.4): the biggest dive
 	var shed := Color(0.42, 0.5, 0.42)
@@ -1772,7 +1791,10 @@ func _build_perches() -> void:
 		_beam("metal", lb + Vector3(0, 0, s), lt + Vector3(0, 0, s), 0.06, Color(0.75, 0.72, 0.5))
 	for k in 8:
 		_bx("metal", Vector3(0.05, 0.04, 0.44), lb.lerp(lt, (k + 0.6) / 8.6), Color(0.75, 0.72, 0.5))
-	_add_perch("shed roof", "roof", Vector3(-7.0, 2.4, 0.9), Vector3(-5.6, 0.0, 0.9))
+	_add_perch("shed roof", "roof", Vector3(-7.0, 2.4, 0.9), Vector3(-5.6, 0.0, 0.9),
+		_footprint(Vector2(sx0, sz), Vector2(sw * 0.5 + 0.02, sd * 0.5), "THE SHED", "Shed Crash", 250, "wood_hit"))
+	# the ladder leaning on the shed: foot at x -5.95, rails z 0.68..1.12
+	obstacles.append(_footprint(Vector2(-6.36, 0.9), Vector2(0.42, 0.25), "THE LADDER", "Ladder Crash", 250, "metal_hit"))
 
 
 func _build_car() -> void:
@@ -1805,7 +1827,9 @@ func _build_car() -> void:
 	head.light_energy = 3.0
 	head.light_color = Color(1.0, 0.95, 0.8)
 	add_child(head)
-	_add_perch("car hood", "car", Vector3(5.4, 0.95, 2.65), Vector3(4.15, 0.0, 2.65))
+	# body 4.4 x 1.8 along x (bumpers to x 4.6), wheels out to z +-1.02
+	_add_perch("car hood", "car", Vector3(5.4, 0.95, 2.65), Vector3(4.15, 0.0, 2.65),
+		_footprint(Vector2(pos.x, pos.z), Vector2(2.3, 1.0), "THE CAR DOOR", "Car Door Crash", 250, "metal_hit"))
 
 
 func _build_yard_lights() -> void:
