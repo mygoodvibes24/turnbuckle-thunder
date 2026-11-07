@@ -2005,7 +2005,9 @@ func _spawn(n: String, look: Dictionary, cpu: bool, pos: Vector3) -> Node3D:
 	var w: Node3D = Wrestler.new()
 	w.set("arena", self)   # yard bounds / perches / surface_at (yard_contract.md); null-safe on the wrestler side
 	ring_root.add_child(w)
+	var _t0 := Time.get_ticks_usec()
 	w.setup(n, look, cpu)
+	print("DBG build %s %d ms" % [n, (Time.get_ticks_usec() - _t0) / 1000])
 	w.position = pos
 	w.announce.connect(func(text): _announce(text, 1.2))
 	w.impact.connect(func(s): cam_shake = max(cam_shake, s))
@@ -3582,6 +3584,51 @@ func _update_camera(delta: float) -> void:
 	if cam_shake > 0.0:
 		camera.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * cam_shake * 0.25
 		cam_shake = max(0.0, cam_shake - delta * 2.5)
+	_dbg_cam()
+
+
+var dbg_view := 0
+
+
+func _dbg_cam() -> void:
+	for k in 9:
+		if Input.is_physical_key_pressed(KEY_1 + k):
+			dbg_view = k + 1
+	if Input.is_physical_key_pressed(KEY_0):
+		dbg_view = 0
+	if p2.is_cpu:
+		p2.is_cpu = false
+	p1.visible = dbg_view == 0 or dbg_view <= 4 or dbg_view >= 8
+	p2.visible = dbg_view == 0 or dbg_view >= 5
+	if dbg_view == 0:
+		return
+	if dbg_view == 9 and p2.state != Wrestler.S.DOWN:
+		p2.down_duration = 30.0
+		p2.set_state(Wrestler.S.DOWN)
+	var w: Node3D = p1 if dbg_view <= 4 else p2
+	var f: Vector3 = w.facing
+	var side := Vector3(f.z, 0, -f.x)
+	var c: Vector3 = w.global_position
+	var at := c + Vector3(0, 1.0, 0)
+	var eye := c + f * 2.6 + Vector3(0, 1.15, 0)
+	match dbg_view:
+		2, 6:
+			eye = c + (f + side * 0.9).normalized() * 2.6 + Vector3(0, 1.2, 0)
+		3:
+			eye = c - f * 2.6 + Vector3(0, 1.2, 0)
+		4, 7:
+			at = c + Vector3(0, 1.62, 0)
+			eye = c + (f + side * 0.35).normalized() * 0.95 + Vector3(0, 1.66, 0)
+		8:
+			var m := (p1.global_position + p2.global_position) * 0.5
+			at = m + Vector3(0, 0.9, 0)
+			eye = m + Vector3(0, 1.4, 5.5)
+		9:
+			at = c + Vector3(0, 0.3, 0)
+			eye = c + Vector3(0.3, 1.6, 2.2)
+	camera.position = eye
+	camera.look_at(at)
+	camera.fov = 40.0
 
 
 func _update_hud(delta: float) -> void:
