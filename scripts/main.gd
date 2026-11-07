@@ -3688,11 +3688,7 @@ func _setup_presentation() -> void:
 	mc = Mc.new()
 	add_child(mc)
 	mc.setup(self)
-	get_tree().create_timer(4.0).timeout.connect(func():
-		sig_cam_left = 40.0
-		sig_cam_who = p1
-		_mc_say("brawl", p1)
-		p1.set_meta("dbg_boost", true))
+	get_tree().create_timer(4.0).timeout.connect(_dbg_force)
 	for w in [p1, p2]:
 		var wr: Node3D = w
 		if wr.has_signal("signature_started"):
@@ -3701,6 +3697,13 @@ func _setup_presentation() -> void:
 			if c.has_signal("popped") and c.has_signal("broke"):
 				c.connect("popped", func(text: String, points: int, kind: String, mult: int): _on_style_popped(wr, text, points, kind, mult))
 				c.connect("broke", func(_lost: int): _on_style_broke(wr))
+
+
+func _dbg_force() -> void:
+	sig_cam_left = 40.0
+	sig_cam_who = p1
+	_mc_say("brawl", p1)
+	p1.set_meta("dbg_boost", true)
 
 
 func _mc_say(cat: String, w: Node3D, move_name := "") -> void:
