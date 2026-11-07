@@ -2316,9 +2316,21 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_mc_say("brawl", w)
 		# ---- arcade presentation (boost / signature supers)
 		"boost_start":
-			_snd("boost_start" if audio != null and (audio.get("clips") as Dictionary).has("boost_start") else "whoosh", -4.0, 0.05)
+			# Boost kick-off: a low dive whoosh + FOV punch (trails / speed lines run from
+			# wrestler.boosting in _update_boost_fx).
+			_snd("dive_whoosh", -9.0 if w.is_cpu else -5.0, 0.06)
 			if not w.is_cpu:
 				cam_boost_punch = maxf(cam_boost_punch, BOOST_FOV_PUNCH)
+				_buzz(15)
+		"boost":
+			# Every ~0.35 s while boosting: a quiet rushing-air whoosh.
+			_snd("whoosh", -15.0 if w.is_cpu else -11.0, 0.12)
+		"flow":
+			# Flow cancel: a small high chime (the trick sting, pitched up via its own variation).
+			_snd("trick", -9.0, 0.02)
+			if fx != null and not w.is_cpu:
+				fx.spark(where, 0.35)
+			_hype(0.04)
 		"signature":
 			_snd("signature", 0.0, 0.0)
 			_snd("whoa", -4.0, 0.04)
