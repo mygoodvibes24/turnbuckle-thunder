@@ -1093,7 +1093,7 @@ func _print_tex(kind: String, ink: Color, acc: Color, bg: Color) -> ImageTexture
 		for x in w:
 			var n: float = _nz[((y * 3) & 255) * 256 + ((x * 3 + 41) & 255)]
 			var n2: float = _nz[((y >> 2) & 255) * 256 + ((x >> 2) + 99 & 255)]
-			if n > 0.9 or (n2 > 0.8 and n > 0.55):
+			if n > 0.96 or (n2 > 0.9 and n > 0.75):
 				var c := img.get_pixel(x, y)
 				if c.a > 0.01:
 					img.set_pixel(x, y, c.lerp(blk, 0.85))
@@ -1555,7 +1555,7 @@ func _mask_tex(base: Color, trim: Color) -> ImageTexture:
 		var ex := 31.0 * e
 		_poly(img, _mpoly([Vector2(ex - 22, 132), Vector2(ex, 156), Vector2(ex + 22, 132), Vector2(ex, 96)]), hot, 1.0)
 		_poly(img, _mpoly([Vector2(ex - 18, 132), Vector2(ex, 151), Vector2(ex + 18, 132), Vector2(ex, 102)]), Color(0.96, 0.95, 0.9), 1.0)
-		_md(img, ex, 127, 14, 9, blk, 1.0, 0.2)                          # eye hole
+		_md(img, ex, 127, 16, 10.5, blk, 1.0, 0.2)                       # eye hole
 		_md(img, ex - 1.0 * e, 126, 6.5, 3.2, Color(0.55, 0.5, 0.45), 0.55, 0.6)   # the eye in the dark
 		_md(img, ex - 1.0 * e, 126, 2.6, 2.6, blk, 0.95, 0.4)
 		_md(img, 6 * e, 79, 2.3, 1.7, blk, 1.0, 0.3)                      # nostril holes
@@ -1712,19 +1712,19 @@ func _build_body() -> void:
 	var hg := _pivot(head, Vector3(0, 0.015, 0.012))
 	_loft(hg, HEAD, _mat(white, _tex("head" + face + ks + str(hair_c), _head_tex.bind(skin_c, hair_c, face)), 0.25, 0.5),
 		true, true, Vector3.ZERO, 16)
-	_loft(hg, [Vector4(0.132, 0.006, 0.006, 0.097), Vector4(0.112, 0.009, 0.01, 0.103), Vector4(0.093, 0.013, 0.014, 0.107),
-		Vector4(0.081, 0.018, 0.014, 0.105), Vector4(0.073, 0.014, 0.008, 0.099)],
-		_mat(_skin_light(skin_c, 0.1), null, 0.3, 0.45), true, true, Vector3.ZERO, 8)              # nose
+	_loft(hg, [Vector4(0.124, 0.006, 0.005, 0.096), Vector4(0.108, 0.009, 0.009, 0.1), Vector4(0.092, 0.013, 0.012, 0.103),
+		Vector4(0.082, 0.017, 0.012, 0.101), Vector4(0.075, 0.013, 0.007, 0.097)],
+		_mat(skin_c.darkened(0.04), null, 0.12, 0.6), true, true, Vector3.ZERO, 8)              # nose
 	var ear := _mat(_skin_shade(skin_c, 0.1), null, 0.2, 0.6)
 	for es in [-1.0, 1.0]:
 		var ex: float = es
 		_ball(hg, 0.024, Vector3(0.079 * ex, 0.112, -0.008), ear, Vector3(0.4, 1.25, 0.8), 8)      # ears
 	if hair == "locs":
-		_loft(hg, HAIR_CAP, _mat(white, _tex("hcap" + str(hair_c), _cap_tex.bind(hair_c)), 0.3, 0.5), true, false, Vector3.ZERO, 16)
-		_build_locs(hg, _mat(white, _tex("locs" + str(hair_c), _loc_tex.bind(hair_c)), 0.55, 0.35), 38)
+		_loft(hg, HAIR_CAP, _mat(white, _tex("hcap" + str(hair_c), _cap_tex.bind(hair_c)), 0.1, 0.7), true, false, Vector3.ZERO, 16)
+		_build_locs(hg, _mat(white, _tex("locs" + str(hair_c), _loc_tex.bind(hair_c)), 0.18, 0.6), 38)
 	elif hair == "curls":
-		_loft(hg, HAIR_CAP, _mat(white, _tex("hcap" + str(hair_c), _cap_tex.bind(hair_c)), 0.3, 0.5), true, false, Vector3.ZERO, 16)
-		_build_curls(hg, _mat(white, _tex("locs" + str(hair_c), _loc_tex.bind(hair_c)), 0.45, 0.4), 34)
+		_loft(hg, HAIR_CAP, _mat(white, _tex("hcap" + str(hair_c), _cap_tex.bind(hair_c)), 0.1, 0.7), true, false, Vector3.ZERO, 16)
+		_build_curls(hg, _mat(white, _tex("locs" + str(hair_c), _loc_tex.bind(hair_c)), 0.15, 0.6), 34)
 	if look.get("mask", false):
 		_build_costume_mask(hg)
 
