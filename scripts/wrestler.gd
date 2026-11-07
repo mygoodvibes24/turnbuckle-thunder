@@ -5508,7 +5508,7 @@ var _kip := false                # GETTING_UP: kip-up instead of the three-stage
 ## "power" (Tank: hip-hop power swagger) or "kid" (Peligro: daredevil kid acrobat).
 func _persona() -> String:
 	if _persona_c == "":
-		var kid := bool(look.get("mask", false)) or display_name.to_lower().contains("peligro")
+		var kid: bool = bool(look.get("mask", false)) or display_name.to_lower().contains("peligro")
 		_persona_c = "kid" if kid else "power"
 	return _persona_c
 
@@ -5538,7 +5538,7 @@ func _ex_state_changed() -> void:
 	if state == S.DOWN:
 		_down_from_dive = _entry_state == S.DIVING and hf_result == "hit"
 		_bump_kind = ""
-		var standing := _entry_root_x > -1.0 and _entry_state in [S.IDLE, S.WALK, S.RUN, S.STUNNED,
+		var standing: bool = _entry_root_x > -1.0 and _entry_state in [S.IDLE, S.WALK, S.RUN, S.STUNNED,
 			S.PUNCH, S.TAUNT, S.GRAB_WINDUP, S.WHIFF, S.RUN_ATTACK, S.ROLL]
 		if standing and not _bump_big and opponent != null:
 			var os := _opp_state()
@@ -5867,7 +5867,7 @@ func _pose_idle() -> void:
 	pt_el_l = Vector3(-1.5, 0.0, 0.0)
 	pt_el_r = Vector3(-1.4, 0.0, 0.0)
 	# arcade exaggeration: swagger loop when there's room, a bouncy guard up close
-	var far := opponent == null or _flat_to_opponent().length() > 2.6 or not opponent.is_standing()
+	var far: bool = opponent == null or _flat_to_opponent().length() > 2.6 or not opponent.is_standing()
 	if far:
 		_ex_swagger_idle()
 	elif _persona() == "kid":
