@@ -67,7 +67,7 @@ func _ready() -> void:
 	# Each look: street clothes + style switches used by wrestler.gd's model.
 	# "gear" is the wrestler's signature colour (HUD, win banner).
 	var tank := {
-		"gear": Color(0.8, 0.14, 0.1), "skin": Color(0.42, 0.28, 0.2), "face": "tank",
+		"gear": Color(0.8, 0.14, 0.1), "skin": Color(0.42, 0.28, 0.2), "face": "tank", "signature_set": "tank",
 		"hair": "locs", "hair_color": Color(0.05, 0.036, 0.03),
 		"top": "tee", "top_color": Color(0.075, 0.072, 0.078), "graphic": "skull_bolt", "undershirt": true,
 		"bottom_color": Color(0.12, 0.115, 0.125), "bottom_fade": Color(0.34, 0.31, 0.28),
@@ -75,7 +75,7 @@ func _ready() -> void:
 		"chain": true, "bracelet": true, "tattoos": true, "bulk": 1.0,
 	}
 	var kid := {
-		"gear": Color(0.15, 0.75, 0.3), "skin": Color(0.62, 0.43, 0.3), "face": "kid",
+		"gear": Color(0.15, 0.75, 0.3), "skin": Color(0.62, 0.43, 0.3), "face": "kid", "signature_set": "peligro",
 		"mask": true, "mask_color": Color(0.12, 0.7, 0.28), "mask_trim": Color(1.0, 0.82, 0.1),
 		"hair": "curls", "hair_color": Color(0.07, 0.055, 0.045),
 		"top": "hoodie", "top_color": Color(0.46, 0.47, 0.49), "top_accent": Color(0.12, 0.62, 0.26),
@@ -2690,6 +2690,7 @@ func _build_help_panel() -> PanelContainer:
 			["COMBO", "Moves in a row multiply points"],
 			["B-R-A-W-L", "Fill the hype meter: earn a letter"],
 			["BRAWL MODE", "All 5: every move is SUPER"],
+			["SIGNATURE", "BRAWL MODE: PIN in lock-up / on top / running"],
 			["SPECIAL", "Full meter: STICK+GRAB finisher"],
 		], false],
 	]
