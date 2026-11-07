@@ -236,6 +236,7 @@ void sky() {
 	vec3 d = EYEDIR;
 	float h = clamp(d.y, -0.2, 1.0);
 	vec3 col = mix(vec3(0.12, 0.08, 0.22), vec3(0.015, 0.02, 0.07), smoothstep(0.0, 0.5, h));
+	col += vec3(0.16, 0.08, 0.03) * (1.0 - smoothstep(-0.05, 0.22, h));  // sodium city glow on the horizon
 	vec3 cell = floor(d * 260.0);
 	float r = fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
 	float star = step(0.992, r) * smoothstep(0.03, 0.2, d.y);
@@ -600,20 +601,26 @@ func _make_lawn_map() -> ImageTexture:
 	return _soft_tex(img, 128, 128)
 
 
-func _make_concrete_texture(n: int, joints: bool, stains: int) -> ImageTexture:
-	# Grungy poured concrete: mottled grey with aggregate specks, tooled expansion joints,
-	# hairline cracks, oil stains, rust drips and dirt creeping in from the edges.
+func _make_concrete_texture(n: int, joints: bool, stains: int, tires := false) -> ImageTexture:
+	# Grungy poured concrete (photo-like, PS2-era): warm mottled grey with aggregate specks,
+	# trowel swirls, water blotches, tooled expansion joints, hairline cracks, oil stains,
+	# rust drips, scuffs, tire marks (driveway) and dirt creeping in from the edges.
 	var mot := _noise_img(n, n, 0.035, 3, false)
 	var grit := _noise_img(n, n, 0.6, 1, false)
+	var blot := _noise_img(n, n, 0.012, 2, false)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
-	var base := Color(0.5, 0.49, 0.46)
+	var base := Color(0.53, 0.5, 0.45)
 	for y in n:
 		for x in n:
 			var m := mot.get_pixel(x, y).r
 			var g := grit.get_pixel(x, y).r
-			var c := base.darkened((m - 0.5) * 0.4 + (g - 0.5) * 0.18)
-			if randf() < 0.03:
-				c = c.lightened(0.15) if randf() < 0.5 else c.darkened(0.2)
+			var bl := blot.get_pixel(x, y).r
+			var c := base.darkened((m - 0.5) * 0.42 + (g - 0.5) * 0.22)
+			c = c.lerp(Color(0.36, 0.33, 0.28), smoothstep(0.55, 0.8, bl) * 0.45)  # old water / dirt blotches
+			c = c.lerp(Color(0.66, 0.64, 0.59), smoothstep(0.42, 0.2, bl) * 0.25)   # sun-bleached patches
+			c = c.darkened(sin((x + y * 0.6) * 0.21 + m * 9.0) * 0.025)            # faint trowel swirl
+			if randf() < 0.05:
+				c = c.lightened(0.18) if randf() < 0.45 else c.darkened(0.25)
 			var e := float(mini(mini(x, y), mini(n - 1 - x, n - 1 - y))) / n
 			c = c.lerp(Color(0.24, 0.22, 0.17), (1.0 - smoothstep(0.0, 0.06, e)) * 0.6)
 			img.set_pixel(x, y, c)
@@ -638,6 +645,22 @@ func _make_concrete_texture(n: int, joints: bool, stains: int) -> ImageTexture:
 	for i in 3:
 		var c := Vector2(randf() * n, randf() * n)
 		_soft_dot(img, c.x, c.y, n * 0.02, n * 0.05, Color(0.4, 0.22, 0.1), 0.2, n * 0.02)  # rust
+	for i in n / 10:  # shoe scuffs and drag marks
+		var a := Vector2(randf() * n, randf() * n)
+		var ang := randf() * TAU
+		_line_px(img, a, a + Vector2(cos(ang), sin(ang)) * randf_range(4.0, 14.0), Color(0.12, 0.11, 0.1), randf_range(0.12, 0.3))
+	if tires:
+		# Two worn tire tracks along u (the car drives in and out along x): rubber smears
+		# with tread-broken edges plus a darker drip patch where the engine sits.
+		for ty: float in [0.3, 0.7]:
+			for x in n:
+				var wob := sin(x * TAU / n * 2.0 + ty * 7.0) * n * 0.012
+				for k in int(n * 0.07):
+					var yy := ty * n + wob + k - n * 0.035
+					var edge := 1.0 - absf(k - n * 0.035) / (n * 0.035)
+					var tread := 0.7 + 0.3 * float((x / 3 + k / 2) % 2)
+					_blend_px(img, x, int(yy), Color(0.1, 0.09, 0.08), 0.22 * smoothstep(0.0, 0.5, edge) * tread * (0.6 + mot.get_pixel(x, int(yy) % n).r * 0.6))
+		_soft_dot(img, n * 0.5, n * 0.5, n * 0.12, n * 0.08, Color(0.05, 0.05, 0.06), 0.35, n * 0.06)
 	return _sharp_tex(img)
 
 
@@ -678,25 +701,36 @@ func _make_spray_texture() -> ImageTexture:
 
 
 func _make_wood_texture() -> ImageTexture:
-	# Weathered fence wood, 128 px per metre (tinted per vertex): vertical grain, grey sun-bleaching,
-	# dark water streaks, knots and nail heads.
-	var n := 128
-	var nz := _noise_img(n, n, 0.05, 2)
-	var streak := _noise_img(n, n, 0.12, 2)
+	# Weathered fence wood, 256 px per metre (tinted per vertex): fine vertical grain lines,
+	# grey sun-bleaching, dark water streaks, splits, knots, rusty nail heads.
+	var n := 256
+	var nz := _noise_img(n, n, 0.025, 3)
+	var streak := _noise_img(n, n, 0.06, 2)
+	var fine := _noise_img(n, n, 0.5, 1)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
 	for y in n:
 		for x in n:
 			var w := nz.get_pixel(x, y).r
-			var s := streak.get_pixel(x, (y / 8) % n).r
-			var g := 0.78 + 0.07 * sin(x * TAU * 11.0 / n + sin(y * TAU / n) * 2.0 + w * 6.0) + (w - 0.5) * 0.12
-			g -= smoothstep(0.55, 0.85, s) * 0.16
-			img.set_pixel(x, y, Color(g, g * 0.96, g * 0.9))
-	for i in 3:
+			var s := streak.get_pixel(x, (y / 10) % n).r
+			var f := fine.get_pixel(x, (y / 6) % n).r
+			var ph := x * TAU * 23.0 / n + sin(y * TAU / n) * 2.0 + w * 9.0
+			var g := 0.76 + 0.06 * sin(ph) - 0.09 * pow(maxf(0.0, sin(ph * 2.3)), 10.0) + (w - 0.5) * 0.14 + (f - 0.5) * 0.08
+			g -= smoothstep(0.55, 0.85, s) * 0.2
+			var bleach := smoothstep(0.35, 0.75, w)
+			img.set_pixel(x, y, Color(g, g * 0.95, g * 0.88).lerp(Color(g * 0.95, g * 0.95, g * 0.93), bleach * 0.6))
+	for i in 7:  # splits along the grain
+		var sx := randf() * n
+		var sy := randf() * n
+		var l := randf_range(15.0, 60.0)
+		_line_px(img, Vector2(sx, sy), Vector2(sx + randf_range(-2.0, 2.0), sy + l), Color(0.12, 0.1, 0.08), 0.65)
+	for i in 4:
 		var k := Vector2(randf() * n, randf() * n)
-		_soft_dot(img, k.x, k.y, 3.0, 4.5, Color(0.32, 0.26, 0.2), 0.7, 1.5)
-		_soft_dot(img, k.x, k.y, 1.2, 1.8, Color(0.15, 0.12, 0.1), 0.8, 0.8)
-	for i in 6:
-		_soft_dot(img, randf() * n, randf() * n, 1.1, 1.1, Color(0.2, 0.18, 0.17), 0.8, 0.6)
+		_soft_dot(img, k.x, k.y, 6.0, 9.0, Color(0.34, 0.27, 0.2), 0.6, 3.0)
+		_soft_dot(img, k.x, k.y, 2.4, 3.6, Color(0.14, 0.11, 0.09), 0.85, 1.2)
+	for i in 8:
+		var np := Vector2(randf() * n, randf() * n)
+		_soft_dot(img, np.x, np.y + 4.0, 1.4, 6.0, Color(0.42, 0.22, 0.1), 0.3, 2.0)  # rust bleed
+		_soft_dot(img, np.x, np.y, 2.0, 2.0, Color(0.16, 0.13, 0.12), 0.9, 0.8)
 	return _sharp_tex(img)
 
 
@@ -713,7 +747,11 @@ func _make_siding_texture() -> ImageTexture:
 				g *= 0.55
 			var s := streak.get_pixel(x, (y / 6) % n).r
 			g *= 0.86 + 0.14 * s
-			img.set_pixel(x, y, Color(g, g, g * 0.97))
+			var drip := streak.get_pixel((x * 7) % n, 3).r  # vertical run-off streaks under each lap
+			g *= 1.0 - smoothstep(0.6, 0.85, drip) * 0.18 * (1.0 - r * 0.5)
+			var mil := streak.get_pixel((x + 64) % n, (y + 40) % n).r
+			var c := Color(g, g * 0.985, g * 0.94).lerp(Color(g * 0.72, g * 0.74, g * 0.62), smoothstep(0.65, 0.9, mil) * 0.5)
+			img.set_pixel(x, y, c)
 	return _sharp_tex(img)
 
 
@@ -732,7 +770,10 @@ func _make_brick_texture() -> ImageTexture:
 			var gv := grit.get_pixel(x, y).r
 			c = c.darkened((gv - 0.5) * 0.35)
 			if y % 8 == 7 or sx % 21 == 20:
-				c = Color(0.42, 0.4, 0.36).darkened((gv - 0.5) * 0.3)
+				c = Color(0.42, 0.4, 0.36).darkened((gv - 0.5) * 0.5)
+			elif y % 8 == 0 or sx % 21 == 0:
+				c = c.lightened(0.08)  # lit brick lip
+			c = c.darkened(smoothstep(0.62, 0.85, gv) * 0.2)  # soot / chips
 			img.set_pixel(x, y, c)
 	return _sharp_tex(img)
 
@@ -800,7 +841,7 @@ func _fan_head(img: Image, ox: int, y: int, skin: Color, hair: Color) -> void:
 
 
 func _make_crowd_texture() -> ImageTexture:
-	# 128x32 atlas (painted at 256x64): eight 16x32 friends. Pure-white areas are the shirt/hoodie
+	# 256x64 atlas: eight 32x64 painted friends (laid out in 16x32 cells at 2x). Pure-white areas are the shirt/hoodie
 	# (tinted per instance), pure cyan is a glowing phone screen.
 	var img := Image.create_empty(256, 64, false, Image.FORMAT_RGBA8)
 	img.fill(Color(0.08, 0.08, 0.09, 0))
@@ -895,7 +936,26 @@ func _make_crowd_texture() -> ImageTexture:
 		if right_down:
 			_fr(img, ox + 12, 11, 2, 3, white)
 			_fr(img, ox + 12, 14, 2, 6, skin)
-	return _soft_tex(img, 128, 32)
+	# Soft painted shading: top-lit fall-off and a darker rim on every figure (kept at 32x64 per friend).
+	var nz := _noise_img(256, 64, 0.2, 2, false)
+	for y in 64:
+		for x in 256:
+			var c := img.get_pixel(x, y)
+			if c.a <= 0.0:
+				continue
+			var edge := 1.0
+			for d: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1)]:
+				var q := Vector2i(clampi(x + d.x, 0, 255), clampi(y + d.y, 0, 63))
+				if img.get_pixel(q.x, q.y).a < 0.5:
+					edge = 0.8
+			var keep_white := c.r > 0.97 and c.g > 0.97 and c.b > 0.97
+			var keep_screen := c.g > 0.97 and c.b > 0.97 and c.r < 0.03
+			if keep_white or keep_screen:
+				continue
+			var k := edge * (0.92 + nz.get_pixel(x, y).r * 0.16)
+			img.set_pixel(x, y, Color(c.r * k, c.g * k, c.b * k, c.a))
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
 
 
 func _make_flash_texture() -> ImageTexture:
@@ -925,13 +985,14 @@ func _build_environment() -> void:
 	# Night: a cool, slightly lifted ambient so the yard stays dark but readable;
 	# the floodlight pools on the lawn and patio are the brightest thing on screen.
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.36, 0.42, 0.66)
-	env.ambient_light_energy = 0.3
+	env.ambient_light_color = Color(0.5, 0.47, 0.52)  # soft, near-neutral fill (the grade warms it)
+	env.ambient_light_energy = 0.36
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_DISABLED
 	env.tonemap_mode = Environment.TONE_MAPPER_LINEAR
+	env.tonemap_exposure = 1.2  # skin mid-tones ~0.45-0.55 under the floods
 	env.glow_enabled = false  # bloom is done cheaply in the post shader instead
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.07, 0.08, 0.15)
+	env.fog_light_color = Color(0.1, 0.085, 0.1)
 	env.fog_light_energy = 1.0
 	env.fog_density = 0.011
 	env.fog_sky_affect = 0.0
@@ -943,9 +1004,9 @@ func _build_environment() -> void:
 	# directional that rims shoulders and heads so silhouettes read against the dark.
 	var moon := DirectionalLight3D.new()
 	moon.transform = Transform3D(Basis.looking_at(Vector3(-0.42, -0.62, 0.66)), Vector3(0, 10, 0))
-	moon.light_color = Color(0.58, 0.68, 1.0)
-	moon.light_energy = 0.42
-	moon.light_specular = 0.6
+	moon.light_color = Color(0.6, 0.7, 1.0)
+	moon.light_energy = 0.5
+	moon.light_specular = 0.75
 	moon.shadow_enabled = false
 	add_child(moon)
 
@@ -954,20 +1015,20 @@ func _build_environment() -> void:
 	# pools: bright in the middle, falling off quickly toward the fences and the house.
 	# Only the front one (ring_spot) casts a real shadow map.
 	var floods: Array[SpotLight3D] = []
-	var rigs: Array = [[Vector3(-6.9, 7.2, 5.9), Vector3(-0.8, 0.0, -0.6)],
-		[Vector3(6.9, 7.2, -6.2), Vector3(0.6, 0.0, 0.2)]]
+	var rigs: Array = [[Vector3(-6.9, 7.2, 5.9), Vector3(-0.4, 0.0, -0.3)],
+		[Vector3(6.9, 7.2, -6.2), Vector3(0.4, 0.0, 0.2)]]
 	for rig: Array in rigs:
 		var corner: Vector3 = rig[0]
 		var aim: Vector3 = rig[1]
 		var fl := SpotLight3D.new()
 		fl.transform = Transform3D(Basis.looking_at(aim - corner), corner)
-		fl.spot_angle = 40.0
-		fl.spot_angle_attenuation = 0.7
-		fl.spot_range = 19.0
-		fl.spot_attenuation = 1.1
-		fl.light_energy = 7.5
+		fl.spot_angle = 45.0
+		fl.spot_angle_attenuation = 1.3  # visible warm pool on the fighting area, soft rim
+		fl.spot_range = 20.0
+		fl.spot_attenuation = 0.5
+		fl.light_energy = 4.0
 		fl.light_specular = 0.7
-		fl.light_color = Color(1.0, 0.84, 0.62)
+		fl.light_color = Color(1.0, 0.9, 0.75)
 		fl.shadow_enabled = false
 		add_child(fl)
 		floods.append(fl)
@@ -997,10 +1058,10 @@ func _build_environment() -> void:
 		add_child(o)
 
 	camera = Camera3D.new()
-	camera.fov = 45
-	camera.position = Vector3(0, RING_TOP + 3.3, 6.8)
+	camera.fov = 48
+	camera.position = Vector3(0, RING_TOP + 2.9, 5.6)
 	add_child(camera)
-	camera.look_at(Vector3(0, RING_TOP + 0.9, 0))
+	camera.look_at(Vector3(0, RING_TOP + 1.0, 0))
 
 
 # Real shadow map on the front floodlight (Compatibility renderer spot shadow, one light).
@@ -1010,17 +1071,21 @@ const GRADE_POST_SHADER := """
 shader_type canvas_item;
 
 // Mid-2000s console look: smooth bilinear upscale of a ~540p frame (texture filter),
-// a touch of sharpening, cheap single-pass bloom on bright areas, then an "urban" grade:
-// contrast, saturation, warm highlights / cool shadows, and a soft vignette.
-uniform float contrast = 1.12;
-uniform float saturation = 1.15;
-uniform float sharpen = 0.14;
-uniform float bloom_threshold = 0.68;
-uniform float bloom_strength = 0.6;
+// a touch of sharpening, subtle single-pass bloom on bright areas, then a sepia-warm
+// "skate video" grade: moderate contrast, slightly muted (greens most), a warm sepia
+// wash, warm highlights over near-neutral shadows, faint film grain and a soft vignette.
+uniform float contrast = 1.1;
+uniform float saturation = 0.9;
+uniform float green_desat = 0.5;
+uniform float sepia = 0.3;
+uniform float sharpen = 0.16;
+uniform float bloom_threshold = 0.72;
+uniform float bloom_strength = 0.38;
 uniform float bloom_radius = 5.0;
-uniform vec3 shadow_tint = vec3(0.90, 0.97, 1.10);
-uniform vec3 highlight_tint = vec3(1.08, 1.01, 0.88);
-uniform float vignette = 0.25;
+uniform vec3 shadow_tint = vec3(0.97, 0.96, 1.03);
+uniform vec3 highlight_tint = vec3(1.1, 1.0, 0.82);
+uniform float vignette = 0.2;
+uniform float grain = 0.025;
 
 vec3 bright(vec3 c) {
 	// Luminance threshold, so saturated mid-tones (the blue canvas) don't haze over.
@@ -1050,12 +1115,21 @@ void fragment() {
 	// Contrast around mid-grey, then saturation.
 	c = (c - 0.5) * contrast + 0.5;
 	float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+	// Muted greens (lawn, trees) first, then overall saturation.
+	float gdom = clamp((c.g - max(c.r, c.b)) * 4.0, 0.0, 1.0);
+	c = mix(c, vec3(l), gdom * green_desat);
 	c = mix(vec3(l), c, saturation);
-	// Split toning: cool shadows, warm highlights.
+	// Sepia wash: blend toward a warm brown ramp of the same luminance.
+	vec3 sep = clamp(vec3(l * 1.12 + 0.02, l * 0.97 + 0.005, l * 0.74), 0.0, 1.0);
+	c = mix(c, sep, sepia);
+	// Split toning: near-neutral shadows, warm highlights.
 	l = clamp(dot(c, vec3(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
 	vec3 tint = mix(shadow_tint, highlight_tint, smoothstep(0.15, 0.75, l));
 	c *= mix(vec3(1.0), tint, 0.85);
-	// Vignette (~25% darker in the corners).
+	// Film grain (static per pixel would look like dirt on the lens, so it shimmers).
+	float gn = fract(sin(dot(FRAGCOORD.xy + fract(TIME) * 61.0, vec2(12.9898, 78.233))) * 43758.5453);
+	c += (gn - 0.5) * grain;
+	// Vignette (~20% darker in the corners).
 	vec2 v = (UV - 0.5) * vec2(1.0, 0.85) * 1.414;
 	c *= 1.0 - vignette * smoothstep(0.35, 1.0, dot(v, v));
 	COLOR = vec4(clamp(c, 0.0, 1.0), 1.0);
@@ -1187,6 +1261,151 @@ func _ground_quad(center: Vector3, size: Vector2, m: Material, yaw := 0.0, uv_sc
 	return mi
 
 
+# ---- grime and decals (soft baked AO / dirt at the foot of walls and fences, spray tags)
+
+var _grime_st: SurfaceTool
+
+
+func _grime_vert(p: Vector3, n: Vector3, uv: Vector2, a: float) -> void:
+	_grime_st.set_color(Color(0.11, 0.09, 0.06, a))
+	_grime_st.set_normal(n)
+	_grime_st.set_uv(uv)
+	_grime_st.add_vertex(p)
+
+
+func _grime_wall(a: Vector3, b: Vector3, out: Vector3, h: float, reach := 0.4, wall_a := 0.55, floor_a := 0.42) -> void:
+	# Dirt splash darkening the bottom h metres of a wall (a..b on the ground, out = its facing),
+	# plus a soft contact-shadow strip on the ground in front of it.
+	if _grime_st == null:
+		_grime_st = SurfaceTool.new()
+		_grime_st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var o := out.normalized()
+	var a0 := a + o * 0.012
+	var b0 := b + o * 0.012
+	var u1 := a.distance_to(b) / 1.6
+	var up := Vector3(0, h, 0)
+	var g := Vector3(0, 0.022, 0)
+	var quads: Array = [
+		[a0, a0 + up, b0 + up, b0, o, [Vector2(0, 1), Vector2(0, 0), Vector2(u1, 0), Vector2(u1, 1)], [wall_a, 0.0, 0.0, wall_a]],
+		[a0 + g, a0 + g + o * reach, b0 + g + o * reach, b0 + g, Vector3.UP, [Vector2(0, 0.5), Vector2(0, 0.9), Vector2(u1, 0.9), Vector2(u1, 0.5)], [floor_a, 0.0, 0.0, floor_a]]]
+	for q: Array in quads:
+		var uvs: Array = q[5]
+		var al: Array = q[6]
+		for i: int in [0, 1, 2, 0, 2, 3]:
+			_grime_vert(q[i], q[4], uvs[i], al[i])
+
+
+func _flush_grime() -> void:
+	if _grime_st == null:
+		return
+	var m := _tex_mat(_make_grime_texture(), false, true)
+	m.vertex_color_use_as_albedo = true
+	m.vertex_color_is_srgb = true
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.roughness = 1.0
+	var mi := MeshInstance3D.new()
+	mi.mesh = _grime_st.commit()
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	_grime_st = null
+
+
+func _make_grime_texture() -> ImageTexture:
+	# Blotchy dirt mask (white = full grime): splash spots near the bottom, streaks running up.
+	var n := 128
+	var nz := _noise_img(n, n, 0.05, 3)
+	var st := _noise_img(n, n, 0.15, 2)
+	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
+	for y in n:
+		for x in n:
+			var v := nz.get_pixel(x, y).r * 0.7 + st.get_pixel(x, (y / 8) % n).r * 0.5
+			var a := clampf(0.35 + v * 0.9, 0.0, 1.0)
+			img.set_pixel(x, y, Color(1, 1, 1, a))
+	return _sharp_tex(img)
+
+
+func _make_tag_texture(text: String, fill: Color, outline: Color, shine: Color) -> ImageTexture:
+	# Hand-sprayed tag: fuzzy overspray halo, dark outline, fill with a lighter highlight
+	# stroke, paint drips running down from the letters, then worn by weather.
+	var w := 256
+	var h := 128
+	var img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
+	var sc := minf(18.0, (w - 30.0) / (text.length() * 4.0 - 1.0))
+	var x0 := (w - _text_w(text, sc)) * 0.5
+	var y0 := 12.0
+	_soft_text(img, text, x0 - sc * 0.35, y0 - sc * 0.35, sc * 1.14, outline, 0.25)
+	_soft_text(img, text, x0 - sc * 0.22, y0 - sc * 0.22, sc * 1.09, outline, 0.95)
+	_soft_text(img, text, x0, y0, sc, fill, 1.0)
+	_soft_text(img, text, x0 + sc * 0.1, y0 + sc * 0.05, sc * 0.55, shine, 0.55)
+	for i in 10:
+		var dx := x0 + randf() * _text_w(text, sc)
+		var dy := y0 + sc * randf_range(3.5, 5.0)
+		if img.get_pixel(clampi(int(dx), 0, w - 1), clampi(int(dy), 0, h - 1)).a < 0.5:
+			continue
+		var l := randf_range(6.0, 26.0)
+		_line_px(img, Vector2(dx, dy), Vector2(dx + randf_range(-0.6, 0.6), minf(dy + l, h - 4.0)), fill.darkened(0.15), 0.9)
+		_soft_dot(img, dx, minf(dy + l, h - 4.0), 1.4, 1.8, fill.darkened(0.15), 0.9, 0.6)
+	for i in 120:
+		_soft_dot(img, x0 + randf_range(-10.0, _text_w(text, sc) + 10.0), y0 + randf_range(-8.0, sc * 5.0 + 8.0), 0.8, 0.8, fill, randf_range(0.2, 0.6), 0.6)
+	var nz := _noise_img(w, h, 0.05, 3, false)
+	for yy in h:
+		for xx in w:
+			var c := img.get_pixel(xx, yy)
+			if c.a > 0.0:
+				c.a *= clampf(0.45 + nz.get_pixel(xx, yy).r * 0.7, 0.0, 0.9)
+				img.set_pixel(xx, yy, c)
+	return _sharp_tex(img)
+
+
+func _wall_decal(tex: Texture2D, center: Vector3, size: Vector2, out: Vector3) -> void:
+	# Vertical alpha-blended quad (spray paint) a hair in front of a wall facing out.
+	var o := out.normalized()
+	var right := Vector3.UP.cross(o).normalized()  # viewer's right when facing the wall
+	var hx := right * size.x * 0.5
+	var hy := Vector3(0, size.y * 0.5, 0)
+	var c := center + o * 0.015
+	var pts: Array[Vector3] = [c - hx + hy, c + hx + hy, c + hx - hy, c - hx - hy]
+	var uvs: Array[Vector2] = [Vector2(0, 0), Vector2(1, 0), Vector2(1, 1), Vector2(0, 1)]
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i: int in [0, 1, 2, 0, 2, 3]:
+		st.set_normal(o)
+		st.set_uv(uvs[i])
+		st.add_vertex(pts[i])
+	var m := _tex_mat(tex, false, true)
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	var mi := MeshInstance3D.new()
+	mi.mesh = st.commit()
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+
+
+func _build_grime() -> void:
+	var hz := HOUSE_Z
+	_grime_wall(Vector3(-9.0, 0, hz + 0.06), Vector3(9.0, 0, hz + 0.06), Vector3.BACK, 0.9, 0.5)
+	_grime_wall(Vector3(0.0, 0, -5.63), Vector3(6.0, 0, -5.63), Vector3.BACK, 0.55, 0.45)  # porch skirt
+	var runs: Array = [[-1.0, HOUSE_Z, -1.0], [-1.0, 1.8, FENCE_Z], [1.0, HOUSE_Z, 1.2], [1.0, 4.1, FENCE_Z]]
+	for r: Array in runs:
+		var fx: float = r[0] * FENCE_X
+		for side: float in [-1.0, 1.0]:
+			var off := Vector3(side * 0.03, 0, 0)
+			_grime_wall(Vector3(fx, 0, r[1]) + off, Vector3(fx, 0, r[2]) + off, Vector3(side, 0, 0), 0.6, 0.35, 0.5, 0.35)
+	# Shed: front (faces the yard) and both ends.
+	_grime_wall(Vector3(-6.79, 0, -1.0), Vector3(-6.79, 0, 1.8), Vector3.RIGHT, 0.7, 0.45)
+	_grime_wall(Vector3(-9.4, 0, 1.81), Vector3(-6.8, 0, 1.81), Vector3.BACK, 0.7, 0.4)
+	_grime_wall(Vector3(-9.4, 0, -1.01), Vector3(-6.8, 0, -1.01), Vector3.FORWARD, 0.7, 0.4)
+	for fx: float in [-FENCE_X, 2.6]:  # low pickets on the camera side
+		_grime_wall(Vector3(fx, 0, FENCE_Z - 0.03), Vector3(fx + 4.9, 0, FENCE_Z - 0.03), Vector3.FORWARD, 0.22, 0.25, 0.4, 0.3)
+	_flush_grime()
+	# A couple of small, weathered spray tags on the shed's yard-facing wall.
+	_wall_decal(_make_tag_texture("C2C", Color(0.78, 0.16, 0.1), Color(0.06, 0.05, 0.05), Color(0.98, 0.78, 0.5)),
+		Vector3(-6.75, 1.05, -0.3), Vector2(1.5, 0.75), Vector3.RIGHT)
+	_wall_decal(_make_tag_texture("CREW", Color(0.86, 0.84, 0.78), Color(0.1, 0.16, 0.42), Color(1.0, 1.0, 1.0)),
+		Vector3(-6.77, 0.62, 1.3), Vector2(0.8, 0.4), Vector3.RIGHT)
+
+
 func _build_arena() -> void:
 	perches.clear()
 	rope_nodes.clear()   # no ring, no ropes: the rope FX no-ops
@@ -1203,6 +1422,7 @@ func _build_arena() -> void:
 	_build_car()
 	_build_string_lights()
 	_build_yard_lights()
+	_build_grime()
 	_flush_batches()
 
 
@@ -1222,7 +1442,7 @@ func _build_lawn() -> void:
 	var edge := Color(0.42, 0.41, 0.38)
 	_bx("block", Vector3(PATIO_RECT.size.x, 0.03, 0.08), Vector3(PATIO_RECT.get_center().x, 0.012, PATIO_RECT.end.y), edge)
 	_bx("block", Vector3(0.08, 0.03, PATIO_RECT.size.y), Vector3(PATIO_RECT.end.x, 0.012, PATIO_RECT.get_center().y), edge)
-	var dm := _tex_mat(_make_concrete_texture(128, true, 4))
+	var dm := _tex_mat(_make_concrete_texture(256, true, 4, true))
 	dm.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_ground_quad(Vector3(DRIVE_RECT.get_center().x, 0.015, DRIVE_RECT.get_center().y), DRIVE_RECT.size, dm, 0.0, Vector2(3.0, 1.0))
 	# Spray-painted "C2C" on the patio: the backyard federation's "logo".
@@ -1427,8 +1647,9 @@ func _build_fence() -> void:
 	# The gate swung open outward against the car's side of the driveway.
 	_fence_run(Vector3(FENCE_X, 0, 4.1), Vector3(FENCE_X + 1.9, 0, 4.9), FENCE_H)
 	# Camera side: low picket fence at the corners; the middle panels lie knocked flat on the grass.
-	_fence_run(Vector3(-FENCE_X, 0, fz), Vector3(-2.6, 0, fz), 0.65, true)
-	_fence_run(Vector3(2.6, 0, fz), Vector3(FENCE_X, 0, fz), 0.65, true)
+	# Kept at 0.45 m so it never hides the wrestlers' legs from the broadcast camera.
+	_fence_run(Vector3(-FENCE_X, 0, fz), Vector3(-2.6, 0, fz), 0.45, true)
+	_fence_run(Vector3(2.6, 0, fz), Vector3(FENCE_X, 0, fz), 0.45, true)
 	for k in 2:
 		var cx := -1.3 + k * 2.6
 		_bx("wood", Vector3(2.5, 0.05, 0.85), Vector3(cx, 0.04, fz + 0.55 + k * 0.1), Color(0.6, 0.53, 0.44), randf_range(-0.12, 0.12))
@@ -1470,8 +1691,8 @@ func _build_props() -> void:
 		_bx("flat", Vector3(0.13, 0.12, 0.13), g + Vector3(0, 0.28, 0), Color(0.8, 0.62, 0.5))
 		_bx("flat", Vector3(0.14, 0.1, 0.06), g + Vector3(0, 0.22, 0.07), Color(0.85, 0.85, 0.85))
 		_cy("flat", 0.09, 0.0, 0.22, g + Vector3(0, 0.45, 0), Color(0.7, 0.12, 0.1), 8)
-	# Kiddie pool outside the picket fence, camera-left corner
-	var kp := Vector3(-5.6, 0, 7.4)
+	# Kiddie pool in the neighbour's strip behind the left fence
+	var kp := Vector3(-10.2, 0, 4.4)  # out of the broadcast shot (was a hard blue shape under the joystick)
 	_cy("flat", 1.0, 1.05, 0.3, kp + Vector3(0, 0.15, 0), Color(0.3, 0.5, 0.75), 14)
 	_cy("glow", 0.9, 0.9, 0.02, kp + Vector3(0, 0.25, 0), Color(0.12, 0.25, 0.32), 14)
 
@@ -1662,7 +1883,7 @@ func _build_string_lights() -> void:
 
 func _add_fan(p: Vector3, variant: int, lit := 0.5, bob := 1.0) -> void:
 	# p = feet position. The quad's +Z (its front) faces the broadcast camera side.
-	var s := randf_range(0.92, 1.06) * 0.85
+	var s := randf_range(0.94, 1.06)
 	var c := p + Vector3(0, 0.85 * s, 0)
 	var focus := Vector3(0, c.y, 9.0)
 	var away := c - focus
@@ -1683,41 +1904,32 @@ func _stand_variant() -> int:
 
 
 func _build_crowd() -> void:
-	# ~45 friends hanging around the yard: one MultiMesh of camera-facing pixel quads.
+	# ~16 friends hanging around the yard: one MultiMesh of camera-facing painted quads.
 	_fan_xforms.clear()
 	_fan_custom.clear()
 	crowd_spots = PackedVector3Array()
 	# Nobody stands in the fighting area (x -7..7, z -5..5): friends crowd the back of the patio,
 	# the porch and its roof, peek over the side fences and hang out by the car.
-	var x := -7.0
-	while x < -0.8:
-		if absf(x + 3.4) > 1.1 or randf() < 0.3:   # keep the sliding door visible
-			_add_fan(Vector3(x, 0.015, randf_range(-5.7, -6.4)), _stand_variant(), 0.6)
-		x += randf_range(0.7, 1.0)
-	# Lawn chairs at the back of the patio (sitting, slightly in front of each chair)
-	for c: Vector3 in [Vector3(-6.35, 0.015, -6.05), Vector3(-5.58, 0.015, -6.35), Vector3(-1.63, 0.015, -6.45)]:
-		_add_fan(c, FAN_SIT if randf() < 0.5 else FAN_SIT_CUP, 0.6)
-	# Porch: railing leaners (clear of the steps at x ~1.6) and couch sitters
-	for rx: float in [2.9, 3.7, 4.6, 5.5, 0.4]:
+	# A smaller, sparser crowd (~40% of the old one) so it never competes with the fight.
+	for px: float in [-6.4, -5.0, -2.0, -1.2]:   # back of the patio; the sliding door stays visible
+		_add_fan(Vector3(px + randf_range(-0.15, 0.15), 0.015, randf_range(-5.8, -6.4)), _stand_variant(), 0.6)
+	_add_fan(Vector3(-5.58, 0.015, -6.35), FAN_SIT_CUP, 0.6)  # in a lawn chair
+	# Porch: two railing leaners and a couch sitter; two sitting on the step ends (scale reference)
+	for rx: float in [3.3, 5.0]:
 		_add_fan(Vector3(rx, 1.0, -6.05), _stand_variant(), 0.65)
-	for cx: float in [3.9, 4.6, 5.2]:
-		_add_fan(Vector3(cx, 1.0, HOUSE_Z + 0.95), FAN_SIT if randf() < 0.5 else FAN_SIT_CUP, 0.55)
+	_add_fan(Vector3(4.6, 1.0, HOUSE_Z + 0.95), FAN_SIT, 0.55)
+	_add_fan(Vector3(1.0, 0.5, -5.2), FAN_SIT_CUP, 0.6)
+	_add_fan(Vector3(2.2, 0.5, -5.2), FAN_SIT, 0.6)
 	# Up on the porch roof
-	for rx: float in [0.6, 1.9, 3.3, 4.6, 5.6]:
-		var v := FAN_SIT if rx > 4.0 else _stand_variant()
-		_add_fan(Vector3(rx, 3.58, -6.4), v, 0.5, 1.4)
-	# Peeking over the side fences (standing on buckets) and two sitting on the fence tops
-	for z: float in [-7.4, -6.0, -3.9, -2.6, 2.4, 3.8]:
-		_add_fan(Vector3(-FENCE_X - 0.45, 0.85, z + randf_range(-0.2, 0.2)), _stand_variant(), 0.42)
-	for z: float in [-6.6, -4.6, -3.2, -0.6]:
-		_add_fan(Vector3(FENCE_X + 0.45, 0.85, z + randf_range(-0.2, 0.2)), _stand_variant(), 0.42)
-	_add_fan(Vector3(-FENCE_X, 1.6, -4.9), FAN_SIT, 0.45, 1.6)
-	_add_fan(Vector3(FENCE_X, 1.6, -1.8), FAN_SIT_CUP, 0.45, 1.6)
-	# By the car on the driveway, and two in the camera-side corners beyond the picket fence
-	_add_fan(Vector3(8.3, 0.015, 4.7), FAN_CUP, 0.55)
+	_add_fan(Vector3(1.9, 3.58, -6.4), FAN_PHONE, 0.5, 1.4)
+	_add_fan(Vector3(4.6, 3.58, -6.4), FAN_SIT, 0.5, 1.4)
+	# Peeking over the side fences (standing on buckets)
+	for z: float in [-6.0, -2.6]:
+		_add_fan(Vector3(-FENCE_X - 0.45, 0.6, z + randf_range(-0.2, 0.2)), _stand_variant(), 0.42)
+	for z: float in [-4.6, -0.6]:
+		_add_fan(Vector3(FENCE_X + 0.45, 0.6, z + randf_range(-0.2, 0.2)), _stand_variant(), 0.42)
+	# By the car on the driveway
 	_add_fan(Vector3(9.4, 0.015, 0.7), FAN_PHONE, 0.5)
-	_add_fan(Vector3(-8.6, 0, 6.6), FAN_PHONE, 0.6)
-	_add_fan(Vector3(9.4, 0.015, 3.0), FAN_HOODIE, 0.55)
 
 	var quad := QuadMesh.new()
 	quad.size = Vector2(0.85, 1.7)
@@ -1727,7 +1939,7 @@ func _build_crowd() -> void:
 	crowd_mat.shader = sh
 	crowd_mat.set_shader_parameter("tex", _make_crowd_texture())
 	crowd_mat.set_shader_parameter("hype", 0.0)
-	crowd_mat.set_shader_parameter("brightness", 0.6)  # lit ~0.5 -> ~0.3: the yard stays dark, the ring reads brightest
+	crowd_mat.set_shader_parameter("brightness", 0.62)  # lit ~0.55 -> ~0.35: they never outshine the fighters
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -1884,8 +2096,42 @@ func _fx_debris(where: Vector3, s: float, c: Color) -> void:
 		fx.debris(where, s, c)
 
 
+## Ground impact: surface-coloured dust plus grass clumps (lawn) or grey grit (patio / drive).
+func _fx_ground(where: Vector3, s: float) -> void:
+	if fx == null:
+		return
+	var surf: String = surface_at(where)
+	if where.y < 0.8:
+		fx.ground_hit(where, s, surf)
+	else:
+		_fx_dust(where, s)   # high contact (fence, perch): plain dust, no flying clumps
+
+
+## The wrestler a hit at `where` landed on: whichever is closest to the impact point.
+func _fx_victim(where: Vector3) -> Node3D:
+	if p1 == null or p2 == null:
+		return null
+	var d1: float = p1.global_position.distance_squared_to(where)
+	var d2: float = p2.global_position.distance_squared_to(where)
+	return p1 if d1 <= d2 else p2
+
+
+## White body flash on the victim; a big hit on the player also pulses the red vignette.
+func _fx_hit_body(where: Vector3, s: float) -> void:
+	if fx == null:
+		return
+	var v: Node3D = _fx_victim(where)
+	if v == null:
+		return
+	fx.body_flash(v)
+	if s >= 0.6 and not v.is_cpu:
+		fx.hurt(clampf(s, 0.6, 1.2))
+
+
 func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 	var st: float = clampf(s, 0.0, 1.5)
+	if kind in ["punch", "kick", "thud", "thud_concrete", "big_thud", "chair_hit", "metal_hit", "wood_hit", "table_break"]:
+		_fx_hit_body(where, st)
 	match kind:
 		"punch":
 			_snd("punch", -3.0 + 3.0 * st)
@@ -1898,13 +2144,15 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_snd("kick", -1.0 + 2.0 * st)
 			_hitstop(0.06 + 0.01 * clampf(st, 0.0, 1.0))
 			_fx_spark(where, st)
-			_kick_cam(-2.0, st * 0.6)
+			# Launchers pop the victim into JUGGLED as this sfx fires: punch the FOV in.
+			var launched: bool = int(w.get("state")) == Wrestler.S.JUGGLED
+			_kick_cam(-4.0 if launched else -2.0, st * 0.6)
 			_buzz(20)
 			_hype(0.05)
 		"thud":
 			_snd("thud", -1.0 + 2.0 * st, 0.05)
 			_hitstop(0.1)
-			_fx_dust(where, st)
+			_fx_ground(where, st)
 			_fx_spark(where + Vector3(0, 0.2, 0), st * 0.6)
 			_kick_cam(-4.0, st)
 			_buzz(45)
@@ -1914,7 +2162,7 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_snd("thud_concrete", 1.0 + 2.0 * clampf(st, 0.0, 1.0), 0.04)
 			_snd("ooh", -9.0, 0.05)
 			_hitstop(0.13)
-			_fx_dust(where, maxf(st, 0.8))
+			_fx_ground(where, maxf(st, 0.8))
 			_fx_spark(where + Vector3(0, 0.15, 0), maxf(st, 0.7))
 			_kick_cam(-5.0, maxf(st, 0.9))
 			_buzz(60)
@@ -1923,7 +2171,7 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_snd("big_thud", 2.0, 0.03)
 			_snd("ooh", -6.0, 0.05)
 			_hitstop(0.14)
-			_fx_dust(where, maxf(st, 1.0))
+			_fx_ground(where, maxf(st, 1.0))
 			_fx_spark(where + Vector3(0, 0.2, 0), 0.9)
 			_kick_cam(-4.0, maxf(st, 0.8))
 			_buzz(45)
@@ -2156,6 +2404,9 @@ var hint_panel: PanelContainer
 var hint_style: StyleBoxFlat
 var hint_max_w := 760.0  # widest the hint text may get (set by _layout_hud)
 const HINT_FONT := 21
+const HINT_INTRO_SECS := 20.0  # the hint strip stays up this long at the start
+const HINT_SHOW_SECS := 4.0    # ...and this long after each change
+var hint_age := 0.0
 const REVERSE_MIN_WINDOW := 0.25  # shorter reversal windows get no "REVERSE!" prompt
 var help_button: Button
 var help_panel: PanelContainer
@@ -2348,10 +2599,10 @@ func _build_help_panel() -> PanelContainer:
 	# STRIKE is the red PUNCH button; STICK+ means "hold a direction while pressing".
 	var left: Array = [
 		["CONTROLS", [
-			["STICK", "Move  (also aims whips and moves)"],
-			["PUNCH", "Strike  (3 in a row knocks down)"],
+			["STICK", "Move  (aims whips, dives, string enders)"],
+			["PUNCH", "Strike  (keep pressing: strike string)"],
 			["GRAB", "Tap: lock-up   Hold: STRONG lock-up"],
-			["RUN", "Hit the ropes   +STRIKE: Clothesline"],
+			["RUN", "Run / stop   Double-tap: dodge-roll"],
 			["PIN", "Cover a downed foe, else TAUNT"],
 		], false],
 		["LOCK-UP MOVES", [
@@ -2367,51 +2618,60 @@ func _build_help_panel() -> PanelContainer:
 			["STRIKE", "Clothesline"],
 			["GRAB", "Back Body Drop"],
 			["STICK+GRAB", "Running Powerslam"],
+			["DIAGONAL", "Into the fence: he slumps there"],
 		], false],
-	]
-	var right: Array = [
-		["FOE ON THE MAT", [
-			["STRIKE", "Stomp"],
-			["GRAB", "Pick him up (free lock-up)"],
+		["FOE ON THE GROUND", [
+			["STRIKE", "Stomp     GRAB: Pick him up"],
 			["RUN+STRIKE", "Flying Elbow Drop"],
 			["RUN+GRAB", "Running Knee Drop  (miss = ouch)"],
 		], false],
-		["REVERSALS", [
-			["REVERSE!", "Press GRAB or STRIKE right then"],
-			["", "Counters lock-ups, whips, lariats"],
-			["", "Arm Drag / Hip Toss / Back Body Drop"],
-			["TOO EARLY", "Mashing just before locks you out"],
+	]
+	var right: Array = [
+		["STRINGS & LAUNCHERS", [
+			["STRIKE x4", "Jab, Hook, Uppercut, Haymaker"],
+			["STICK TOWARD", "Spin Kick (3rd)  /  Superkick (4th)"],
+			["STICK AWAY", "Launcher (2nd on): pops him up"],
+			["HE'S UP THERE", "STRIKE: Air Mail Knee"],
+			["", "GRAB: Catch & Slam  RUN: Lariat"],
+			["GRAB", "Mid-string: lock him up"],
 		], false],
-		["PINS", [
+		["GRAPPLES & CHAINS", [
+			["CHAIN!", "GRAB / STRIKE late in a slam"],
+			["", "Slam > Back-to-Back > Slam-Bam"],
+			["", "Suplex > Double-Down > Triple"],
+			["STRIKE", "...and the Elbow / a Stomp"],
+			["BREAK", "Victim: REVERSE! as he's hauled up"],
+		], false],
+		["REVERSALS & PINS", [
+			["REVERSE!", "Press GRAB or STRIKE right then"],
+			["TOO EARLY", "Mashing just before locks you out"],
 			["PIN", "3-count wins; big moves are harder"],
 			["PINNED", "MASH any button to kick out!"],
 		], false],
-		["SPIRIT", [
-			["METER", "Fills with hits, taunts, near falls"],
-			["TAUNT", "+Spirit (more if he's down), 6s wait"],
-			["SPECIAL", "Full meter = 15s to hit the finisher"],
-		], false],
 	]
 	var third: Array = [
+		["YARD HIGH-FLYING & AIR TRICKS", [
+			["RUN", "By a perch: climb it (table, pallets,"],
+			["", "porch, car, trampoline, shed roof)"],
+			["ON TOP", "STRIKE: Dive  GRAB: Hop  RUN: Down"],
+			["FOE DOWN", "Splash / away: Moonsault / side: Elbow"],
+			["FOE UP", "Crossbody  /  STICK: Missile Dropkick"],
+			["FENCE", "Run into it, then STRIKE: Springboard"],
+			["", "or GRAB: Slingshot"],
+			["IN THE AIR", "STRIKE: SPIN  GRAB: FLIP  PIN: POSE"],
+			["", "Finish the trick before you land!"],
+		], false],
 		["WEAPONS & TABLES", [
 			["GRAB", "Pick up a chair, can or 2x4"],
 			["HOLDING", "STRIKE: Swing  PIN: Throw  GRAB: Drop"],
-			["RUN+STRIKE", "Running swing"],
-			["TABLE", "GRAB by the folded table: set it up"],
-			["", "GRAB a downed foe by it: lay him on"],
+			["TABLE", "GRAB: set it up / lay him on it"],
 			["", "STRIKE: send him THROUGH it!"],
 		], false],
-		["HIGH FLYING", [
-			["RUN", "At a corner: climb the turnbuckle"],
-			["ON TOP", "STRIKE: Dive  GRAB: Hop  RUN: Down"],
-			["FOE DOWN", "Backyard Splash  (STICK toward)"],
-			["", "STICK away: Moonsault"],
-			["", "STICK sideways: Flying Elbow"],
-			["FOE UP", "Crossbody  /  STICK: Missile Dropkick"],
-			["SPECIAL", "Gutter Star Press (foe down)"],
-			["ROPES", "STRIKE off a bounce: Springboard"],
-			["CORNER", "Whip him in, RUN+STRIKE: Splash"],
-			["", "or GRAB: Super Drop"],
+		["STYLE", [
+			["COMBO", "Moves in a row multiply points"],
+			["B-R-A-W-L", "Fill the hype meter: earn a letter"],
+			["BRAWL MODE", "All 5: every move is SUPER"],
+			["SPECIAL", "Full meter: STICK+GRAB finisher"],
 		], false],
 	]
 	var columns := HBoxContainer.new()
@@ -2476,7 +2736,15 @@ func _build_help_panel() -> PanelContainer:
 		panel.pivot_offset = need * 0.5
 		panel.scale = Vector2(s, s)
 	panel.visibility_changed.connect(fit)
+	panel.visibility_changed.connect(_on_help_visibility)
 	return panel
+
+
+## The style overlay (its own CanvasLayer above the HUD) is hidden while the help panel is open.
+func _on_help_visibility() -> void:
+	for c in get_children():
+		if c is CanvasLayer and (c as CanvasLayer).get_script() == StyleHud:
+			(c as CanvasLayer).visible = not help_panel.visible
 
 
 func _build_win_panel() -> void:
@@ -2589,8 +2857,26 @@ func _pop(c: Control, from_scale: float, from_rot: float, secs: float) -> Tween:
 	return tw
 
 
+## Wrestler calls (secs <= 1.3) that are NOT big moments are dropped: the style popup already
+## names every move. Big = finishers / supers / 3-move chains ("!!"), near falls and kick-outs,
+## BRAWL MODE, tables, big combos, the shed roof.
+const HUD_BIG_CALLS := ["!!", "TABLE", "BRAWL", "KICK OUT", "KICKED OUT", "NEAR FALL", "SO CLOSE",
+	"TWO AND A HALF", "COMBO", "SHED ROOF", "SUPERCHARGED", "CHAIN BROKEN", "-MOVE CHAIN"]
+
+
+func _announce_is_big(text: String) -> bool:
+	var up := text.to_upper()
+	for k in HUD_BIG_CALLS:
+		var key: String = k
+		if up.contains(key):
+			return true
+	return false
+
+
 func _announce(text: String, secs: float) -> void:
 	if match_over and text != "":
+		return
+	if text != "" and secs <= 1.3 and not _announce_is_big(text):
 		return
 	announce_label.text = text
 	# Move names flash by quickly; longer calls (e.g. "FIGHT!") keep their own time.
@@ -2770,9 +3056,22 @@ func _show_reverse() -> bool:
 # ---- context helpers for hints and button labels (weapons / tables / high flying)
 # These mirror the checks in wrestler.gd ("# ---- weapons", "# ---- high flying").
 
-const HUD_CORNER_POST := 4.15     # corner posts at local (±4.15, ±4.15)
-const HUD_CLIMB_RANGE := 1.1      # wrestler.gd HF_CLIMB_RANGE
-const HUD_SPRING_WINDOW := 0.35   # wrestler.gd HF_SPRING_WINDOW
+const HUD_CLIMB_RANGE := 1.1      # wrestler.gd HF_CLIMB_RANGE (distance to a perch's approach point)
+const HUD_SPRING_WINDOW := 0.45   # wrestler.gd HF_SPRING_WINDOW (after a fence / wall rebound)
+const HUD_CHAIN_OPEN := 0.45      # wrestler.gd CHAIN_OPEN (fraction of a throw)
+const HUD_CHAIN_MAX := 2          # wrestler.gd CHAIN_MAX
+const HUD_JUGGLE_MAX := 2         # wrestler.gd JUGGLE_MAX
+const HUD_IDLE_TIPS := [
+	"Tap GRAB to lock up  -  HOLD GRAB for a strong lock-up",
+	"Double-tap RUN to dodge-roll",
+	"STRIKE again as each hit lands for a string  (stick away: Launcher!)",
+	"RUN into the fence, then STRIKE: springboard  /  GRAB: slingshot",
+	"RUN next to a picnic table, the car, the trampoline... to climb it",
+	"In the air: STRIKE spins, GRAB flips, PIN poses",
+]
+# Short button captions for the next hit of a strike string.
+const HUD_STRIKE_LABELS := {"jab": "JAB", "hook": "HOOK", "uppercut": "UPPERCUT", "haymaker": "HAYMAKER",
+	"spin_kick": "SPIN KICK", "superkick": "SUPERKICK", "launcher": "LAUNCH"}
 
 
 func _p_dist() -> float:
@@ -2829,30 +3128,140 @@ func _hud_item_context() -> String:
 	return ""
 
 
-## True when RUN would climb the nearest turnbuckle (within range, opponent not in that corner).
-func _hud_can_climb() -> bool:
+## The yard's perches (p1.arena.perches, else our own `perches`), see yard_contract.md.
+func _hud_perches() -> Array:
+	var ar = p1.get("arena")
+	if ar != null and is_instance_valid(ar) and "perches" in ar:
+		var ps: Array = ar.perches
+		if not ps.is_empty():
+			return ps
+	return perches
+
+
+## The perch RUN would climb right now ({} if none): the nearest one whose approach point is
+## within HUD_CLIMB_RANGE, the stick (if held) roughly toward it and the opponent not on it.
+## Mirrors wrestler.gd _hf_free_move_hook / _hf_near_perch.
+func _hud_climb_perch() -> Dictionary:
 	var a: Vector3 = p1.position
-	var sx := -1.0 if a.x < 0.0 else 1.0
-	var sz := -1.0 if a.z < 0.0 else 1.0
-	var post := Vector2(sx * HUD_CORNER_POST, sz * HUD_CORNER_POST)
-	if post.distance_to(Vector2(a.x, a.z)) > HUD_CLIMB_RANGE:
-		return false
+	var best: Dictionary = {}
+	var best_d := HUD_CLIMB_RANGE
+	for e in _hud_perches():
+		if not (e is Dictionary):
+			continue
+		var pr: Dictionary = e
+		var pp: Vector3 = pr.get("pos", Vector3.ZERO)
+		var ap: Vector3 = pr.get("approach", pp)
+		var d := Vector2(ap.x - a.x, ap.z - a.z).length()
+		if d <= best_d:
+			best_d = d
+			best = pr
+	if best.is_empty():
+		return best
+	var bp: Vector3 = best.get("pos", Vector3.ZERO)
+	var to_p := Vector2(bp.x - a.x, bp.z - a.z)
+	var mv: Vector2 = p1.in_move
+	if mv.length() >= 0.3 and to_p.length() >= 0.2 and mv.normalized().dot(to_p.normalized()) <= 0.5:
+		return {}
 	var b: Vector3 = p2.position
-	return post.distance_to(Vector2(b.x, b.z)) >= 1.2
+	if Vector2(bp.x - b.x, bp.z - b.z).length() < 1.0:
+		return {}
+	return best
 
 
-## True inside the springboard window right after p1 bounces off the ropes.
+func _hud_can_climb() -> bool:
+	return not _hud_climb_perch().is_empty()
+
+
+func _hud_perch_name(pr: Dictionary) -> String:
+	var n: String = pr.get("name", "perch")
+	return n
+
+
+## True inside the launch window right after p1 rebounds off the fence / house wall.
 func _hud_spring_ready() -> bool:
 	var whipped: bool = p1.whipped
 	var clock: float = p1.anim_clock
 	var rope_at: float = p1.hf_rope_at
-	return not whipped and clock - rope_at <= HUD_SPRING_WINDOW and p2.state != Wrestler.S.DOWN
+	return not whipped and clock - rope_at <= HUD_SPRING_WINDOW
+
+
+## "fence" or "wall" for p1's last rebound (the house is along -z).
+func _hud_bounce_edge() -> String:
+	var n: Vector3 = p1.hf_bounce_n
+	return "wall" if n.z < -0.5 else "fence"
+
+
+## p1 is mid strike string: the current strike is a normal (non-ender) STRIKES hit.
+func _hud_in_string() -> bool:
+	if p1.state != Wrestler.S.PUNCH:
+		return false
+	var k: String = p1.current_move_key
+	k = k.substr(6) if k.begins_with("super_") else k
+	if not Wrestler.STRIKES.has(k):
+		return false
+	var st: Dictionary = Wrestler.STRIKES[k]
+	return not (st.get("ender", false) or st.get("juggle", false))
+
+
+## Key of the strike STRIKE would chain into now (mirrors wrestler.gd _string_pick).
+func _hud_next_strike() -> String:
+	var step: int = p1.string_step
+	step += 1
+	var dir := 0
+	var mv: Vector2 = p1.in_move
+	var a: Vector3 = p1.position
+	var b: Vector3 = p2.position
+	var to := Vector2(b.x - a.x, b.z - a.z)
+	if mv.length() >= 0.5 and to.length() > 0.01:
+		var dt := to.normalized().dot(mv.normalized())
+		dir = 1 if dt > 0.5 else (-1 if dt < -0.5 else 0)
+	if dir < 0 and step >= 1:
+		return "launcher"
+	if dir > 0 and step >= 2:
+		return "superkick" if step >= 3 else "spin_kick"
+	var keys: Array = Wrestler.STRING_KEYS
+	var k: String = keys[mini(step, keys.size() - 1)]
+	return k
+
+
+## Chain links open for p1's current throw ({"grab": key, "strike": key}), {} outside the window.
+func _hud_chain_links() -> Dictionary:
+	if p1.state != Wrestler.S.THROWING:
+		return {}
+	var k: String = p1.current_move_key
+	k = k.substr(6) if k.begins_with("super_") else k
+	if not Wrestler.CHAINS.has(k):
+		return {}
+	var links: int = p1.chain_link
+	var t: float = p1.state_time
+	var tt: float = p1.throw_time
+	if links >= HUD_CHAIN_MAX or t < tt * HUD_CHAIN_OPEN:
+		return {}
+	var nexts: Dictionary = Wrestler.CHAINS[k]
+	return nexts
+
+
+func _hud_move_name(key: String) -> String:
+	if not Wrestler.MOVES.has(key):
+		return key
+	var m: Dictionary = Wrestler.MOVES[key]
+	var n: String = m.get("name", key)
+	return n.lstrip(".").strip_edges()
+
+
+## A strike string / launch follow-up is possible on a JUGGLED opponent right now.
+func _hud_juggle_ready() -> bool:
+	if p2.state != Wrestler.S.JUGGLED:
+		return false
+	var st: int = p1.state
+	return st == Wrestler.S.IDLE or st == Wrestler.S.WALK or st == Wrestler.S.PUNCH
 
 
 func _hint_text() -> String:
 	var st: int = p1.state
 	var opp: int = p2.state
 	var special: bool = p1.is_special_ready()
+	var brawl: bool = p1.get("brawl_mode") == true
 	var lockout: float = p1.reversal_lockout
 	var dist := _p_dist()
 	var near := dist < 1.7
@@ -2862,15 +3271,30 @@ func _hint_text() -> String:
 		var strong: bool = p1.tie_strong
 		if strong:
 			var fin_s := "THUNDER DRIVER!" if special else "Neckbreaker"
-			return "STRONG LOCK-UP!   RUN: Irish Whip (aim at a corner!)\nSTRIKE: Tombstone   STICK+STRIKE: Powerbomb\nGRAB: Spinebuster   STICK+GRAB: " + fin_s
+			return "STRONG LOCK-UP!   RUN: Irish Whip (aim diagonally: into the fence!)\nSTRIKE: Tombstone   STICK+STRIKE: Powerbomb\nGRAB: Spinebuster   STICK+GRAB: " + fin_s
 		var fin := "THUNDER DRIVER!" if special else "DDT"
-		return "LOCK-UP!   RUN: Irish Whip (aim at a corner!)\nSTRIKE: Knee   STICK+STRIKE: Suplex\nGRAB: Slam   STICK+GRAB: " + fin
+		return "LOCK-UP!   RUN: Irish Whip (aim diagonally: into the fence!)\nSTRIKE: Knee   STICK+STRIKE: Suplex\nGRAB: Slam   STICK+GRAB: " + fin
 	if st == Wrestler.S.TIEUP_DEF:
 		if lockout > 0.0:
 			return "TOO EARLY!  Wait for the move..."
 		return "CAUGHT!  Tap GRAB or STRIKE when the \"!\" appears to reverse"
 	if st == Wrestler.S.PINNED:
 		return "MASH ANY BUTTON TO KICK OUT!"
+	if st == Wrestler.S.THROWING:
+		var links := _hud_chain_links()
+		if not links.is_empty():
+			var parts: PackedStringArray = []
+			if links.has("grab"):
+				parts.append("GRAB: " + _hud_move_name(str(links["grab"])))
+			if links.has("strike"):
+				parts.append("STRIKE: " + _hud_move_name(str(links["strike"])))
+			return "CHAIN IT!   " + "   ".join(parts)
+		return ""
+	if st == Wrestler.S.DIVING:
+		var mv_key: String = p1.hf_move
+		if mv_key == "corner_splash":
+			return ""
+		return "Air tricks! SPIN / FLIP / POSE — finish before you land"
 	if st == Wrestler.S.PERCHED:
 		if opp == Wrestler.S.DOWN or opp == Wrestler.S.ON_TABLE:
 			if special:
@@ -2878,25 +3302,37 @@ func _hint_text() -> String:
 			return "DIVE!  Stick picks the move\nToward: Splash   Away: Moonsault   Side: Elbow"
 		return "DIVE!  STRIKE: Crossbody   STICK+STRIKE: Missile Dropkick\nGRAB: Hop down   RUN: Climb down"
 	if st == Wrestler.S.CLIMB:
-		return "Climbing the turnbuckle..."
+		var hp: Dictionary = p1.hf_perch
+		return "Climbing the %s..." % _hud_perch_name(hp) if not hp.is_empty() else "Climbing..."
 	if st == Wrestler.S.ON_TABLE:
 		return "Uh oh... you're laid out on the table!"
 	if st == Wrestler.S.CORNER_STUN:
-		return "Stuck in the corner!"
+		return "Slammed into the fence!"
+	if st == Wrestler.S.ROLL or st == Wrestler.S.JUGGLED:
+		return ""
 	if st == Wrestler.S.GRAB_WINDUP:
 		return "Keep holding GRAB for a STRONG lock-up..."
 	if st == Wrestler.S.WHIPPING:
 		return "Here he comes!  STRIKE: Clothesline\nGRAB: Back Body Drop   STICK+GRAB: Powerslam"
+	if _hud_juggle_ready():
+		return "He's in the air!  STRIKE: Air Mail Knee   GRAB: Catch & Slam   RUN: Express Lariat"
+	if _hud_in_string():
+		return "COMBO!  STRIKE again as it lands   (stick toward: Kick  /  away: Launcher)"
 	if st == Wrestler.S.RUN:
 		if _hud_holding():
 			return "STRIKE: Running swing!      RUN: Stop"
 		if opp == Wrestler.S.ON_TABLE:
 			return "STRIKE: Leap through the table!"
 		if opp == Wrestler.S.CORNER_STUN:
-			return "STRIKE: Corner Splash!"
+			return "STRIKE: Splash him against the fence!"
+		var whipped: bool = p1.whipped
+		if not whipped and _hud_spring_ready():
+			return "Off the %s! STRIKE springboard / GRAB slingshot" % _hud_bounce_edge()
+		if brawl:
+			return "BRAWL MODE! Every move is SUPER"
 		if opp == Wrestler.S.DOWN:
 			return "STRIKE: Elbow Drop      GRAB: Knee Drop"
-		return "STRIKE: Clothesline   (right off the ropes: Springboard!)"
+		return "STRIKE: Clothesline   (off the fence: Springboard!)"
 	var free := st == Wrestler.S.IDLE or st == Wrestler.S.WALK
 	if free and _hud_holding():
 		if opp == Wrestler.S.DOWN and dist < 2.0:
@@ -2905,28 +3341,51 @@ func _hint_text() -> String:
 	if free and opp == Wrestler.S.ON_TABLE and dist < 2.2:
 		return "SMASH them through it!  Press STRIKE"
 	if free and opp == Wrestler.S.CORNER_STUN:
-		return "He's stuck in the corner!\nRUN, then STRIKE: Corner Splash   GRAB (close): SUPER DROP"
+		return "He's slumped against the fence!\nRUN, then STRIKE: Splash   GRAB (close): SUPER DROP"
 	var ctx := _hud_item_context() if free else ""
 	if ctx == "on_table":
 		return "Table's set!  GRAB: Put him on it   PIN: Cover"
+	var perch: Dictionary = _hud_climb_perch() if free else {}
 	if opp == Wrestler.S.DOWN:
-		if free and _hud_can_climb():
-			return "He's down!  RUN: Climb the turnbuckle and fly!"
+		if not perch.is_empty():
+			return "He's down!  RUN: Climb the %s and fly!" % _hud_perch_name(perch)
 		if near:
 			return "STRIKE: Stomp   GRAB: Pick up   PIN: Cover"
-		return "He's down!  Get close and PIN, climb a corner, or TAUNT"
+		if brawl:
+			return "BRAWL MODE! Every move is SUPER"
+		return "He's down!  Get close and PIN, climb something, or TAUNT"
 	if ctx.begins_with("pick_up:"):
 		return "GRAB: Pick up %s" % _hud_item_name(ctx.substr(8))
 	if ctx == "table":
 		return "GRAB: Set up the table"
-	if free and _hud_can_climb():
-		return "RUN: Climb the turnbuckle"
+	if not perch.is_empty():
+		return "Climb the %s!   (RUN)" % _hud_perch_name(perch)
+	if brawl:
+		return "BRAWL MODE! Every move is SUPER"
 	if special:
 		var secs: float = p1.special_timer
 		return "SPECIAL READY! (%ds)  Lock up, then STICK + GRAB" % int(ceil(secs))
 	if hud_clock < 6.0:
-		return "Tap GRAB to lock up  -  HOLD GRAB for a strong lock-up"
+		var first_tip: String = HUD_IDLE_TIPS[0]
+		return first_tip
+	# Idle tip rotation while nothing is happening (opponent not in your face).
+	if free and dist > 2.2 and opp != Wrestler.S.DOWN:
+		var slot := int(hud_clock / 7.0)
+		if slot % 2 == 0:
+			var tip: String = HUD_IDLE_TIPS[int(slot / 2.0) % HUD_IDLE_TIPS.size()]
+			return tip
 	return ""
+
+
+## Sets the four touch captions; a word already shown on an earlier button is blanked so no
+## two buttons ever carry the same caption.
+func _touch_labels(s_lbl: String, g_lbl: String, r_lbl: String, p_lbl: String) -> void:
+	var out: Array[String] = [s_lbl, g_lbl, r_lbl, p_lbl]
+	for i in range(1, out.size()):
+		for j in range(i):
+			if out[i] != "" and out[i] == out[j]:
+				out[i] = ""
+	touch.set_labels(out[0], out[1], out[2], out[3])
 
 
 func _update_touch_labels() -> void:
@@ -2942,20 +3401,35 @@ func _update_touch_labels() -> void:
 	var near := dist < 1.7
 	var glow := "grapple" if special else ""
 	if match_over:
-		touch.set_labels("", "", "", "")
+		_touch_labels("", "", "", "")
 		glow = ""
 	elif _show_reverse():
-		touch.set_labels("REVERSE!", "REVERSE!", "", "")
+		_touch_labels("REVERSE!", "COUNTER", "", "")
 		glow = "all"
 	elif st == Wrestler.S.PINNED:
-		touch.set_labels("MASH!", "MASH!", "MASH!", "MASH!")
+		_touch_labels("MASH!", "KICK", "OUT!", "")
 		glow = "all"
 	elif st == Wrestler.S.PERCHED:
-		touch.set_labels("DIVE!", "HOP", "DOWN", "")
+		_touch_labels("DIVE!", "HOP", "DOWN", "")
 		glow = "strike"
+	elif st == Wrestler.S.DIVING and str(p1.hf_move) != "corner_splash":
+		_touch_labels("SPIN", "FLIP", "", "POSE")
+		glow = "all"
+	elif st == Wrestler.S.THROWING:
+		var links := _hud_chain_links()
+		if links.is_empty():
+			_touch_labels("", "", "", "")
+			glow = ""
+		else:
+			var s_ch := ""
+			if links.has("strike"):
+				s_ch = "STOMP" if str(links["strike"]) == "chain_stomp" else "ELBOW"
+			_touch_labels(s_ch, "CHAIN!" if links.has("grab") else "", "", "")
+			glow = "grapple" if links.has("grab") else "strike"
 	elif st == Wrestler.S.CLIMB or st == Wrestler.S.DIVING or st == Wrestler.S.PERCH_FALL \
-			or st == Wrestler.S.ON_TABLE or st == Wrestler.S.CORNER_STUN:
-		touch.set_labels("", "", "", "")
+			or st == Wrestler.S.ON_TABLE or st == Wrestler.S.CORNER_STUN \
+			or st == Wrestler.S.ROLL or st == Wrestler.S.JUGGLED:
+		_touch_labels("", "", "", "")
 		glow = ""
 	elif st == Wrestler.S.TIEUP_ATK:
 		var strong: bool = p1.tie_strong
@@ -2967,34 +3441,44 @@ func _update_touch_labels() -> void:
 		else:
 			grab_move = ("FINISH!" if special else "DDT") if dir_held else "SLAM"
 			strike_move = "SUPLEX" if dir_held else "KNEE"
-		touch.set_labels(strike_move, grab_move, "WHIP", "")
+		_touch_labels(strike_move, grab_move, "WHIP", "")
 		if not (special and dir_held):
 			glow = ""
 	elif st == Wrestler.S.TIEUP_DEF:
-		touch.set_labels("WAIT...", "WAIT...", "", "")
+		_touch_labels("WAIT...", "", "", "")
 		glow = ""
 	elif st == Wrestler.S.GRAB_WINDUP:
-		touch.set_labels("", "HOLD!", "", "")
+		_touch_labels("", "HOLD!", "", "")
 		glow = "grapple"
 	elif st == Wrestler.S.WHIPPING:
-		touch.set_labels("LARIAT", "P.SLAM" if dir_held else "BACKDROP", "", "")
+		_touch_labels("LARIAT", "P.SLAM" if dir_held else "BACKDROP", "", "")
 		glow = ""
+	elif _hud_juggle_ready():
+		var jh: int = p2.juggle_hits
+		_touch_labels("KNEE" if jh < HUD_JUGGLE_MAX else "PUNCH", "CATCH", "LARIAT", "")
+		glow = "strike"
+	elif _hud_in_string():
+		var nk := _hud_next_strike()
+		var hit: bool = p1.strike_hit
+		_touch_labels(str(HUD_STRIKE_LABELS.get(nk, "COMBO")), "LOCK-UP", "", "")
+		glow = "strike" if hit else ""
 	elif st == Wrestler.S.RUN:
+		var whipped: bool = p1.whipped
 		if _hud_holding():
-			touch.set_labels("SWING", "STOP", "STOP", "")
+			_touch_labels("SWING", "", "STOP", "")
 		elif opp == Wrestler.S.ON_TABLE and dist < 2.6:
-			touch.set_labels("SMASH!", "KNEE", "STOP", "")
+			_touch_labels("SMASH!", "KNEE", "STOP", "")
 			glow = "strike"
 		elif opp == Wrestler.S.CORNER_STUN and dist < 3.4:
-			touch.set_labels("SPLASH", "STOP", "STOP", "")
+			_touch_labels("SPLASH", "", "STOP", "")
 			glow = "strike"
-		elif _hud_spring_ready():
-			touch.set_labels("SPRING", "STOP", "STOP", "")
-			glow = "strike"
+		elif not whipped and _hud_spring_ready():
+			_touch_labels("SPRING", "SLING", "STOP", "")
+			glow = "all"
 		elif opp == Wrestler.S.DOWN:
-			touch.set_labels("ELBOW", "KNEE", "STOP", "")
+			_touch_labels("ELBOW", "KNEE", "STOP", "")
 		else:
-			touch.set_labels("LARIAT", "STOP", "STOP", "")
+			_touch_labels("LARIAT", "", "STOP", "")
 	else:
 		var free := st == Wrestler.S.IDLE or st == Wrestler.S.WALK
 		var cd: float = p1.taunt_cooldown
@@ -3030,7 +3514,7 @@ func _update_touch_labels() -> void:
 				g_lbl = "PICK UP"
 			elif ctx == "table":
 				g_lbl = "TABLE"
-		touch.set_labels(s_lbl, g_lbl, r_lbl, p_lbl)
+		_touch_labels(s_lbl, g_lbl, r_lbl, p_lbl)
 	touch.set_highlight(glow)
 
 
@@ -3093,13 +3577,13 @@ func _update_camera(delta: float) -> void:
 	mid.y = clampf(mid.y, 0.0, 1.3)
 	cam_target = cam_target.lerp(mid, clampf(delta * 4.0, 0.0, 1.0))
 	# AKI-style framing: higher and further back (~30 deg pitch), wrestlers ~1/3 of screen height.
-	var want := cam_target + Vector3(0, 3.3 + spread * 0.3, 6.8 + spread * 0.6)
+	var want := cam_target + Vector3(0, 2.9 + spread * 0.25, 5.6 + spread * 0.5)
 	camera.position = camera.position.lerp(want, clampf(delta * 3.0, 0.0, 1.0))
-	camera.look_at(cam_target + Vector3(0, 0.9, 0))
+	camera.look_at(cam_target + Vector3(0, 1.0, 0))
 	cam_fov_kick = lerpf(cam_fov_kick, 0.0, clampf(delta * 5.0, 0.0, 1.0))
 	if absf(cam_fov_kick) < 0.01:
 		cam_fov_kick = 0.0
-	camera.fov = clampf(45.0 + cam_fov_kick, 15.0, 90.0)
+	camera.fov = clampf(48.0 + cam_fov_kick, 15.0, 90.0)
 	if cam_shake > 0.0:
 		camera.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * cam_shake * 0.25
 		cam_shake = max(0.0, cam_shake - delta * 2.5)
@@ -3147,12 +3631,21 @@ func _update_hud(delta: float) -> void:
 	var hint := "" if match_over else _hint_text()
 	if hint != hint_label.text:
 		hint_label.text = hint
+		hint_age = 0.0
 		_fit_hint()
 		hint_panel.visible = hint != ""
 		# The strip re-sizes around the text by itself (zero offsets + grow); a quick fade-in.
 		if hint != "":
 			hint_panel.modulate.a = 0.0
 			create_tween().tween_property(hint_panel, "modulate:a", 1.0, 0.12)
+	hint_age += delta
+	# Shown during the first HINT_INTRO_SECS and for HINT_SHOW_SECS after each change (a new
+	# state / situation); urgent prompts (reverse, mash, caught) stay up. Otherwise it fades out.
+	if hint_panel.visible and hint_age > 0.2:
+		var st_h: int = p1.state
+		var urgent := _show_reverse() or st_h == Wrestler.S.PINNED or st_h == Wrestler.S.TIEUP_DEF
+		var keep := urgent or hud_clock < HINT_INTRO_SECS or hint_age < HINT_SHOW_SECS
+		hint_panel.modulate.a = clampf(hint_panel.modulate.a + (delta if keep else -delta) * 4.0, 0.0, 1.0)
 	if hint_panel.visible:
 		# Flat strip; it flashes dark red while the player must mash / wait.
 		var st: int = p1.state
