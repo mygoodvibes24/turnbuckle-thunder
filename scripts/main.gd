@@ -3606,6 +3606,18 @@ func _update_camera(delta: float) -> void:
 	if cam_shake > 0.0:
 		camera.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * cam_shake * 0.25
 		cam_shake = max(0.0, cam_shake - delta * 2.5)
+	# DEBUG close-up orbit on p2 (never merge)
+	var tt := float(Time.get_ticks_msec()) / 1000.0
+	var ph := fmod(tt, 12.0)
+	var foc := p2.global_position
+	var ang := tt * 0.5
+	if ph < 8.0:
+		camera.position = foc + Vector3(sin(ang) * 2.1, 1.3, cos(ang) * 2.1)
+		camera.look_at(foc + Vector3(0, 1.05, 0))
+	else:
+		camera.position = foc + Vector3(sin(ang) * 0.75, 1.75, cos(ang) * 0.75)
+		camera.look_at(foc + Vector3(0, 1.68, 0))
+	camera.fov = 45.0
 
 
 func _update_hud(delta: float) -> void:
