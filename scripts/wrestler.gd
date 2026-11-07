@@ -5320,6 +5320,7 @@ func _pose_reset() -> void:
 	pt_item_on = false
 	r_item = 22.0
 	pt_basis_off = Vector3.ZERO
+	pt_snap = 0.0
 
 
 func _pose_state_changed() -> void:
@@ -5345,6 +5346,7 @@ func _pose_state_changed() -> void:
 			if away.length() > 0.01:
 				_bump_off = basis.inverse() * (-away.normalized() * 0.6)
 				_bump_off.y = 0.0
+	_ex_state_changed()  # arcade exaggeration: bump styles, landing stomps, kip-ups
 
 
 ## Did a weapon just knock us down (a swing in progress, or a thrown prop arriving)?
@@ -5434,6 +5436,7 @@ func _update_pose(delta: float) -> void:
 			_pose_mv_roll()  # movement: dodge roll
 	if held_item != null:
 		_pose_hold_item()  # weapons hook: carry / hoist the item with both hands
+	_pose_exaggerate()  # arcade feel: amplify, snap and overshoot (see "# --- arcade exaggeration")
 	_apply_pose(delta)
 	_apply_item_wrist(delta)
 	_apply_hands(delta)  # mitt hands: open for grabs, fists otherwise
@@ -5446,16 +5449,16 @@ func _apply_pose(delta: float) -> void:
 	var kb := 1.0 - exp(-r_body * delta)
 	var kl := 1.0 - exp(-r_limb * delta)
 	var kr := 1.0 - exp(-r_root * delta)
-	arm_l.rotation = arm_l.rotation.lerp(pt_al, kl)
-	arm_r.rotation = arm_r.rotation.lerp(pt_ar, kl)
-	elbow_l.rotation = elbow_l.rotation.lerp(pt_el_l, kl)
-	elbow_r.rotation = elbow_r.rotation.lerp(pt_el_r, kl)
+	arm_l.rotation = _snap_to("al", arm_l.rotation, pt_al, kl, r_limb, delta)
+	arm_r.rotation = _snap_to("ar", arm_r.rotation, pt_ar, kl, r_limb, delta)
+	elbow_l.rotation = _snap_to("el_l", elbow_l.rotation, pt_el_l, kl, r_limb, delta)
+	elbow_r.rotation = _snap_to("el_r", elbow_r.rotation, pt_el_r, kl, r_limb, delta)
 	leg_l.rotation = leg_l.rotation.lerp(pt_ll, kl)
 	leg_r.rotation = leg_r.rotation.lerp(pt_lr, kl)
 	knee_l.rotation.x = lerpf(knee_l.rotation.x, pt_kn_l, kl)
 	knee_r.rotation.x = lerpf(knee_r.rotation.x, pt_kn_r, kl)
-	torso.rotation = torso.rotation.lerp(pt_tor, kb)
-	head.rotation = head.rotation.lerp(pt_hd, kb)
+	torso.rotation = _snap_to("tor", torso.rotation, pt_tor, kb, r_body, delta)
+	head.rotation = _snap_to("hd", head.rotation, pt_hd, kb, r_body, delta)
 	var b := pt_breath
 	torso.scale = torso.scale.lerp(Vector3(1.0 + 0.012 * b, 1.0 + 0.008 * b, 1.0 + 0.02 * b), kb)
 	hips.rotation.x = lerpf(hips.rotation.x, pt_hip.x, kb)
@@ -5475,6 +5478,356 @@ func _apply_pose(delta: float) -> void:
 		pose_root.rotation = Vector3(lerpf(rr.x, pt_root_rot.x, kr),
 			lerp_angle(rr.y, pt_root_rot.y, kr), lerpf(rr.z, pt_root_rot.z, kr))
 		pose_root.position = pose_root.position.lerp(pt_root_pos, kr)
+
+
+
+# --- arcade exaggeration --------------------------------------------------------------
+# Early-2000s arcade trick-game feel layered over the per-state poses (pose code only, no
+# gameplay): a post-pass (_pose_exaggerate) amplifies the body's wind-ups and follow-throughs
+# and picks pt_snap, which turns the arm / torso / head easing into an under-damped spring so
+# strikes snap out and overshoot. Plus: landing stomps after dives / air tricks (and kip-ups),
+# post-throw flourishes, character swagger idles ("power" = lean-back bounce, "kid" = hyper
+# hop), speed-scaled run lean + a boost-run pose, flashy taunts, spin-outs and flip bumps.
+
+const EX_STOMP_TIME := 0.5       # landing stomp hold after a dive / kip-up
+const EX_FLOURISH_TIME := 0.6    # post-throw flourish
+const EX_FLIP_FALL := 0.6        # flip bump fall (pose only)
+const EX_SPIN_FALL := 0.5        # spin-out fall (pose only)
+
+var pt_snap := 0.0               # 0 = plain easing; > 0 = springy overshoot amount (0..1)
+var _spv := {}                   # spring velocities per joint group
+var _persona_c := ""
+var _bump_kind := ""             # DOWN: "" / "flip" / "spin" (how a big strike knocked us down)
+var _stun_kind := ""             # STUNNED: the strike that rocked us ("hook", "uppercut", ...)
+var _stomp_t := -10.0            # anim_clock of the last landing (stomp pose in IDLE)
+var _flourish_t := -10.0         # anim_clock a throw finished (flourish in IDLE)
+var _down_from_dive := false     # DOWN after a dive that hit: kip-up on the way back up
+var _kip := false                # GETTING_UP: kip-up instead of the three-stage get-up
+
+
+## "power" (Tank: hip-hop power swagger) or "kid" (Peligro: daredevil kid acrobat).
+func _persona() -> String:
+	if _persona_c == "":
+		var kid := bool(look.get("mask", false)) or display_name.to_lower().contains("peligro")
+		_persona_c = "kid" if kid else "power"
+	return _persona_c
+
+
+## Eased (plain lerp) or sprung (overshooting) step of a joint group toward its target. The
+## velocity is always tracked so switching between the two modes never hitches.
+func _snap_to(key: String, cur: Vector3, tgt: Vector3, k: float, rate: float, delta: float) -> Vector3:
+	if pt_snap <= 0.001 or delta <= 0.0 or delta > 0.05:
+		var out := cur.lerp(tgt, k)
+		if delta > 0.0:
+			_spv[key] = (out - cur) / delta
+		return out
+	var v: Vector3 = _spv.get(key, Vector3.ZERO)
+	var w := rate * (1.25 + 0.35 * pt_snap)
+	var z := lerpf(1.0, 0.32, clampf(pt_snap, 0.0, 1.0))
+	var n := maxi(1, ceili(w * delta / 0.35))
+	var dt := delta / float(n)
+	var x := cur
+	for _i in n:
+		v += ((tgt - x) * (w * w) - v * (2.0 * z * w)) * dt
+		x += v * dt
+	_spv[key] = v
+	return x
+
+
+func _ex_state_changed() -> void:
+	if state == S.DOWN:
+		_down_from_dive = _entry_state == S.DIVING and hf_result == "hit"
+		_bump_kind = ""
+		var standing := _entry_root_x > -1.0 and _entry_state in [S.IDLE, S.WALK, S.RUN, S.STUNNED,
+			S.PUNCH, S.TAUNT, S.GRAB_WINDUP, S.WHIFF, S.RUN_ATTACK, S.ROLL]
+		if standing and not _bump_big and opponent != null:
+			var os := _opp_state()
+			var ok := _anim_key(str(opponent.current_move_key))
+			if os == S.PUNCH and ok in ["haymaker", "spin_kick", "hook"]:
+				_bump_kind = "spin"
+			elif os == S.PUNCH and ok in ["superkick", "clothesline", "uppercut"]:
+				_bump_kind = "flip"
+			elif os == S.RUN_ATTACK or os == S.WHIPPING or os == S.DIVING:
+				_bump_kind = "flip"
+			if _bump_kind != "":
+				var away: Vector3 = position - opponent.position
+				away.y = 0.0
+				_bump_off = Vector3.ZERO
+				if away.length() > 0.01:
+					_bump_off = basis.inverse() * (-away.normalized() * 0.6)
+					_bump_off.y = 0.0
+	elif state == S.STUNNED:
+		_stun_kind = ""
+		if opponent != null and _opp_state() == S.PUNCH:
+			_stun_kind = _anim_key(str(opponent.current_move_key))
+	elif state == S.GETTING_UP:
+		_kip = _down_from_dive or (_persona() == "kid" and health > 35.0)
+	elif state == S.IDLE:
+		if _entry_state == S.DIVING and hf_result != "botch" and hf_result != "crash":
+			_stomp_t = anim_clock
+		elif _entry_state == S.GETTING_UP and _kip:
+			_stomp_t = anim_clock
+		elif _entry_state == S.THROWING:
+			_flourish_t = anim_clock
+
+
+## Post-pass over the state's pose: amplify, pick the snap amount.
+func _pose_exaggerate() -> void:
+	if held_item != null:
+		return  # props are aimed through the hands: keep the plain easing
+	match state:
+		S.PUNCH:
+			var ak := _anim_key(current_move_key)
+			if ak == "knee" or ak == "clothesline":
+				_ex_amp_body(1.3, 1.3)
+				pt_snap = 0.55
+			else:
+				_ex_strike()
+				pt_snap = 0.8
+		S.RUN_ATTACK:
+			_ex_amp_body(1.35, 1.4)
+			pt_root_dy += 0.12 * _hump(state_time, 0.05, 0.32)  # lariat leap
+			pt_snap = 0.7
+		S.THROWING:
+			_ex_amp_body(1.25, 1.3)
+			pt_snap = 0.35
+		S.STUNNED:
+			pt_snap = 0.85
+		S.WHIFF:
+			_ex_amp_body(1.3, 1.3)
+			pt_snap = 0.6
+		S.TAUNT:
+			pt_snap = 0.7
+		S.WIN:
+			pt_snap = 0.55
+		S.STOMP, S.GROUND_DROP:
+			_ex_amp_body(1.25, 1.2)
+			pt_snap = 0.6
+		S.IDLE, S.WALK, S.RUN:
+			if pt_snap < 0.3:
+				pt_snap = 0.3
+		S.GRAB_WINDUP:
+			pt_snap = 0.5
+		S.JUGGLED, S.THROWN:
+			pt_snap = 0.6
+		S.DOWN, S.DIVING:
+			pt_snap = 0.45
+		S.GETTING_UP:
+			pt_snap = 0.5 if _kip else 0.3
+
+
+## Scales the torso / head away from a neutral stance lean (bigger wind-ups and follow-throughs).
+func _ex_amp_body(kt: float, kh: float) -> void:
+	pt_tor = Vector3(0.2 + (pt_tor.x - 0.2) * kt, pt_tor.y * kt, pt_tor.z * kt)
+	pt_hd = Vector3(pt_hd.x * kh, pt_hd.y * kh, pt_hd.z * kh)
+
+
+## STRIKES: sink into the wind-up, whole-body lunge through the hit, extra-fast snap at contact.
+func _ex_strike() -> void:
+	var tm := _strike_times()
+	var t := state_time
+	var ant := _hump(t, 0.0, tm.x)
+	var hit := _hump(t, tm.x * 0.8, tm.x + 0.16)
+	_ex_amp_body(1.4, 1.35)
+	if pt_auto_height:
+		pt_kn_l += 0.3 * ant
+		pt_kn_r += 0.25 * ant
+	pt_tor.x += 0.1 * hit
+	pt_hd.x -= 0.06 * ant
+	pt_root_pos.z += 0.07 * hit - 0.04 * ant
+	if t > tm.x * 0.55 and t < tm.x + 0.06:
+		r_limb = maxf(r_limb, 50.0)
+		r_body = maxf(r_body, 36.0)
+
+
+## Landing stomp (crouch, knees wide, arms flung out, chin up); w = 0..1, imp = impact jolt.
+func _ex_stomp(w: float, imp: float) -> void:
+	if w <= 0.001:
+		return
+	var al := pt_al
+	var ar := pt_ar
+	var el_l := pt_el_l
+	var el_r := pt_el_r
+	var tor := pt_tor
+	var hd := pt_hd
+	var ll_z := pt_ll.z
+	var lr_z := pt_lr.z
+	_stance(lerpf(0.6, 1.2, w) + 0.25 * imp)
+	pt_ll.z = lerpf(ll_z, -0.38, w)
+	pt_lr.z = lerpf(lr_z, 0.38, w)
+	pt_tor = tor.lerp(Vector3(0.5 + 0.2 * imp, 0.0, 0.0), w)
+	pt_hd = hd.lerp(Vector3(-0.45, 0.0, 0.0), w)
+	var arms := 1.35 + 0.15 * imp
+	if _persona() == "kid":
+		# one arm flung back, one fist to the sky: stuck it
+		pt_al = al.lerp(Vector3(0.3, 0.0, -1.2), w)
+		pt_ar = ar.lerp(Vector3(-2.8, 0.0, 0.35), w)
+		pt_el_r = el_r.lerp(Vector3(-0.2, 0.0, 0.0), w)
+	else:
+		pt_al = al.lerp(Vector3(-0.45, 0.0, -arms), w)
+		pt_ar = ar.lerp(Vector3(-0.45, 0.0, arms), w)
+		pt_el_r = el_r.lerp(Vector3(-0.35, 0.0, 0.0), w)
+	pt_el_l = el_l.lerp(Vector3(-0.35, 0.0, 0.0), w)
+	r_limb = maxf(r_limb, 26.0)
+
+
+## IDLE overlays: landing stomp, post-throw flourish. Returns true if one is playing.
+func _ex_idle_overlays() -> bool:
+	var ds := anim_clock - _stomp_t
+	if ds >= 0.0 and ds < EX_STOMP_TIME:
+		var w := 1.0 - _smooth(_seg(ds, EX_STOMP_TIME * 0.55, EX_STOMP_TIME))
+		_ex_stomp(w, exp(-ds * 12.0))
+		pt_snap = 0.6
+		return true
+	var df := anim_clock - _flourish_t
+	if df >= 0.0 and df < EX_FLOURISH_TIME:
+		var w2 := _smooth(_seg(df, 0.0, 0.12)) * (1.0 - _smooth(_seg(df, EX_FLOURISH_TIME - 0.2, EX_FLOURISH_TIME)))
+		if _persona() == "kid":
+			# finger guns at the crowd with a little hop
+			pt_root_dy += 0.08 * _hump(df, 0.05, 0.3)
+			pt_ar = pt_ar.lerp(Vector3(-1.55, 0.0, 0.55), w2)
+			pt_el_r = pt_el_r.lerp(Vector3(-0.1, 0.0, 0.0), w2)
+			pt_al = pt_al.lerp(Vector3(-1.4, 0.0, -0.75), w2)
+			pt_el_l = pt_el_l.lerp(Vector3(-0.15, 0.0, 0.0), w2)
+			pt_tor = pt_tor.lerp(Vector3(-0.05, 0.35, 0.0), w2)
+			pt_hd = pt_hd.lerp(Vector3(-0.2, -0.3, 0.0), w2)
+		else:
+			# raise the roof: both palms pumping up overhead, leaning back
+			var pump := absf(sin(df * 16.0))
+			pt_al = pt_al.lerp(Vector3(-2.7 + 0.35 * pump, 0.0, -0.55), w2)
+			pt_ar = pt_ar.lerp(Vector3(-2.7 + 0.35 * pump, 0.0, 0.55), w2)
+			pt_el_l = pt_el_l.lerp(Vector3(-1.2 + 0.6 * pump, 0.0, 0.0), w2)
+			pt_el_r = pt_el_r.lerp(Vector3(-1.2 + 0.6 * pump, 0.0, 0.0), w2)
+			pt_tor = pt_tor.lerp(Vector3(-0.2, 0.0, 0.0), w2)
+			pt_hd = pt_hd.lerp(Vector3(-0.4, 0.0, 0.0), w2)
+		pt_snap = 0.6
+		return true
+	return false
+
+
+## Big strike knockdown: a backflip bump (1.25 turns, lands on the back) or a spin-out (one
+## pirouette while the legs go). u = 0..1 over the fall; ends in the lying DOWN pose.
+func _ex_big_bump(u: float) -> void:
+	var carry := _bump_off.lerp(Vector3.ZERO, _smooth(u))
+	if _bump_kind == "flip":
+		var e := _smooth(u)
+		var rp := lerpf(_entry_root_x, -PI / 2 - TAU, e)
+		var y := lerpf(_entry_root_y, LIE_Y, _ease_in(u)) + 0.9 * sin(PI * clampf(u * 1.08, 0.0, 1.0))
+		pt_root_rot = Vector3(rp, 0.0, 0.0)
+		pt_root_pos = Vector3(carry.x, y, carry.z)
+		var tuck := _hump(u, 0.1, 0.85)
+		pt_ll = Vector3(-0.3 - 1.6 * tuck, 0.0, -0.15)
+		pt_lr = Vector3(-0.2 - 1.6 * tuck, 0.0, 0.15)
+		pt_kn_l = 0.3 + 1.7 * tuck
+		pt_kn_r = 0.2 + 1.8 * tuck
+		var fl := _hump(u, 0.0, 0.5)
+		pt_al = Vector3(-2.4 * fl - 0.6, 0.0, -0.6 - 0.7 * fl)
+		pt_ar = Vector3(-2.3 * fl - 0.6, 0.0, 0.6 + 0.7 * fl)
+		pt_el_l = Vector3(-0.2, 0.0, 0.0)
+		pt_el_r = Vector3(-0.2, 0.0, 0.0)
+		pt_tor = Vector3(0.35 * tuck, 0.0, 0.0)
+		pt_hd = Vector3(0.4 * tuck - 0.3 * fl, 0.0, 0.0)
+	else:
+		var s1 := _smooth(_seg(u, 0.0, 0.5))
+		var s2 := _ease_in(_seg(u, 0.45, 1.0))
+		var rp2 := lerpf(lerpf(_entry_root_x, -0.35, s1), -PI / 2, s2)
+		var y2 := lerpf(lerpf(_entry_root_y, 0.85, s1), LIE_Y, s2) + 0.12 * _hump(u, 0.0, 0.45)
+		pt_root_rot = Vector3(rp2, TAU * _ease_out(u), 0.35 * _hump(u, 0.0, 0.8))
+		pt_root_pos = Vector3(carry.x, y2, carry.z)
+		var lx := lerpf(-0.2, -0.55, s2)
+		pt_ll = Vector3(lx, 0.0, -0.35 * s1)
+		pt_lr = Vector3(lx + 0.2, 0.0, 0.25)
+		pt_kn_l = lerpf(0.4, 0.9, s2)
+		pt_kn_r = 0.6
+		var fl2 := _hump(u, 0.0, 0.7)
+		pt_al = Vector3(-0.4 - 0.9 * fl2, 0.0, -0.5 - 1.0 * fl2)  # flung out by the spin
+		pt_ar = Vector3(-0.4 - 0.9 * fl2, 0.0, 0.5 + 1.0 * fl2)
+		pt_el_l = Vector3(-0.2, 0.0, 0.0)
+		pt_el_r = Vector3(-0.2, 0.0, 0.0)
+		pt_tor = Vector3(0.1, 0.3 * fl2, -0.25 * fl2)
+		pt_hd = Vector3(-0.3 * fl2, 0.4 * fl2, 0.35 * fl2)
+	r_limb = 24.0
+	r_body = 22.0
+
+
+## GETTING_UP as a kip-up: rock back onto the shoulders, snap the legs over and pop up into a
+## crouch, then rise. u = 0..1 over the 0.7 s get-up.
+func _ex_kip_up(u: float) -> void:
+	var a := _smooth(_seg(u, 0.0, 0.35))
+	var b := _smooth(_seg(u, 0.33, 0.68))
+	var c := _smooth(_seg(u, 0.68, 1.0))
+	pt_root_direct = true
+	r_limb = 30.0
+	r_body = 26.0
+	if u < 0.68:
+		var rp := lerpf(lerpf(-PI / 2, -PI / 2 - 0.55, a), 0.3, b)
+		var y := lerpf(lerpf(LIE_Y, 0.32, a), 0.62, b) + 0.4 * _hump(u, 0.36, 0.68)
+		pt_root_rot = Vector3(rp, 0.0, 0.0)
+		pt_root_pos = Vector3(0.0, y, 0.0)
+		var lx := lerpf(lerpf(-0.85, -2.3, a), -1.0, b)
+		pt_ll = Vector3(lx, 0.0, -0.14)
+		pt_lr = Vector3(lx + 0.1, 0.0, 0.14)
+		pt_kn_l = lerpf(lerpf(1.85, 1.0, a), 1.9, b)
+		pt_kn_r = lerpf(lerpf(0.12, 1.0, a), 1.8, b)
+		pt_al = Vector3(0.0, 0.0, -1.15).lerp(Vector3(-2.7, 0.0, -0.45), a).lerp(Vector3(-0.6, 0.0, -1.2), b)
+		pt_ar = Vector3(0.0, 0.0, 0.95).lerp(Vector3(-2.7, 0.0, 0.45), a).lerp(Vector3(-0.6, 0.0, 1.2), b)
+		pt_el_l = Vector3(-0.3, 0.0, 0.0).lerp(Vector3(-2.0, 0.0, 0.0), a).lerp(Vector3(-0.3, 0.0, 0.0), b)
+		pt_el_r = pt_el_l
+		pt_tor = Vector3(lerpf(lerpf(0.1, 0.45, a), 0.4, b), 0.0, 0.0)
+		pt_hd = Vector3(lerpf(lerpf(0.38, 0.5, a), -0.3, b), 0.0, 0.0)
+		return
+	var y2 := lerpf(0.62, 0.86, c)
+	var rp2 := lerpf(0.3, 0.05, c)
+	_legs_for(y2, rp2, lerpf(-0.95, -0.4, c), lerpf(-0.85, -0.2, c))
+	pt_ll.z = lerpf(-0.3, -0.12, c)
+	pt_lr.z = lerpf(0.3, 0.12, c)
+	pt_tor = Vector3(lerpf(0.4, 0.22, c), 0.0, 0.0)
+	pt_hd = Vector3(-0.35, 0.0, 0.0)
+	pt_al = Vector3(-0.6, 0.0, -1.2).lerp(Vector3(-0.77, 0.0, -0.3), c)
+	pt_ar = Vector3(-0.6, 0.0, 1.2).lerp(Vector3(-0.72, 0.0, 0.3), c)
+	pt_el_l = Vector3(-0.3, 0.0, 0.0).lerp(Vector3(-1.5, 0.0, 0.0), c)
+	pt_el_r = Vector3(-0.3, 0.0, 0.0).lerp(Vector3(-1.4, 0.0, 0.0), c)
+
+
+## Character swagger idles. "power": leaning back, bouncing to a beat, shoulders rolling, hands
+## low and loose. "kid": hyper little hops on the toes, guard up, head bobbing, switching feet.
+func _ex_swagger_idle() -> void:
+	var ac := anim_clock
+	if _persona() == "kid":
+		var hp := ac * 5.6
+		var hop := absf(sin(hp))           # 0 on the ground .. 1 at the top
+		var land := 1.0 - hop
+		var sw := sin(hp * 0.5)            # switch the lead foot every other hop
+		_stance(0.5 + 0.35 * land * land)
+		pt_ll.x += 0.12 * sw
+		pt_lr.x -= 0.12 * sw
+		pt_root_dy = 0.075 * hop
+		pt_tor = Vector3(0.3 + 0.06 * land, 0.12 * sw, 0.05 * sin(hp * 0.5 + 0.8))
+		pt_hd = Vector3(-0.18 + 0.1 * land, -0.1 * sw, 0.06 * sw)
+		var lean := pt_tor.x
+		pt_al = Vector3(-0.85 - lean - 0.15 * hop, 0.0, -0.32)
+		pt_ar = Vector3(-0.8 - lean - 0.15 * hop, 0.0, 0.32)
+		pt_el_l = Vector3(-1.95, 0.0, 0.0)
+		pt_el_r = Vector3(-1.9, 0.0, 0.0)
+		pt_breath = hop
+		r_limb = 22.0
+		r_body = 20.0
+		return
+	var bp := ac * 4.4                    # ~ 84 bpm head nod / knee bounce
+	var beat := 0.5 + 0.5 * sin(bp)
+	var roll := sin(bp * 0.5)
+	_stance(0.38 + 0.22 * beat)
+	pt_tor = Vector3(-0.1 - 0.06 * beat, 0.18 * roll, 0.06 * roll)
+	pt_hd = Vector3(0.05 + 0.2 * beat, -0.12 * roll, -0.04 * roll)  # nodding to it
+	var lean := pt_tor.x
+	pt_al = Vector3(-0.15 - lean + 0.12 * roll, 0.0, -0.42 - 0.06 * beat)
+	pt_ar = Vector3(-0.15 - lean - 0.12 * roll, 0.0, 0.42 + 0.06 * beat)
+	pt_el_l = Vector3(-0.75 - 0.2 * beat, 0.0, 0.0)
+	pt_el_r = Vector3(-0.75 - 0.2 * beat, 0.0, 0.0)
+	pt_hip.y = -0.08 * roll
+	pt_breath = sin(ac * 2.3)
+	r_limb = 16.0
+	r_body = 16.0
 
 
 # --- standing ------------------------------------------------------------------------
@@ -5513,6 +5866,13 @@ func _pose_idle() -> void:
 	pt_ar = Vector3(-0.5 - lean + 0.03 * b, 0.0, 0.3)
 	pt_el_l = Vector3(-1.5, 0.0, 0.0)
 	pt_el_r = Vector3(-1.4, 0.0, 0.0)
+	# arcade exaggeration: swagger loop when there's room, a bouncy guard up close
+	var far := opponent == null or _flat_to_opponent().length() > 2.6 or not opponent.is_standing()
+	if far:
+		_ex_swagger_idle()
+	elif _persona() == "kid":
+		pt_root_dy = 0.04 * absf(sin(anim_clock * 6.0))
+	_ex_idle_overlays()
 	_brace_guard()
 	_recovering()
 
@@ -5554,27 +5914,55 @@ func _pose_walk(delta: float) -> void:
 	pt_el_r = Vector3(-1.35, 0.0, 0.0)
 	r_limb = 20.0
 	r_root = 20.0
+	# arcade exaggeration: a strut. power = leaning back, shoulders rolling big; kid = bouncy.
+	if _persona() == "kid":
+		pt_root_dy = 0.05 * absf(s) * mag
+		pt_hd.x += 0.08 * absf(c)
+	else:
+		pt_tor.x -= 0.22 * maxf(f, 0.0)
+		pt_tor.y *= 1.8
+		pt_hd.y *= 1.6
+		pt_hd.x += 0.1 * absf(s)  # nod on each step
+		pt_al.z -= 0.15
+		pt_ar.z += 0.15
 	_brace_guard()
 	_recovering()
 
 
 func _pose_run(delta: float) -> void:
-	_gait += delta * 15.0
+	# arcade exaggeration: the lean, stride and arm pump grow with the momentum sprint's speed;
+	# boosting (style meter burn) = a low, head-up sprint with the arms swept back.
+	var sp := 0.0 if whipped else clampf((run_speed - RUN_START_SPEED) / (RUN_TOP_SPEED - RUN_START_SPEED), 0.0, 1.0)
+	var bv: Variant = get("boosting")
+	var boost := 1.0 if (bv is bool and bv and not whipped) else 0.0
+	_gait += delta * (13.0 + 5.0 * sp + 2.5 * boost)
 	var s := sin(_gait)
 	var c := cos(_gait)
-	pt_ll = Vector3(-0.35 - s * 0.85, 0.0, -0.06)
-	pt_lr = Vector3(-0.35 + s * 0.85, 0.0, 0.06)
+	var st := 0.75 + 0.3 * sp + 0.2 * boost
+	pt_ll = Vector3(-0.35 - s * st, 0.0, -0.06)
+	pt_lr = Vector3(-0.35 + s * st, 0.0, 0.06)
 	pt_kn_l = 0.3 + maxf(0.0, c) * 1.5 + maxf(0.0, -c) * 0.25
 	pt_kn_r = 0.3 + maxf(0.0, -c) * 1.5 + maxf(0.0, c) * 0.25
 	pt_auto_height = true
-	pt_root_dy = 0.04 * absf(s)  # small flight phase
-	pt_tor = Vector3(0.4, s * 0.18, 0.0)
-	pt_hd = Vector3(-0.3, -s * 0.1, 0.0)
-	pt_al = Vector3(-0.85 + s * 0.9, 0.0, -0.15)
-	pt_ar = Vector3(-0.85 - s * 0.9, 0.0, 0.15)
+	pt_root_dy = (0.04 + 0.04 * sp) * absf(s)  # flight phase
+	var lean := 0.3 + 0.35 * sp + 0.2 * boost
+	pt_root_rot.x = 0.12 * sp + 0.12 * boost  # whole body tips into the sprint
+	pt_ll.x -= pt_root_rot.x  # (legs keep their world swing)
+	pt_lr.x -= pt_root_rot.x
+	pt_tor = Vector3(lean, s * (0.18 + 0.1 * sp), -0.05 * s * sp)
+	pt_hd = Vector3(-0.3 - 0.25 * sp - 0.15 * boost, -s * 0.1, 0.0)
+	var pump := 0.8 + 0.35 * sp
+	pt_al = Vector3(-0.85 + s * pump, 0.0, -0.15)
+	pt_ar = Vector3(-0.85 - s * pump, 0.0, 0.15)
 	pt_el_l = Vector3(-1.7, 0.0, 0.0)
 	pt_el_r = Vector3(-1.7, 0.0, 0.0)
-	r_limb = 24.0
+	if boost > 0.0:
+		# arms swept straight back like a jet, fingers trailing
+		pt_al = pt_al.lerp(Vector3(0.95 + 0.1 * s, 0.0, -0.35), 0.85)
+		pt_ar = pt_ar.lerp(Vector3(0.95 - 0.1 * s, 0.0, 0.35), 0.85)
+		pt_el_l = Vector3(-0.25, 0.0, 0.0)
+		pt_el_r = Vector3(-0.25, 0.0, 0.0)
+	r_limb = 24.0 + 6.0 * sp
 	r_root = 22.0
 	if whipped:
 		# flung into the ropes: yanked off balance, arms windmilling
@@ -5736,18 +6124,35 @@ func _pose_stunned() -> void:
 		r_body = 22.0
 		return
 	# Generic hit: head snaps back, arms fling, stagger a step, then recover.
-	var e := (t / 0.05) if t < 0.05 else exp(-(t - 0.05) * 7.0)
+	# (arcade exaggeration: cartoon-big, and shaped by the strike that landed)
+	if t < 0.03 and os == S.PUNCH:
+		_stun_kind = _anim_key(ok)  # re-hit while still reeling (strike strings)
+	var e := (t / 0.04) if t < 0.04 else exp(-(t - 0.04) * 6.0)
 	_stance(0.5)
-	pt_lr.x += 0.3 * e
-	pt_kn_l += 0.15 * e
-	pt_tor = Vector3(0.2 - 0.6 * e, 0.0, 0.08 * e)
-	pt_hd = Vector3(-0.1 - 0.55 * e, 0.0, 0.12 * e)
-	pt_al = Vector3(-0.3 + 0.35 * e, 0.0, -0.35 - 0.45 * e)
-	pt_ar = Vector3(-0.3 + 0.3 * e, 0.0, 0.35 + 0.5 * e)
-	pt_el_l = Vector3(-0.9 + 0.6 * e, 0.0, 0.0)
-	pt_el_r = Vector3(-0.9 + 0.6 * e, 0.0, 0.0)
-	r_body = 26.0
-	r_limb = 22.0
+	pt_lr.x += 0.45 * e
+	pt_kn_l += 0.25 * e
+	pt_tor = Vector3(0.2 - 0.85 * e, 0.0, 0.12 * e)
+	pt_hd = Vector3(-0.1 - 0.8 * e, 0.0, 0.18 * e)
+	pt_al = Vector3(-0.3 + 0.5 * e, 0.0, -0.35 - 0.75 * e)
+	pt_ar = Vector3(-0.3 + 0.45 * e, 0.0, 0.35 + 0.8 * e)
+	pt_el_l = Vector3(-0.9 + 0.7 * e, 0.0, 0.0)
+	pt_el_r = Vector3(-0.9 + 0.7 * e, 0.0, 0.0)
+	pt_root_pos.z = -0.12 * e
+	match _stun_kind:
+		"hook":
+			# head whipped round, the body twists out after it
+			pt_tor = Vector3(0.2 - 0.3 * e, 0.75 * e, 0.25 * e)
+			pt_hd = Vector3(-0.2 * e, 0.9 * e, 0.35 * e)
+			pt_root_rot.y = 0.7 * e
+		"uppercut":
+			# chin snapped to the sky, popped up onto the toes
+			pt_hd.x = -0.1 - 1.1 * e
+			pt_tor.x = 0.2 - 1.0 * e
+			pt_root_dy = 0.1 * e
+		"jab":
+			pt_hd.y = 0.25 * e * sin(anim_clock * 3.0 + 1.0)
+	r_body = 30.0
+	r_limb = 24.0
 	_recovering()
 
 
@@ -6257,6 +6662,11 @@ func _pose_down() -> void:
 	_down_relaxed()
 	var from_up := _entry_root_x > -1.0
 	var fall_t := 0.42 if _bump_big else 0.34
+	if from_up and _bump_kind != "" and not _bump_big:
+		fall_t = EX_FLIP_FALL if _bump_kind == "flip" else EX_SPIN_FALL
+		if t < fall_t:
+			_ex_big_bump(t / fall_t)  # arcade exaggeration: flip bump / spin-out
+			return
 	if from_up and t < fall_t and _bump_big:
 		_pose_flat_bump(t / fall_t)
 		return
@@ -6398,6 +6808,9 @@ func _pose_pinned() -> void:
 func _pose_getting_up() -> void:
 	# Three stages over 0.7 s: lying -> sit up -> one knee -> stand.
 	var u := clampf(state_time / 0.7, 0.0, 1.0)
+	if _kip:
+		_ex_kip_up(u)  # arcade exaggeration
+		return
 	var a := _smooth(_seg(u, 0.0, 0.36))
 	var b := _smooth(_seg(u, 0.3, 0.66))
 	var c := _smooth(_seg(u, 0.62, 1.0))
@@ -6463,13 +6876,54 @@ func _pose_taunt() -> void:
 	r_limb = 16.0
 	_stance(0.3 + 0.45 * pre * (1.0 - on))
 	pt_tor = Vector3(0.25 * pre * (1.0 - on), 0.0, 0.0)
-	match _style:
+	# arcade exaggeration: each character's taunt is a flashy trick pose
+	var tstyle := 3 if _persona() == "kid" else 0
+	match tstyle:
+		3:
+			# "Kid" taunt: crouch, hop into a full pirouette, stick it with a finger to the sky
+			var hop := _hump(u, 0.12, 0.5)
+			var spin := _smooth(_seg(u, 0.14, 0.48))
+			var pose := _smooth(_seg(u, 0.45, 0.6)) * (1.0 - _smooth(_seg(u, TAUNT_TIME - 0.2, TAUNT_TIME)))
+			var wig := sin(u * 18.0) * pose
+			_stance(0.35 + 0.5 * pre * (1.0 - _seg(u, 0.1, 0.16)) + 0.3 * _hump(u, 0.45, 0.6))
+			pt_root_dy = 0.38 * hop
+			pt_hip.y = TAU * spin
+			pt_hip_y_direct = true
+			pt_ll.x -= 0.5 * hop
+			pt_kn_l += 1.1 * hop
+			pt_kn_r += 0.6 * hop
+			var tuck := Vector3(-1.3, 0.0, 0.3)
+			pt_al = Vector3(-0.6, 0.0, -0.2).lerp(tuck * Vector3(1, 1, -1), hop).lerp(Vector3(0.1, 0.0, -0.55), pose)
+			pt_ar = Vector3(-0.6, 0.0, 0.2).lerp(Vector3(-1.3, 0.0, -0.3), hop).lerp(Vector3(-3.0 + 0.05 * wig, 0.0, 0.2), pose)
+			pt_el_l = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(-1.9, 0.0, 0.0), hop).lerp(Vector3(-1.6, 0.0, 0.0), pose)
+			pt_el_r = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(-1.9, 0.0, 0.0), hop).lerp(Vector3(-0.05, 0.0, 0.0), pose)
+			pt_lr = pt_lr.lerp(Vector3(-1.0, 0.0, 0.12), pose)  # knee up
+			pt_kn_r = lerpf(pt_kn_r, 1.6, pose)
+			pt_tor = Vector3(lerpf(pt_tor.x, -0.15, pose), 0.12 * wig, 0.1 * pose)
+			pt_hd = Vector3(-0.5 * pose - 0.2 * hop, 0.0, 0.1 * wig)
+			r_limb = 26.0
 		0:
-			# double bicep flex with a pelvis bounce
-			var bounce := absf(sin(u * 7.0)) * on
+			# point them out, then lean back into a bouncing double bicep flex
+			var point := _smooth(_seg(u, 0.05, 0.18)) * (1.0 - _smooth(_seg(u, 0.32, 0.42)))
+			on = _smooth(_seg(u, 0.35, 0.5)) * (1.0 - _smooth(_seg(u, TAUNT_TIME - 0.2, TAUNT_TIME)))
+			var bounce := absf(sin(u * 9.0)) * on
 			_stance(0.25 + 0.35 * bounce + 0.45 * pre * (1.0 - on))
-			pt_al = Vector3(-0.6, 0.0, -0.2).lerp(Vector3(0.0, 0.0, -1.45), on)
-			pt_ar = Vector3(-0.6, 0.0, 0.2).lerp(Vector3(0.0, 0.0, 1.45), on)
+			if point > 0.0:
+				pt_ar = Vector3(-1.55, 0.0, 0.1)
+				pt_el_r = Vector3(-0.05, 0.0, 0.0)
+				pt_al = Vector3(-0.3, 0.0, -0.3)
+				pt_el_l = Vector3(-1.6, 0.0, 0.0)
+				pt_tor = Vector3(0.35 * point, -0.3 * point, 0.0)
+				pt_hd = Vector3(0.1 * point, 0.25 * point, 0.0)
+				pt_ll.x -= 0.25 * point
+				if on <= 0.0:
+					r_limb = 30.0
+					return
+			pt_root_rot.x = -0.12 * on  # lean way back into it
+			pt_ll.x += 0.12 * on
+			pt_lr.x += 0.12 * on
+			pt_al = Vector3(-0.6, 0.0, -0.2).lerp(Vector3(0.0, 0.0, -1.45 - 0.1 * bounce), on)
+			pt_ar = Vector3(-0.6, 0.0, 0.2).lerp(Vector3(0.0, 0.0, 1.45 + 0.1 * bounce), on)
 			pt_el_l = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(0.0, 0.0, -1.75 - 0.15 * bounce), on)
 			pt_el_r = Vector3(-1.2, 0.0, 0.0).lerp(Vector3(0.0, 0.0, 1.75 + 0.15 * bounce), on)
 			pt_tor = Vector3(lerpf(pt_tor.x, -0.12, on), 0.15 * sin(u * 3.0) * on, 0.0)
@@ -8258,15 +8712,20 @@ func _pose_hf_dive_body() -> void:
 	pt_hd = Vector3(0.3 * fling, 0.0, 0.0)
 	r_limb = 12.0
 	if hf_result == "feet":
-		pt_ll = Vector3(-0.55, 0.0, -0.18)
-		pt_lr = Vector3(-0.35, 0.0, 0.18)
-		pt_kn_l = 1.1
-		pt_kn_r = 0.9
-		pt_al = Vector3(-1.2, 0.0, -1.1)
-		pt_ar = Vector3(-1.2, 0.0, 1.1)
-		pt_tor = Vector3(0.35, 0.0, 0.0)
-		pt_hd = Vector3(-0.3, 0.0, 0.0)
-		r_limb = 18.0
+		# arcade exaggeration: STOMP the landing: deep wide crouch, arms flung out, chin up
+		var imp := _hump(u, 0.0, 0.5)
+		throw_pose_y -= 0.12 * imp
+		pt_ll = Vector3(-0.75, 0.0, -0.38)
+		pt_lr = Vector3(-0.55, 0.0, 0.38)
+		pt_kn_l = 1.3 + 0.3 * imp
+		pt_kn_r = 1.1 + 0.3 * imp
+		pt_al = Vector3(-0.45, 0.0, -1.4 - 0.15 * imp)
+		pt_ar = Vector3(-0.45, 0.0, 1.4 + 0.15 * imp)
+		pt_el_l = Vector3(-0.3, 0.0, 0.0)
+		pt_el_r = Vector3(-0.3, 0.0, 0.0)
+		pt_tor = Vector3(0.5 + 0.15 * imp, 0.0, 0.0)
+		pt_hd = Vector3(-0.45, 0.0, 0.0)
+		r_limb = 26.0
 
 
 ## Springboard forearm with tricks: express the hop pose as a pelvis basis (spins / flips go on it).
@@ -8428,12 +8887,12 @@ func _pose_at_trick(nm: String) -> void:
 ## Limbs while flying (body orientation comes from the keys).
 func _hf_dive_limbs(p: float) -> void:
 	var launch := 1.0 - _smooth(_seg(p, 0.0, 0.18))  # still crouched on the turnbuckle
-	pt_ll = Vector3(-1.1 * launch, 0.0, -0.1)
-	pt_lr = Vector3(-1.0 * launch, 0.0, 0.1)
-	pt_kn_l = 0.2 + 1.6 * launch
-	pt_kn_r = 0.2 + 1.5 * launch
-	pt_al = Vector3(lerpf(-2.6, 0.6, launch), 0.0, -0.5)
-	pt_ar = Vector3(lerpf(-2.6, 0.6, launch), 0.0, 0.5)
+	pt_ll = Vector3(-1.3 * launch, 0.0, -0.1)
+	pt_lr = Vector3(-1.2 * launch, 0.0, 0.1)
+	pt_kn_l = 0.2 + 1.9 * launch
+	pt_kn_r = 0.2 + 1.8 * launch
+	pt_al = Vector3(lerpf(-2.8, 1.0, launch), 0.0, -0.5)  # (arcade: bigger arm swing / crouch)
+	pt_ar = Vector3(lerpf(-2.8, 1.0, launch), 0.0, 0.5)
 	pt_el_l = Vector3(-0.2, 0.0, 0.0)
 	pt_el_r = Vector3(-0.2, 0.0, 0.0)
 	pt_tor = Vector3(0.3 * launch, 0.0, 0.0)
