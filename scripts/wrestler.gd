@@ -2047,6 +2047,7 @@ func _build_shoe(kn: Node3D, m: Dictionary) -> void:
 # ---------------------------------------------------------------- helpers
 
 func set_state(s: int) -> void:
+	_flow_on_state(s)  # flow & boost hook: tweak bonus, boost off (before the state changes)
 	state = s
 	state_time = 0.0
 	hit_landed = false
@@ -2250,6 +2251,7 @@ func tick(delta: float) -> void:
 	_weapons_tick(delta)  # weapons hook: thrown-item hits, broken items
 	# Punch windows are CPU-only and too short to read, so they get no tell.
 	rev_tell.visible = reversal_window > 0.0 and reversal_kind != "punch"
+	_flow_pre(delta)  # flow & boost hook: flow-window cancels, tweaks (PIN held), CPU flow
 
 	match state:
 		S.IDLE, S.WALK:
@@ -2310,6 +2312,7 @@ func tick(delta: float) -> void:
 			_juggled(delta)  # strike strings: popped up by a launcher
 		S.ROLL:
 			_mv_roll(delta)  # movement hook: dodge roll
+	_flow_post()  # flow & boost hook: +FLOW for a cancel / in-window follow-up
 
 	_separate()
 	_clamp_ring()
@@ -8694,13 +8697,23 @@ func _mv_start_run() -> void:
 	run_speed = RUN_START_SPEED
 	mv_full_steam = false
 	hf_rope_buf = ""
+	flow_ai_boost = is_cpu and randf() < ai_skill * 0.5  # flow & boost: CPU boosts some runs
 
 
 func _mv_run_speed(delta: float) -> float:
-	run_speed = clampf(run_speed + RUN_ACCEL * delta, RUN_START_SPEED * 0.8, RUN_TOP_SPEED)
+	var boost := _flow_boost(delta)  # flow & boost hook: RUN held + hype = boost sprint
+	var top := RUN_TOP_SPEED * boost
+	if run_speed > top:
+		run_speed = maxf(top, run_speed - BOOST_DECEL * delta)  # boost over: ease back down
+	else:
+		var acc := RUN_ACCEL * (BOOST_ACCEL if boost > 1.0 else 1.0)
+		run_speed = clampf(run_speed + acc * delta, RUN_START_SPEED * 0.8, top)
 	if not mv_full_steam and run_speed >= RUN_TOP_SPEED - 0.01:
 		mv_full_steam = true
 		trick.emit("Full Steam", 100, "movement")
+	if boosting and not _boost_top and run_speed >= top - 0.01:
+		_boost_top = true
+		trick.emit("Afterburner", 150, "movement")
 	return run_speed
 
 
@@ -8776,6 +8789,255 @@ func _pose_mv_roll() -> void:
 	pt_hd = Vector3(0.6 * tk, 0.0, 0.0)
 	r_limb = 30.0
 	r_body = 26.0
+
+
+# ---- flow & boost (G1)
+# The arcade loop: style -> hype -> BOOST -> bigger tricks.
+# BOOST: HOLD RUN while running with hype in the tank = boost sprint: top speed x BOOST_MULT, faster
+#   acceleration, burns BOOST_BURN hype (spirit) per second (free in BRAWL MODE). Needs BOOST_MIN
+#   hype to light. Emits sfx "boost_start" once and "boost" every BOOST_SFX_EVERY s (trail / audio
+#   hooks); hitting boost top speed scores "Afterburner". The 5 s run timeout is held while boosting.
+# CANCEL FLOW: every move that lands (a trick with points, not "movement") opens a FLOW_WINDOW s
+#   flow window (a throw opens it again when it lands). Pressing STRIKE / GRAB / RUN in it cancels
+#   the recovery into the next move (strike->grab, throw->run / stomp / pick-up, dive landing->run
+#   or climb), scoring "+FLOW" (a quick run of cancels scores "+FLOW 2", "+FLOW 3" ... more each
+#   time), which also keeps the style combo alive. Strike strings and grapple chains keep their own
+#   presses (no cancel), but a late, in-window string-to-grab counts as a flow cancel too.
+#   A flow-cancelled run starts near full steam.
+# TWEAK: HOLD PIN during a strike / running attack / throw / dive or air trick = "tweaked": the move
+#   plays at TWEAK_SPEED (the throw victim too) and, if it landed, scores a "Tweak" bonus on top.
+# COMBO COAST (style.gd): flow_moving_fast() holds the combo timer for up to 1.5 s extra.
+# CPU: rolls (by ai_skill) to boost a run, flow-cancel into a stomp / run, and tweak moves.
+# HUD reads: boosting, flow_window, tweaking (and flow_chain, boost_time).
+
+const BOOST_MULT := 1.35         # boost top speed vs RUN_TOP_SPEED
+const BOOST_ACCEL := 2.4         # x RUN_ACCEL while boosting
+const BOOST_DECEL := 5.0         # m/s^2 back down to normal top speed once the boost stops
+const BOOST_BURN := 9.0          # hype per second
+const BOOST_MIN := 6.0           # hype needed to light the boost
+const BOOST_CPU_MIN := 25.0      # CPU keeps some hype for finishers
+const BOOST_SFX_EVERY := 0.35
+const FLOW_WINDOW := 0.25
+const FLOW_POINTS := 120
+const FLOW_CHAIN_POINTS := 60    # per earlier cancel in a quick run of them (up to 5)
+const FLOW_CHAIN_GAP := 2.5      # cancels further apart than this start a new run
+const TWEAK_SPEED := 0.82        # tweaked moves play at this speed
+const TWEAK_MIN := 0.12          # PIN held at least this long in the move
+const TWEAK_BONUS := 0.4         # x the move's points
+const TWEAK_STATES := [S.PUNCH, S.RUN_ATTACK, S.THROWING, S.DIVING]
+const FLOW_FROM := [S.IDLE, S.WALK, S.PUNCH, S.RUN_ATTACK, S.THROWING, S.STOMP, S.DIVING]
+const FLOW_NOT_MOVES := [S.IDLE, S.WALK, S.STUNNED, S.WHIFF, S.DOWN, S.TAUNT, S.PINNING]
+
+var in_run_held := false         # human: RUN held (main.gd)
+var in_pin_held := false         # human: PIN held (main.gd)
+var boosting := false            # HUD / FX: boost sprint on
+var boost_time := 0.0            # seconds into the current boost
+var flow_window := 0.0           # HUD: > 0 while a flow cancel is possible
+var flow_chain := 0              # flow cancels in the current quick run
+var tweaking := false            # HUD: the current move is being tweaked (PIN held)
+var flow_ai_boost := false       # CPU: boost this run
+var _boost_sfx_t := 0.0
+var _boost_top := false
+var _flow_hooked := false
+var _flow_last_at := -10.0
+var _flow_cancelled := false
+var _flow_ai_rolled := false
+var _flow_ai_tweak := false
+var _fl_prev := -1
+var _fl_chain := 0
+var _fl_press := false
+var _fl_throw_open := false
+var _tw_time := 0.0              # PIN held in the current move
+var _tw_real := 0.0              # real seconds in the current state
+var _tw_pts := 0                 # last landed trick (for the Tweak bonus)
+var _tw_kind := "strike"
+var _tw_at := -10.0
+
+
+## style.gd: moving fast keeps the combo timer from running out (combo coasting).
+func flow_moving_fast() -> bool:
+	if boosting or state == S.ROLL:
+		return true
+	if state == S.RUN and not whipped:
+		return run_speed >= RUN_TOP_SPEED - 1.5
+	return state == S.DIVING and not hf_landed
+
+
+## tick, before the state machine: timers, tweak, CPU flow, and the flow cancel itself.
+func _flow_pre(delta: float) -> void:
+	if not _flow_hooked:
+		_flow_hooked = true
+		trick.connect(_flow_on_trick)
+	_tw_real += delta
+	flow_window = maxf(0.0, flow_window - delta)
+	_fl_prev = state
+	_fl_chain = chain_link
+	_flow_cancelled = false
+	if state == S.THROWING and not _fl_throw_open and state_time >= throw_time:
+		_fl_throw_open = true  # the throw just landed: a fresh window to cancel its recovery
+		flow_window = FLOW_WINDOW
+		_flow_ai_rolled = false
+	_flow_tweak_tick(delta)
+	if is_cpu:
+		_flow_ai()
+	_fl_press = in_strike or in_grapple or in_run
+	if flow_window <= 0.0 or not _fl_press:
+		return
+	var btn := "run" if in_run else ("strike" if in_strike else "grab")  # _free_move's priority
+	if _flow_cancel_ok(btn):
+		if state == S.DIVING:
+			position.y = 0.0
+		chain_buf = ""
+		string_step = 0
+		set_state(S.IDLE)  # _free_move now starts the next move from this very press
+		_flow_cancelled = true
+
+
+## tick, after the state machine: a press in the window that started a new move = +FLOW.
+func _flow_post() -> void:
+	var started := _flow_cancelled or (state != _fl_prev and _fl_prev in FLOW_FROM)
+	if not (_fl_press and flow_window > 0.0 and started):
+		return
+	if chain_link != _fl_chain or state in FLOW_NOT_MOVES:
+		return  # grapple chains score themselves
+	if anim_clock - _flow_last_at > FLOW_CHAIN_GAP:
+		flow_chain = 0
+	flow_chain += 1
+	_flow_last_at = anim_clock
+	flow_window = 0.0
+	var pts := FLOW_POINTS + FLOW_CHAIN_POINTS * mini(flow_chain - 1, 5)
+	trick.emit("+FLOW" if flow_chain == 1 else "+FLOW %d" % mini(flow_chain, 6), pts, "movement")
+	sfx.emit("flow", 0.6, _chest())
+	if state == S.RUN:
+		run_speed = maxf(run_speed, RUN_TOP_SPEED - 0.6)  # cancelled into a run: keep the momentum
+
+
+## Can a press of btn ("strike" / "grab" / "run") cancel the current recovery?
+func _flow_cancel_ok(btn: String) -> bool:
+	if opponent == null or _opp_state() == S.JUGGLED:
+		return false  # juggle follow-ups own those presses
+	match state:
+		S.PUNCH:
+			if not STRIKES.has(current_move_key) or not strike_hit:
+				return false
+			var st: Dictionary = STRIKES[current_move_key]
+			if state_time < float(st["hit"]) + 0.03:
+				return false
+			if btn == "run":
+				return true
+			return bool(st.get("ender", false))  # mid-string presses belong to the string
+		S.RUN_ATTACK:
+			return hit_landed and state_time >= 0.3
+		S.THROWING:
+			if state_time < throw_time:
+				return false
+			if btn == "run":
+				return true
+			var nexts: Dictionary = CHAINS.get(_strip_super(current_move_key), {})
+			return not (chain_link < CHAIN_MAX and nexts.has(btn))  # chain links win
+		S.STOMP:
+			return hit_landed and state_time >= 0.3 and btn != "strike"  # no stomp-cancel loops
+		S.DIVING:
+			if not hf_landed:
+				return false
+			return hf_result == "feet" or (hf_result == "hit" and hf_move in ["springboard_forearm", "corner_splash"])
+	return false
+
+
+## trick signal (our own): landed moves open the flow window and remember points for a Tweak.
+func _flow_on_trick(_trick_name_s: String, points: int, kind: String) -> void:
+	if kind == "break":
+		flow_window = 0.0
+		flow_chain = 0
+		_tw_pts = 0
+		return
+	if points <= 0 or kind == "movement" or _trick_name_s == "Tweak":
+		return
+	flow_window = FLOW_WINDOW
+	_flow_ai_rolled = false
+	_tw_pts = points
+	_tw_kind = kind
+	_tw_at = anim_clock
+
+
+## set_state hook (called before the state changes): finish a tweak, reset per-move flow state.
+func _flow_on_state(new_s: int) -> void:
+	if new_s != S.RUN:
+		boosting = false
+	if state in TWEAK_STATES and _tw_time >= TWEAK_MIN and _tw_pts > 0 \
+			and anim_clock - _tw_at <= _tw_real + 0.05:
+		var bonus := clampi(int(float(_tw_pts) * TWEAK_BONUS), 50, 600)
+		var kind := _tw_kind
+		_tw_pts = 0
+		_tw_time = 0.0
+		trick.emit("Tweak", bonus, kind)
+	_tw_time = 0.0
+	_tw_real = 0.0
+	tweaking = false
+	_fl_throw_open = false
+	_flow_ai_tweak = is_cpu and new_s in TWEAK_STATES and randf() < ai_skill * 0.35
+
+
+## Held PIN (CPU: rolled per move) during a tweakable move: slow it a touch.
+func _flow_tweak_tick(delta: float) -> void:
+	var held := _flow_ai_tweak if is_cpu else in_pin_held
+	tweaking = held and state in TWEAK_STATES and not (state == S.DIVING and hf_landed)
+	if not tweaking:
+		return
+	_tw_time += delta
+	var slow := delta * (1.0 - TWEAK_SPEED)
+	state_time -= slow
+	if state == S.THROWING and opponent != null and _opp_state() == S.THROWN:
+		opponent.state_time -= slow  # the victim's flight stays in sync with our throw
+
+
+## _mv_run_speed: boost sprint. Returns the top-speed multiplier.
+func _flow_boost(delta: float) -> float:
+	var want := flow_ai_boost if is_cpu else in_run_held
+	var need := 0.0 if boosting else (BOOST_CPU_MIN if is_cpu else BOOST_MIN)
+	var fuel := brawl_mode or spirit > need
+	var was := boosting
+	boosting = want and fuel and state == S.RUN and not whipped
+	if not boosting:
+		return 1.0
+	if not was:
+		boost_time = 0.0
+		_boost_top = false
+		_boost_sfx_t = BOOST_SFX_EVERY
+		sfx.emit("boost_start", 0.8, _chest())
+	boost_time += delta
+	if not brawl_mode:
+		spirit = maxf(0.0, spirit - BOOST_BURN * delta)
+	_boost_sfx_t -= delta
+	if _boost_sfx_t <= 0.0:
+		_boost_sfx_t = BOOST_SFX_EVERY
+		sfx.emit("boost", 0.5, global_position + Vector3(0, 0.8, 0))
+	state_time = minf(state_time, 4.5)  # the run doesn't time out while boosting
+	return BOOST_MULT
+
+
+## CPU: once per flow window, maybe cancel into a stomp (close) or a run at the downed opponent.
+func _flow_ai() -> void:
+	if flow_window <= 0.0 or _flow_ai_rolled or not (state in FLOW_FROM) or state in [S.IDLE, S.WALK]:
+		return
+	var od := _opp_state() == S.DOWN
+	var dist := _flat_to_opponent().length()
+	var btn := ""
+	if od and dist < 1.7 and _flow_cancel_ok("strike"):
+		btn = "strike"
+	elif od and dist < 5.0 and not _ai_grace() and _flow_cancel_ok("run"):
+		btn = "run"
+	if btn == "":
+		return
+	_flow_ai_rolled = true
+	if randf() >= ai_skill * 0.6:
+		return
+	if btn == "strike":
+		in_strike = true
+	else:
+		in_run = true
+		var d := _flat_to_opponent().normalized()
+		in_move = Vector2(d.x, d.z)
 
 
 # ---- yard collision (prop footprints) ------------------------------------------------------
