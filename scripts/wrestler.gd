@@ -4961,13 +4961,82 @@ func _ai_grace() -> bool:
 	return ai_match_time < CPU_GRACE_TIME
 
 
+# Idle-human pacing: when the human has not touched the controls for CPU_IDLE_AFTER seconds,
+# the CPU still engages (never just stands there), but at a slow cadence: one engagement
+# (a strike, a lock-up, a run-in, a stomp / cover, a dive) every CPU_IDLE_GAP seconds, and
+# it circles or plays to the crowd in between. Tuned so an idle player lasts ~60-90 s.
+const CPU_IDLE_AFTER := 2.5
+const CPU_IDLE_GAP := Vector2(4.0, 6.0)
+var ai_opp_idle := 0.0     # seconds the human opponent has sent no input
+var ai_engage_cd := 0.0    # idle pacing: seconds until the next engagement is allowed
+
+
+func _ai_opp_is_idle() -> bool:
+	if opponent.is_cpu or ai_opp_idle < CPU_IDLE_AFTER or _ai_grace():
+		return false
+	# A pin-worthy knockdown is followed up (cover) as part of the same engagement: the
+	# opponent is down for less than the gap, so pacing it would make an idle player unpinnable.
+	var oh: float = opponent.health
+	return not (_opp_state() == S.DOWN and oh < CPU_PIN_HP)
+
+
+func _ai_track_idle(delta: float) -> void:
+	if opponent.is_cpu:
+		ai_opp_idle = 0.0
+		return
+	var om: Vector2 = opponent.in_move
+	var osp: float = opponent.since_press
+	if om.length() > 0.2 or osp < 0.25 or opponent.in_run or opponent.in_pin:
+		ai_opp_idle = 0.0
+		ai_engage_cd = 0.0  # back to normal play the moment they act
+	else:
+		ai_opp_idle += delta
+	ai_engage_cd = maxf(0.0, ai_engage_cd - delta)
+
+
+## Idle pacing, between engagements: circle at mid range, sometimes taunt. Never stand still.
+func _ai_idle_circle(dist: float, toward: Vector2) -> void:
+	if ai_strafe_time <= 0.0:
+		_ai_start_strafe()
+		ai_strafe_time = randf_range(1.2, 2.2)
+	var perp := Vector2(-toward.y, toward.x) * ai_strafe_dir
+	if dist < 1.9:
+		in_move = (-toward * 0.8 + perp * 0.5).normalized() * 0.8
+	elif dist > 3.2:
+		in_move = (toward * 0.7 + perp * 0.5).normalized() * 0.8
+	else:
+		in_move = perp * 0.7
+	if ai_timer <= 0.0:
+		ai_timer = randf_range(1.2, 2.0)
+		if dist > 2.3 and taunt_cooldown <= 0.0 and randf() < 0.25:
+			in_pin = true  # taunt (far from the opponent, so never a cover)
+
+
 func _ai(delta: float) -> void:
 	ai_match_time += delta
+	_ai_track_idle(delta)
 	var was_free := state == S.IDLE or state == S.WALK
 	_ai_think(delta)
 	# Post-filter the inputs the decision code chose (reversal presses are never touched).
 	if reversal_window > 0.0:
 		return
+	if _ai_opp_is_idle():
+		var cover := in_pin and _opp_state() == S.DOWN and _flat_to_opponent().length() < 2.2
+		var attacking := in_strike or in_grapple or in_run or cover
+		if was_free and attacking:
+			if ai_engage_cd > 0.0:
+				in_strike = false
+				in_grapple = false
+				in_run = false
+				if cover:
+					in_pin = false
+			else:
+				ai_engage_cd = randf_range(CPU_IDLE_GAP.x, CPU_IDLE_GAP.y)
+		elif state == S.PUNCH or state == S.THROWING:
+			in_strike = false  # one move per engagement: no strings / chains on an idle player
+			in_grapple = false
+		elif state == S.CLIMB and ai_engage_cd <= 0.0:
+			ai_engage_cd = randf_range(CPU_IDLE_GAP.x, CPU_IDLE_GAP.y) + 1.5  # the dive is this engagement
 	if _ai_grace():
 		# Opening grace period: strikes only, and slower.
 		in_grapple = false
@@ -5019,6 +5088,9 @@ func _ai_think(delta: float) -> void:
 		return
 
 	var free_now := state == S.IDLE or state == S.WALK
+	if free_now and ai_engage_cd > 0.0 and _ai_opp_is_idle() and _opp_state() != S.PINNED:
+		_ai_idle_circle(dist, toward)  # idle pacing: wait out the gap, but keep moving
+		return
 	if free_now and ai_backoff > 0.0:
 		_ai_back_off(dist, toward, os)  # after a flurry / big move: walk away, maybe taunt
 		return
@@ -5223,6 +5295,10 @@ func _ai_reversal_chance() -> float:
 		c = 0.06 + 0.26 * ai_skill
 	elif reversal_kind == "chain":
 		c = 0.04 + 0.22 * ai_skill
+	if reversal_kind in ["grapple", "strong", "whip"] and not opponent.is_cpu:
+		# The human's own lock-ups: a fair clinch. Capped at 25% at match-1 skill (0.3),
+		# rising to ~40% at the top of the ramp; the success roll comes on top of this.
+		c = minf(c, lerpf(0.25, 0.4, clampf((ai_skill - 0.3) / 0.5, 0.0, 1.0)))
 	return clampf(c, 0.0, 0.95)
 
 
