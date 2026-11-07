@@ -87,7 +87,7 @@ func _on_trick(trick_name: String, points: int, kind: String) -> void:
 		pts = maxi(10, int(float(pts) / pow(2.0, float(mini(used, 3)))))
 	combo_count += 1
 	combo_gap = COMBO_GAP
-	var mult := mini(combo_count, MULT_CAP)
+	var mult := mini(combo_count, _mult_cap())
 	w.combo_mult = mult
 	w.combo_points = w.combo_points + pts
 	var hype_gain := minf(HYPE_TRICK_CAP, float(pts) * HYPE_PER_POINT * (1.0 + 0.15 * float(mult - 1)))
@@ -100,7 +100,7 @@ func _on_trick(trick_name: String, points: int, kind: String) -> void:
 func _bank() -> void:
 	if combo_count <= 0:
 		return
-	var mult := mini(combo_count, MULT_CAP)
+	var mult := mini(combo_count, _mult_cap())
 	var total: int = w.combo_points * mult
 	score += total
 	best_combo = maxi(best_combo, total)
@@ -115,8 +115,19 @@ func _bank() -> void:
 
 func _break() -> void:
 	if combo_count >= 2:
-		broke.emit(w.combo_points * mini(combo_count, MULT_CAP))
+		broke.emit(w.combo_points * mini(combo_count, _mult_cap()))
 	_reset_combo()
+
+
+## A low-skill CPU tops out at x4 (less hype, so fewer CPU finishers / BRAWL MODEs).
+func _mult_cap() -> int:
+	if w.is_cpu:
+		var sk: float = w.ai_skill
+		if sk < 0.55:
+			return 4
+		if sk < 0.75:
+			return 6
+	return MULT_CAP
 
 
 func _reset_combo() -> void:
