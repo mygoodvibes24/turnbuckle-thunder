@@ -17,6 +17,7 @@ const Wrestler := preload("res://scripts/wrestler.gd")
 const Audio := preload("res://scripts/audio.gd")
 const Music := preload("res://scripts/music.gd")
 const MATCH_SCENE := "res://main.tscn"
+const SELECT_SCENE := "res://select.tscn"   # START BRAWL -> character select -> match
 
 enum Phase { INTRO, PRESS, MENU, PANEL, LEAVING }
 
@@ -204,11 +205,11 @@ func _process(delta: float) -> void:
 	var dt := clampf(t - prev_t, 0.0, 0.1)
 	input_lock = maxf(0.0, input_lock - delta)  # real time: slow frames must not eat inputs
 
-	# Headless (CI smoke test): run through the title, then into the match, so the
-	# match code keeps getting exercised by "Check for script errors".
+	# Headless (CI smoke test): run through the title, then the character select (which
+	# auto-advances into the match), so all three keep getting exercised by "Check for script errors".
 	if headless and frames == 150 and phase != Phase.LEAVING:
 		phase = Phase.LEAVING
-		get_tree().change_scene_to_file(MATCH_SCENE)
+		get_tree().change_scene_to_file(SELECT_SCENE)
 		return
 
 	_staged_load()
@@ -466,7 +467,7 @@ func _start_match() -> void:
 	tw.tween_callback(_show_loading)
 	# Let the "LOADING" frame reach the screen before the (blocking) match build.
 	tw.tween_interval(0.12)
-	tw.tween_callback(func(): get_tree().change_scene_to_file(MATCH_SCENE))
+	tw.tween_callback(func(): get_tree().change_scene_to_file(SELECT_SCENE))
 
 
 func _show_loading() -> void:

@@ -84,8 +84,18 @@ func _ready() -> void:
 		"shoe_color": Color(0.9, 0.9, 0.88), "shoe_accent": Color(0.13, 0.55, 0.26),
 		"wristband_color": Color(0.1, 0.1, 0.1), "bulk": 0.86,
 	}
-	p1 = _spawn("TANK MAGRUDER", tank, false, Vector3(-1.8, 0, 0.3))
-	p2 = _spawn("LIL PELIGRO", kid, true, Vector3(1.8, 0, -0.3))
+	# Character select: the "Game" autoload (scripts/game_state.gd) holds P1 / CPU picks and
+	# keeps them through REMATCH. The two looks above are the fallback when it is missing.
+	var p1_name := "TANK MAGRUDER"
+	var p2_name := "LIL PELIGRO"
+	var game: Node = get_node_or_null("/root/Game")
+	if game != null and game.has_method("p1_look"):
+		tank = game.call("p1_look")
+		kid = game.call("p2_look")
+		p1_name = str(game.call("p1_name"))
+		p2_name = str(game.call("p2_name"))
+	p1 = _spawn(p1_name, tank, false, Vector3(-1.8, 0, 0.3))
+	p2 = _spawn(p2_name, kid, true, Vector3(1.8, 0, -0.3))
 	p1.opponent = p2
 	p2.opponent = p1
 	p1._snap_face_opponent()
