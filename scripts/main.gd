@@ -115,6 +115,7 @@ func _ready() -> void:
 	var style_hud: CanvasLayer = StyleHud.new()
 	add_child(style_hud)
 	style_hud.setup(self, [p1, p2])
+	_setup_presentation()   # trick cam / trails / speed lines / hype MC (see "presentation")
 	_announce("FIGHT!", 1.5)
 	audio.ring_bell(1)
 	audio.start_crowd()
@@ -2222,6 +2223,7 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			if feel_last_count >= 2:
 				_snd("ooh", 1.0, 0.04)   # near-fall!
 				_hype(0.4)
+				_mc_say("near_fall", w)
 			else:
 				_snd("cheer_small", -8.0)
 				_hype(0.15)
@@ -2276,9 +2278,15 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_kick_cam(-7.0, 0.8)
 			_buzz(90)
 			_hype(0.6)
+			_mc_say("table", w)
 		"dive":
 			_snd("dive_whoosh", -1.0, 0.04)
 			_hype(0.15)
+			# Takeoff off a perch: the shed roof (2.4 m) gets its own call.
+			if w.global_position.y >= 1.9:
+				_mc_say("roof", w)
+			elif w.global_position.y >= 0.7:
+				_mc_say("big_air", w)
 		"climb":
 			_snd("climb", -4.0, 0.1)
 			_snd("whoa", -12.0, 0.06)
@@ -2305,6 +2313,20 @@ func _on_sfx(w: Node3D, kind: String, s: float, where: Vector3) -> void:
 			_kick_cam(-8.0, 0.6)
 			_buzz(90)
 			_hype(0.7)
+			_mc_say("brawl", w)
+		# ---- arcade presentation (boost / signature supers)
+		"boost_start":
+			_snd("boost_start" if audio != null and (audio.get("clips") as Dictionary).has("boost_start") else "whoosh", -4.0, 0.05)
+			if not w.is_cpu:
+				cam_boost_punch = maxf(cam_boost_punch, BOOST_FOV_PUNCH)
+		"signature":
+			_snd("signature", 0.0, 0.0)
+			_snd("whoa", -4.0, 0.04)
+			_fx_flash(0.7)
+			_kick_cam(-5.0, 0.5)
+			_buzz(60)
+			_hype(0.5)
+			_start_signature_cam(w, "")
 		_:
 			# Unknown kinds (added later): play a clip of the same name if one exists.
 			_snd(kind, -3.0)
@@ -3597,15 +3619,233 @@ func _update_camera(delta: float) -> void:
 	cam_target = cam_target.lerp(mid, clampf(delta * 4.0, 0.0, 1.0))
 	# AKI-style framing: higher and further back (~30 deg pitch), wrestlers ~1/3 of screen height.
 	var want := cam_target + Vector3(0, 2.9 + spread * 0.25, 5.6 + spread * 0.5)
-	camera.position = camera.position.lerp(want, clampf(delta * 3.0, 0.0, 1.0))
-	camera.look_at(cam_target + Vector3(0, 1.0, 0))
+	# BRAWL MODE: the broadcast shot leans in a little lower and closer while anyone is in it.
+	var brawl_on: bool = bool(p1.get("brawl_mode")) or bool(p2.get("brawl_mode"))
+	cam_brawl_k = lerpf(cam_brawl_k, 1.0 if brawl_on and not match_over else 0.0, clampf(delta * 2.0, 0.0, 1.0))
+	want += Vector3(0, -0.55, -0.9) * cam_brawl_k
+	if not cam_base_ready:
+		cam_base_pos = camera.position
+		cam_base_ready = true
+	cam_base_pos = cam_base_pos.lerp(want, clampf(delta * 3.0, 0.0, 1.0))
+	var look := cam_target + Vector3(0, 1.0, 0)
+	var pos := cam_base_pos
+	# Swooping trick cam (air tricks / dives / supers / signatures), blended over the broadcast shot.
+	var trick_fov := _update_trick_cam(delta)
+	if trick_cam > 0.001:
+		var e: float = smoothstep(0.0, 1.0, trick_cam)
+		pos = pos.lerp(trick_cam_pos, e)
+		look = look.lerp(trick_cam_look, e)
+	camera.position = pos
+	if camera.position.distance_squared_to(look) > 0.01:
+		camera.look_at(look)
 	cam_fov_kick = lerpf(cam_fov_kick, 0.0, clampf(delta * 5.0, 0.0, 1.0))
 	if absf(cam_fov_kick) < 0.01:
 		cam_fov_kick = 0.0
-	camera.fov = clampf(48.0 + cam_fov_kick, 15.0, 90.0)
+	camera.fov = clampf(48.0 + cam_fov_kick + _update_boost_fx(delta) + trick_fov, 15.0, 90.0)
 	if cam_shake > 0.0:
 		camera.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * cam_shake * 0.25
 		cam_shake = max(0.0, cam_shake - delta * 2.5)
+
+
+# ---- presentation: trick cam, trails, speed lines, hype MC (scripts/mc.gd)
+# Trick cam: while a wrestler is diving / air-tricking (DIVING), doing a signature super
+# (signature_started signal or "signature" sfx) or just landed a super, the camera swoops to a
+# lower, closer angle that slowly orbits the flyer; it snaps back fast once they land.
+# Boost (wrestler.boosting): FOV punch + slight widen, speed lines for the player, afterimage
+# trails + hand ribbons (fx.trail) on anyone boosting, flying, juggled or in a signature.
+
+const Mc := preload("res://scripts/mc.gd")
+const TRICK_CAM_IN := 3.0         # blend rates (per second): swoop in ...
+const TRICK_CAM_OUT := 7.5        # ... snap back on landing
+const TRICK_CAM_ORBIT := 0.5      # radians / s the swoop orbits around the flyer
+const TRICK_CAM_ORBIT_MAX := 0.8
+const TRICK_CAM_FOV := 7.0        # degrees wider at full trick cam (low + close + wide = speed)
+const SIG_CAM_SECS := 2.4
+const SUPER_CAM_SECS := 1.1
+const BOOST_FOV := 5.0            # degrees wider while the player boosts
+const BOOST_FOV_PUNCH := 9.0      # extra kick when a boost starts
+var mc: CanvasLayer
+var cam_base_pos := Vector3.ZERO  # the smoothed broadcast camera position (shake-free)
+var cam_base_ready := false
+var cam_brawl_k := 0.0
+var trick_cam := 0.0              # 0 = broadcast .. 1 = full trick cam
+var trick_cam_focus: Node3D
+var trick_cam_yaw := 0.0          # orbit offset around the flyer (0 = straight from the +z side)
+var trick_cam_dir := 1.0
+var trick_cam_pos := Vector3.ZERO
+var trick_cam_look := Vector3.ZERO
+var sig_cam_left := 0.0
+var sig_cam_who: Node3D
+var super_cam_left := 0.0
+var super_cam_who: Node3D
+var cam_boost_fov := 0.0
+var cam_boost_punch := 0.0
+var boost_was := {}               # wrestler -> was boosting last frame
+var air_last_ms := {}             # wrestler -> last tick it was flying (botch calls)
+
+
+func _setup_presentation() -> void:
+	mc = Mc.new()
+	add_child(mc)
+	mc.setup(self)
+	for w in [p1, p2]:
+		var wr: Node3D = w
+		if wr.has_signal("signature_started"):
+			wr.connect("signature_started", func(nm): _start_signature_cam(wr, str(nm)))
+		for c in wr.get_children():
+			if c.has_signal("popped") and c.has_signal("broke"):
+				c.connect("popped", func(text: String, points: int, kind: String, mult: int): _on_style_popped(wr, text, points, kind, mult))
+				c.connect("broke", func(_lost: int): _on_style_broke(wr))
+
+
+func _mc_say(cat: String, w: Node3D, move_name := "") -> void:
+	if mc != null:
+		mc.call("say", cat, w, move_name)
+
+
+func _start_signature_cam(w: Node3D, move_name: String) -> void:
+	# The signal and the "signature" sfx may both fire for one move: start once.
+	if sig_cam_left > 0.5 and sig_cam_who == w:
+		return
+	sig_cam_left = SIG_CAM_SECS
+	sig_cam_who = w
+	_mc_say("signature", w, move_name)
+
+
+func _on_style_popped(w: Node3D, text: String, points: int, kind: String, mult: int) -> void:
+	if kind == "super":
+		super_cam_left = SUPER_CAM_SECS
+		super_cam_who = w
+		if points >= 400:
+			_mc_say("super", w)
+	elif kind == "air_trick":
+		if _flying(w):
+			if points >= 300:
+				_mc_say("big_air", w)
+		elif points >= 150:
+			_mc_say("stomp", w)   # the clean-landing call
+	if mult >= 8:
+		_mc_say("combo_max", w)
+	elif mult == 5 or mult == 6:
+		_mc_say("combo", w)
+	if text.contains("SHED ROOF") or text.contains("ROOF"):
+		_mc_say("roof", w)
+
+
+func _on_style_broke(w: Node3D) -> void:
+	# A combo lost right as the wrestler came down from a dive = a botched landing.
+	var last: int = air_last_ms.get(w, -100000)
+	if Time.get_ticks_msec() - last < 700:
+		_mc_say("botch", w)
+
+
+## In the air for the trick cam's purposes: diving / air-tricking (not just standing on a perch).
+func _flying(w: Node3D) -> bool:
+	return int(w.get("state")) == Wrestler.S.DIVING
+
+
+func _is_boosting(w: Node3D) -> bool:
+	var bv = w.get("boosting")
+	return bv is bool and bv
+
+
+## How much this wrestler wants the trick cam right now (0..1).
+func _trick_cam_want(w: Node3D) -> float:
+	if sig_cam_left > 0.0 and sig_cam_who == w:
+		return 1.0
+	var k := 0.0
+	if _flying(w):
+		k = 1.0
+	elif w.has_method("is_airborne") and w.is_airborne() and w.global_position.y > 1.5:
+		k = 0.3   # up on a high perch: a gentle low "looking up at them" angle
+	if super_cam_left > 0.0 and super_cam_who == w:
+		k = maxf(k, 0.75)
+	return k
+
+
+## Updates trick_cam / trick_cam_pos / trick_cam_look; returns the extra FOV.
+func _update_trick_cam(delta: float) -> float:
+	sig_cam_left = maxf(0.0, sig_cam_left - delta)
+	super_cam_left = maxf(0.0, super_cam_left - delta)
+	var now := Time.get_ticks_msec()
+	var want_k := 0.0
+	var focus: Node3D = null
+	for w in [p1, p2]:
+		var wr: Node3D = w
+		if _flying(wr):
+			air_last_ms[wr] = now
+		var k := _trick_cam_want(wr)
+		if k > want_k:
+			want_k = k
+			focus = wr
+	if match_over:
+		want_k = 0.0
+	if focus != null and want_k > 0.0:
+		if focus != trick_cam_focus or trick_cam < 0.05:
+			# New swoop: orbit toward the open side of the yard (away from the nearest side fence).
+			trick_cam_dir = -1.0 if focus.global_position.x > 0.0 else 1.0
+			if trick_cam < 0.05:
+				trick_cam_yaw = 0.2 * trick_cam_dir
+		trick_cam_focus = focus
+	var rate := TRICK_CAM_IN if want_k > trick_cam else TRICK_CAM_OUT
+	trick_cam = move_toward(trick_cam, want_k, delta * rate)
+	if trick_cam <= 0.0 or trick_cam_focus == null or not is_instance_valid(trick_cam_focus):
+		trick_cam = 0.0
+		trick_cam_yaw = 0.0
+		trick_cam_pos = Vector3.ZERO   # the next swoop starts fresh from where the flyer is
+		return 0.0
+	var orbit_max := TRICK_CAM_ORBIT_MAX * (1.4 if sig_cam_left > 0.0 else 1.0)
+	if want_k > 0.5:
+		trick_cam_yaw = clampf(trick_cam_yaw + trick_cam_dir * TRICK_CAM_ORBIT * delta * (1.6 if sig_cam_left > 0.0 else 1.0), -orbit_max, orbit_max)
+	var f: Vector3 = trick_cam_focus.global_position
+	var other: Node3D = p2 if trick_cam_focus == p1 else p1
+	var o: Vector3 = other.global_position
+	var center := f.lerp(o, 0.3)
+	var dist: float = clampf(3.3 + f.distance_to(o) * 0.3, 3.3, 5.2)
+	var off := Vector3(sin(trick_cam_yaw), 0.0, cos(trick_cam_yaw)) * dist
+	# Low and close, under the flyer, looking up at them.
+	var want_pos := Vector3(center.x, 0.0, center.z) + off
+	want_pos.y = clampf(0.55 + f.y * 0.45, 0.5, 2.0)
+	want_pos.x = clampf(want_pos.x, yard_bounds.position.x - 0.2, yard_bounds.end.x + 0.2)
+	want_pos.z = clampf(want_pos.z, yard_bounds.position.y + 1.5, yard_bounds.end.y + 4.0)
+	var want_look := Vector3(center.x, 0.85 + f.y * 0.75, center.z)
+	if trick_cam_pos == Vector3.ZERO:
+		trick_cam_pos = want_pos
+		trick_cam_look = want_look
+	var s := clampf(delta * 6.0, 0.0, 1.0)
+	trick_cam_pos = trick_cam_pos.lerp(want_pos, s)
+	trick_cam_look = trick_cam_look.lerp(want_look, clampf(delta * 9.0, 0.0, 1.0))
+	return TRICK_CAM_FOV * smoothstep(0.0, 1.0, trick_cam)
+
+
+## Boost FOV, speed lines and trails. Returns the boost FOV offset (degrees).
+func _update_boost_fx(delta: float) -> float:
+	var p1_boost := _is_boosting(p1) and not match_over
+	if p1_boost and not bool(boost_was.get(p1, false)):
+		cam_boost_punch = maxf(cam_boost_punch, BOOST_FOV_PUNCH)
+		_kick_cam(0.0, 0.15)
+	boost_was[p1] = p1_boost
+	cam_boost_fov = lerpf(cam_boost_fov, BOOST_FOV if p1_boost else 0.0, clampf(delta * 4.0, 0.0, 1.0))
+	cam_boost_punch = lerpf(cam_boost_punch, 0.0, clampf(delta * 6.0, 0.0, 1.0))
+	if fx != null:
+		var lines := 0.0
+		if p1_boost:
+			lines = 1.0
+		elif sig_cam_left > 0.0 and sig_cam_who == p1:
+			lines = 0.6
+		elif _flying(p1) and trick_cam > 0.5:
+			lines = 0.3
+		if lines > 0.0:
+			fx.call("speed_lines", lines)
+		for w in [p1, p2]:
+			var wr: Node3D = w
+			var st: int = int(wr.get("state"))
+			var trail_on := _is_boosting(wr) or st == Wrestler.S.DIVING or st == Wrestler.S.JUGGLED \
+				or (sig_cam_left > 0.0 and sig_cam_who == wr)
+			if trail_on and not match_over:
+				var tint: Color = Color(1.0, 0.78, 0.25) if bool(wr.get("brawl_mode")) else (wr.gear_color as Color).lightened(0.35)
+				fx.call("trail", wr, tint)
+	return cam_boost_fov + cam_boost_punch
 
 
 func _update_hud(delta: float) -> void:
