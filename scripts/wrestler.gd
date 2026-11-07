@@ -5497,6 +5497,7 @@ const EX_SPIN_FALL := 0.5        # spin-out fall (pose only)
 var pt_snap := 0.0               # 0 = plain easing; > 0 = springy overshoot amount (0..1)
 var _spv := {}                   # spring velocities per joint group
 var _persona_c := ""
+var _anim_style_c := ""
 var _bump_kind := ""             # DOWN: "" / "flip" / "spin" (how a big strike knocked us down)
 var _stun_kind := ""             # STUNNED: the strike that rocked us ("hook", "uppercut", ...)
 var _stomp_t := -10.0            # anim_clock of the last landing (stomp pose in IDLE)
@@ -5505,11 +5506,26 @@ var _down_from_dive := false     # DOWN after a dive that hit: kip-up on the way
 var _kip := false                # GETTING_UP: kip-up instead of the three-stage get-up
 
 
-## "power" (Tank: hip-hop power swagger) or "kid" (Peligro: daredevil kid acrobat).
+const EX_ANIM_STYLES := ["swagger", "hyper", "diva", "punk", "cowboy", "oldschool", "newschool"]
+
+
+## The look's "anim_style" (idle loop + taunt flavour): "swagger" (hip-hop power lean-back
+## bounce), "hyper" (daredevil kid hops), "diva", "punk", "cowboy", "oldschool", "newschool".
+## Without the key: masked characters are "hyper", everyone else "swagger".
+func _anim_style() -> String:
+	if _anim_style_c == "":
+		var st: String = str(look.get("anim_style", ""))
+		if not (st in EX_ANIM_STYLES):
+			st = "hyper" if bool(look.get("mask", false)) else "swagger"
+		_anim_style_c = st
+	return _anim_style_c
+
+
+## Body type for the shared flourishes: "kid" (acrobat: kip-ups, finger-sky stomps) or "power".
 func _persona() -> String:
 	if _persona_c == "":
-		var kid: bool = bool(look.get("mask", false)) or display_name.to_lower().contains("peligro")
-		_persona_c = "kid" if kid else "power"
+		var st := _anim_style()
+		_persona_c = "kid" if st == "hyper" or st == "newschool" else "power"
 	return _persona_c
 
 
@@ -5791,9 +5807,79 @@ func _ex_kip_up(u: float) -> void:
 
 ## Character swagger idles. "power": leaning back, bouncing to a beat, shoulders rolling, hands
 ## low and loose. "kid": hyper little hops on the toes, guard up, head bobbing, switching feet.
+## Other anim_style loops: "diva" (hands on hips, hip sway, chin up), "punk" (head-banging
+## bounce, fists low), "cowboy" (thumbs in the belt loops, slow lazy lean), "oldschool" (fists
+## up, bobbing and weaving), "newschool" (toprock side-steps, arms crossing).
 func _ex_swagger_idle() -> void:
 	var ac := anim_clock
-	if _persona() == "kid":
+	var style := _anim_style()
+	match style:
+		"diva":
+			var sway := sin(ac * 2.2)
+			_stance(0.3)
+			pt_kn_l += 0.2 * maxf(sway, 0.0)
+			pt_kn_r += 0.2 * maxf(-sway, 0.0)
+			pt_hip.z = 0.1 * sway
+			pt_tor = Vector3(-0.05, 0.1 * sway, -0.08 * sway)
+			pt_hd = Vector3(-0.25, 0.25 * sin(ac * 0.7), 0.1 * sway)
+			pt_al = Vector3(0.15, 0.0, -0.6)
+			pt_el_l = Vector3(0.0, 0.0, 1.3)
+			pt_ar = Vector3(0.15, 0.0, 0.6)
+			pt_el_r = Vector3(0.0, 0.0, -1.3)
+			r_limb = 14.0
+			return
+		"punk":
+			var bang := absf(sin(ac * 5.2))
+			_stance(0.5 + 0.25 * bang)
+			pt_tor = Vector3(0.3 + 0.2 * bang, 0.0, 0.0)
+			pt_hd = Vector3(-0.3 + 0.75 * bang, 0.0, 0.08 * sin(ac * 2.6))
+			_hang_arms(pt_tor.x, 0.25)
+			pt_el_l = Vector3(-0.6 - 0.3 * bang, 0.0, 0.0)
+			pt_el_r = Vector3(-0.6 - 0.3 * bang, 0.0, 0.0)
+			r_limb = 20.0
+			r_body = 22.0
+			return
+		"cowboy":
+			var lz := sin(ac * 0.9)
+			_stance(0.25)
+			pt_kn_l += 0.25 * maxf(lz, 0.0)
+			pt_kn_r += 0.25 * maxf(-lz, 0.0)
+			pt_tor = Vector3(-0.06, 0.12 * lz, 0.05 * lz)
+			pt_hd = Vector3(0.1, -0.15 * lz, 0.0)
+			pt_al = Vector3(0.05, 0.0, -0.35)
+			pt_el_l = Vector3(-0.5, 0.0, 0.6)
+			pt_ar = Vector3(0.05, 0.0, 0.35)
+			pt_el_r = Vector3(-0.5, 0.0, -0.6)
+			r_limb = 12.0
+			return
+		"oldschool":
+			var bob := sin(ac * 3.4)
+			_stance(0.7 + 0.15 * absf(bob))
+			pt_root_pos.x = 0.08 * bob
+			pt_tor = Vector3(0.35, -0.2 * bob, 0.15 * bob)
+			pt_hd = Vector3(0.0, 0.1 * bob, -0.1 * bob)
+			pt_al = Vector3(-1.2 - 0.1 * bob, 0.0, -0.15)
+			pt_ar = Vector3(-1.05 + 0.1 * bob, 0.0, 0.15)
+			pt_el_l = Vector3(-2.1, 0.0, 0.0)
+			pt_el_r = Vector3(-2.2, 0.0, 0.0)
+			r_limb = 22.0
+			return
+		"newschool":
+			var ph := ac * 4.0
+			var st := sin(ph)
+			_stance(0.45 + 0.2 * absf(cos(ph)))
+			pt_ll = Vector3(-0.2 - 0.35 * maxf(st, 0.0), 0.0, -0.12 - 0.15 * maxf(st, 0.0))
+			pt_lr = Vector3(-0.1 - 0.35 * maxf(-st, 0.0), 0.0, 0.12 + 0.15 * maxf(-st, 0.0))
+			pt_hip.y = 0.3 * st
+			pt_tor = Vector3(0.2, -0.2 * st, 0.0)
+			pt_hd = Vector3(-0.1 + 0.12 * absf(cos(ph)), -0.15 * st, 0.0)
+			pt_al = Vector3(-1.0 + 0.4 * st, 0.0, 0.25 * st)  # arms crossing in front
+			pt_ar = Vector3(-1.0 - 0.4 * st, 0.0, 0.25 * st)
+			pt_el_l = Vector3(-1.3, 0.0, 0.0)
+			pt_el_r = Vector3(-1.3, 0.0, 0.0)
+			r_limb = 20.0
+			return
+	if style == "hyper":
 		var hp := ac * 5.6
 		var hop := absf(sin(hp))           # 0 on the ground .. 1 at the top
 		var land := 1.0 - hop
@@ -6877,7 +6963,14 @@ func _pose_taunt() -> void:
 	_stance(0.3 + 0.45 * pre * (1.0 - on))
 	pt_tor = Vector3(0.25 * pre * (1.0 - on), 0.0, 0.0)
 	# arcade exaggeration: each character's taunt is a flashy trick pose
-	var tstyle := 3 if _persona() == "kid" else 0
+	var tstyle := 0  # swagger / oldschool: point + lean-back flex
+	match _anim_style():
+		"hyper", "newschool":
+			tstyle = 3  # pirouette hop + finger to the sky
+		"diva", "cowboy":
+			tstyle = 1  # fist to the rafters, hand on the hip
+		"punk":
+			tstyle = 2  # chest-beating roar
 	match tstyle:
 		3:
 			# "Kid" taunt: crouch, hop into a full pirouette, stick it with a finger to the sky
