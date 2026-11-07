@@ -3080,14 +3080,19 @@ const HUD_SPRING_WINDOW := 0.45   # wrestler.gd HF_SPRING_WINDOW (after a fence 
 const HUD_CHAIN_OPEN := 0.45      # wrestler.gd CHAIN_OPEN (fraction of a throw)
 const HUD_CHAIN_MAX := 2          # wrestler.gd CHAIN_MAX
 const HUD_JUGGLE_MAX := 2         # wrestler.gd JUGGLE_MAX
-const HUD_IDLE_TIPS := [
-	"Tap GRAB to lock up  -  HOLD GRAB for a strong lock-up",
-	"Double-tap RUN to dodge-roll",
-	"STRIKE again as each hit lands for a string  (stick away: Launcher!)",
-	"RUN into the fence, then STRIKE: springboard  /  GRAB: slingshot",
-	"RUN next to a picnic table, the car, the trampoline... to climb it",
-	"In the air: STRIKE spins, GRAB flips, PIN poses",
+const HUD_IDLE_TIPS := [  # [use key, text]; one line, <= 60 characters each
+	["tip_lockup", "Tap GRAB to lock up — HOLD GRAB for a strong one"],
+	["tip_roll", "Double-tap RUN to dodge-roll"],
+	["tip_string", "STRIKE again as each hit lands for a combo"],
+	["tip_spring", "RUN into the fence, then STRIKE: springboard"],
+	["tip_climb", "RUN next to the table, car, trampoline... to climb"],
+	["tip_air", "In the air: STRIKE spins, GRAB flips, PIN poses"],
 ]
+const HINT_MAX_CHARS := 60
+const HINT_USES_TO_HIDE := 2   # a hint goes away once its move / context worked this often
+var hint_uses := {}            # use key -> successful uses this session
+var hint_prev_state := -1
+var hint_prev_time := 0.0
 # Short button captions for the next hit of a strike string.
 const HUD_STRIKE_LABELS := {"jab": "JAB", "hook": "HOOK", "uppercut": "UPPERCUT", "haymaker": "HAYMAKER",
 	"spin_kick": "SPIN KICK", "superkick": "SUPERKICK", "launcher": "LAUNCH"}
@@ -3276,6 +3281,94 @@ func _hud_juggle_ready() -> bool:
 	return st == Wrestler.S.IDLE or st == Wrestler.S.WALK or st == Wrestler.S.PUNCH
 
 
+## One compact hint line (<= HINT_MAX_CHARS): the touch buttons already carry the details.
+## A tracked hint (non-empty key) disappears once its move worked HINT_USES_TO_HIDE times.
+func _h(key: String, text: String) -> String:
+	if key != "" and int(hint_uses.get(key, 0)) >= HINT_USES_TO_HIDE:
+		return ""
+	if text.length() > HINT_MAX_CHARS:
+		return text.substr(0, HINT_MAX_CHARS - 3) + "..."
+	return text
+
+
+func _hint_used(keys: Array) -> void:
+	for k in keys:
+		hint_uses[k] = int(hint_uses.get(k, 0)) + 1
+
+
+## Counts successful uses from p1's state changes (a new state, or a state re-entered).
+func _track_hint_uses() -> void:
+	var st: int = p1.state
+	var t: float = p1.state_time
+	var prev := hint_prev_state
+	var event := st != prev or t < hint_prev_time
+	hint_prev_state = st
+	hint_prev_time = t
+	if not event or prev < 0:
+		return
+	var opp: int = p2.state
+	var mk: String = p1.current_move_key
+	if st == Wrestler.S.IDLE or st == Wrestler.S.WALK:
+		if prev == Wrestler.S.PINNED:
+			_hint_used(["pinned"])  # kicked out
+		return
+	var mine := st == Wrestler.S.THROWING  # (as a victim, current_move_key is what hit us)
+	if (mine and mk in ["armdrag", "hiptoss", "rev_backdrop"]) or (prev == Wrestler.S.TIEUP_DEF and st == Wrestler.S.WHIPPING):
+		_hint_used(["reverse", "caught"])
+	if prev == Wrestler.S.TIEUP_ATK and st in [Wrestler.S.THROWING, Wrestler.S.PUNCH, Wrestler.S.WHIPPING]:
+		var strong: bool = p1.tie_strong
+		_hint_used(["lockup_strong" if strong else "lockup", "tip_lockup"])
+	if mine and (mk == "finisher" or mk == "super_finisher"):
+		_hint_used(["special"])
+	if st in [Wrestler.S.DOWN, Wrestler.S.GETTING_UP]:
+		if prev == Wrestler.S.PINNED:
+			_hint_used(["pinned"])
+	elif st == Wrestler.S.THROWING:
+		if prev == Wrestler.S.THROWING:
+			_hint_used(["chain"])
+		elif prev == Wrestler.S.WHIPPING:
+			_hint_used(["whip"])
+	elif st == Wrestler.S.PUNCH:
+		if prev == Wrestler.S.PUNCH:
+			_hint_used(["string", "tip_string"])
+		elif prev == Wrestler.S.WHIPPING:
+			_hint_used(["whip"])
+	elif st == Wrestler.S.TIEUP_ATK:
+		var strong2: bool = p1.tie_strong
+		if prev == Wrestler.S.GRAB_WINDUP and strong2:
+			_hint_used(["windup"])
+		_hint_used(["tip_lockup"])
+	elif st == Wrestler.S.DIVING:
+		if prev == Wrestler.S.PERCHED:
+			_hint_used(["perch"])
+		elif prev == Wrestler.S.RUN:
+			_hint_used(["spring", "tip_spring"])
+	elif st == Wrestler.S.GROUND_DROP:
+		_hint_used(["run_drop"])
+	elif st == Wrestler.S.RUN_ATTACK:
+		_hint_used(["run"])
+	elif st in [Wrestler.S.SWING, Wrestler.S.THROW_ITEM]:
+		_hint_used(["item", "run_swing"] if prev == Wrestler.S.RUN else ["item"])
+	elif st in [Wrestler.S.STOMP, Wrestler.S.PICKUP, Wrestler.S.PINNING]:
+		_hint_used(["down_near", "down_far"])
+	elif st == Wrestler.S.SET_TABLE:
+		_hint_used(["table", "table_set"])
+	elif st == Wrestler.S.PICKUP_ITEM:
+		_hint_used(["pickup"])
+	elif st == Wrestler.S.CLIMB:
+		_hint_used(["climb", "climb_dive", "tip_climb"])
+	elif st == Wrestler.S.ROLL:
+		_hint_used(["tip_roll"])
+	if prev == Wrestler.S.DIVING:
+		_hint_used(["air", "tip_air"])  # landed the dive
+	if opp == Wrestler.S.JUGGLED and st in [Wrestler.S.PUNCH, Wrestler.S.THROWING, Wrestler.S.RUN_ATTACK]:
+		_hint_used(["juggle"])
+	if opp == Wrestler.S.ON_TABLE and st in [Wrestler.S.PUNCH, Wrestler.S.SWING, Wrestler.S.RUN_ATTACK, Wrestler.S.DIVING]:
+		_hint_used(["smash", "run_table"])
+	if opp == Wrestler.S.CORNER_STUN and st in [Wrestler.S.THROWING, Wrestler.S.DIVING, Wrestler.S.RUN_ATTACK]:
+		_hint_used(["corner", "run_corner"])
+
+
 func _hint_text() -> String:
 	var st: int = p1.state
 	var opp: int = p2.state
@@ -3285,20 +3378,20 @@ func _hint_text() -> String:
 	var dist := _p_dist()
 	var near := dist < 1.7
 	if _show_reverse():
-		return "REVERSE!  Tap GRAB or STRIKE NOW!"
+		return _h("reverse", "REVERSE!  Tap GRAB or STRIKE now!")
 	if st == Wrestler.S.TIEUP_ATK:
 		var strong: bool = p1.tie_strong
+		if special:
+			return _h("special", "LOCK-UP: STICK + GRAB for the THUNDER DRIVER!")
 		if strong:
-			var fin_s := "THUNDER DRIVER!" if special else "Neckbreaker"
-			return "STRONG LOCK-UP!   RUN: Irish Whip (aim diagonally: into the fence!)\nSTRIKE: Tombstone   STICK+STRIKE: Powerbomb\nGRAB: Spinebuster   STICK+GRAB: " + fin_s
-		var fin := "THUNDER DRIVER!" if special else "DDT"
-		return "LOCK-UP!   RUN: Irish Whip (aim diagonally: into the fence!)\nSTRIKE: Knee   STICK+STRIKE: Suplex\nGRAB: Slam   STICK+GRAB: " + fin
+			return _h("lockup_strong", "STRONG: WHIP / TOMBSTONE / SPINEBUSTER — stick: alternates")
+		return _h("lockup", "LOCK-UP: WHIP / KNEE / SLAM — stick for alternates")
 	if st == Wrestler.S.TIEUP_DEF:
 		if lockout > 0.0:
-			return "TOO EARLY!  Wait for the move..."
-		return "CAUGHT!  Tap GRAB or STRIKE when the \"!\" appears to reverse"
+			return _h("caught", "TOO EARLY!  Wait for the \"!\"...")
+		return _h("caught", "CAUGHT!  GRAB or STRIKE when the \"!\" shows")
 	if st == Wrestler.S.PINNED:
-		return "MASH ANY BUTTON TO KICK OUT!"
+		return _h("pinned", "MASH ANY BUTTON TO KICK OUT!")
 	if st == Wrestler.S.THROWING:
 		var links := _hud_chain_links()
 		if not links.is_empty():
@@ -3307,22 +3400,22 @@ func _hint_text() -> String:
 				parts.append("GRAB: " + _hud_move_name(str(links["grab"])))
 			if links.has("strike"):
 				parts.append("STRIKE: " + _hud_move_name(str(links["strike"])))
-			return "CHAIN IT!   " + "   ".join(parts)
+			return _h("chain", "CHAIN IT!  " + "  ".join(parts))
 		return ""
 	if st == Wrestler.S.DIVING:
 		var mv_key: String = p1.hf_move
 		if mv_key == "corner_splash":
 			return ""
-		return "Air tricks! SPIN / FLIP / POSE — finish before you land"
+		return _h("air", "Air tricks: SPIN / FLIP / POSE before you land")
 	if st == Wrestler.S.PERCHED:
 		if opp == Wrestler.S.DOWN or opp == Wrestler.S.ON_TABLE:
 			if special:
-				return "DIVE!  SPECIAL: GUTTER STAR PRESS!!!"
-			return "DIVE!  Stick picks the move\nToward: Splash   Away: Moonsault   Side: Elbow"
-		return "DIVE!  STRIKE: Crossbody   STICK+STRIKE: Missile Dropkick\nGRAB: Hop down   RUN: Climb down"
+				return _h("perch", "DIVE!  SPECIAL: GUTTER STAR PRESS!!!")
+			return _h("perch", "DIVE!  Stick picks: splash / moonsault / elbow")
+		return _h("perch", "DIVE!  STRIKE: Crossbody — stick: Missile Dropkick")
 	if st == Wrestler.S.CLIMB:
 		var hp: Dictionary = p1.hf_perch
-		return "Climbing the %s..." % _hud_perch_name(hp) if not hp.is_empty() else "Climbing..."
+		return _h("", "Climbing the %s..." % _hud_perch_name(hp) if not hp.is_empty() else "Climbing...")
 	if st == Wrestler.S.ON_TABLE:
 		return "Uh oh... you're laid out on the table!"
 	if st == Wrestler.S.CORNER_STUN:
@@ -3330,69 +3423,75 @@ func _hint_text() -> String:
 	if st == Wrestler.S.ROLL or st == Wrestler.S.JUGGLED:
 		return ""
 	if st == Wrestler.S.GRAB_WINDUP:
-		return "Keep holding GRAB for a STRONG lock-up..."
+		return _h("windup", "Keep holding GRAB for a STRONG lock-up...")
 	if st == Wrestler.S.WHIPPING:
-		return "Here he comes!  STRIKE: Clothesline\nGRAB: Back Body Drop   STICK+GRAB: Powerslam"
+		return _h("whip", "Here he comes!  STRIKE / GRAB — stick: Powerslam")
 	if _hud_juggle_ready():
-		return "He's in the air!  STRIKE: Air Mail Knee   GRAB: Catch & Slam   RUN: Express Lariat"
+		return _h("juggle", "He's in the air!  STRIKE / GRAB / RUN to follow up")
 	if _hud_in_string():
-		return "COMBO!  STRIKE again as it lands   (stick toward: Kick  /  away: Launcher)"
+		return _h("string", "COMBO!  STRIKE as it lands — stick: Kick / Launcher")
 	if st == Wrestler.S.RUN:
 		if _hud_holding():
-			return "STRIKE: Running swing!      RUN: Stop"
+			return _h("run_swing", "STRIKE: Running swing    RUN: Stop")
 		if opp == Wrestler.S.ON_TABLE:
-			return "STRIKE: Leap through the table!"
+			return _h("run_table", "STRIKE: Leap through the table!")
 		if opp == Wrestler.S.CORNER_STUN:
-			return "STRIKE: Splash him against the fence!"
+			return _h("run_corner", "STRIKE: Splash him against the fence!")
 		var whipped: bool = p1.whipped
 		if not whipped and _hud_spring_ready():
-			return "Off the %s! STRIKE springboard / GRAB slingshot" % _hud_bounce_edge()
+			return _h("spring", "Off the %s!  STRIKE springboard / GRAB slingshot" % _hud_bounce_edge())
 		if brawl:
 			return "BRAWL MODE! Every move is SUPER"
 		if opp == Wrestler.S.DOWN:
-			return "STRIKE: Elbow Drop      GRAB: Knee Drop"
-		return "STRIKE: Clothesline   (off the fence: Springboard!)"
+			return _h("run_drop", "STRIKE: Elbow Drop    GRAB: Knee Drop")
+		return _h("run", "STRIKE: Clothesline  (off the fence: Springboard!)")
 	var free := st == Wrestler.S.IDLE or st == Wrestler.S.WALK
 	if free and _hud_holding():
 		if opp == Wrestler.S.DOWN and dist < 2.0:
-			return "STRIKE: Swing at him   PIN: Cover   GRAB: Drop"
-		return "STRIKE: Swing   PIN: Throw it   GRAB: Drop\nRUN, then STRIKE: Running swing"
+			return _h("item", "STRIKE: Swing at him   PIN: Cover   GRAB: Drop")
+		return _h("item", "STRIKE: Swing   PIN: Throw it   GRAB: Drop")
 	if free and opp == Wrestler.S.ON_TABLE and dist < 2.2:
-		return "SMASH them through it!  Press STRIKE"
+		return _h("smash", "SMASH him through it!  Press STRIKE")
 	if free and opp == Wrestler.S.CORNER_STUN:
-		return "He's slumped against the fence!\nRUN, then STRIKE: Splash   GRAB (close): SUPER DROP"
+		return _h("corner", "He's slumped!  RUN+STRIKE: Splash   GRAB: SUPER DROP")
 	var ctx := _hud_item_context() if free else ""
 	if ctx == "on_table":
-		return "Table's set!  GRAB: Put him on it   PIN: Cover"
+		return _h("table_set", "Table's set!  GRAB: Put him on it   PIN: Cover")
 	var perch: Dictionary = _hud_climb_perch() if free else {}
 	if opp == Wrestler.S.DOWN:
 		if not perch.is_empty():
-			return "He's down!  RUN: Climb the %s and fly!" % _hud_perch_name(perch)
+			return _h("climb_dive", "He's down!  RUN: Climb the %s and fly!" % _hud_perch_name(perch))
 		if near:
-			return "STRIKE: Stomp   GRAB: Pick up   PIN: Cover"
+			return _h("down_near", "STRIKE: Stomp   GRAB: Pick up   PIN: Cover")
 		if brawl:
 			return "BRAWL MODE! Every move is SUPER"
-		return "He's down!  Get close and PIN, climb something, or TAUNT"
+		return _h("down_far", "He's down!  Get close and PIN, or climb something")
 	if ctx.begins_with("pick_up:"):
-		return "GRAB: Pick up %s" % _hud_item_name(ctx.substr(8))
+		return _h("pickup", "GRAB: Pick up %s" % _hud_item_name(ctx.substr(8)))
 	if ctx == "table":
-		return "GRAB: Set up the table"
+		return _h("table", "GRAB: Set up the table")
 	if not perch.is_empty():
-		return "Climb the %s!   (RUN)" % _hud_perch_name(perch)
+		return _h("climb", "Climb the %s!   (RUN)" % _hud_perch_name(perch))
 	if brawl:
 		return "BRAWL MODE! Every move is SUPER"
 	if special:
 		var secs: float = p1.special_timer
-		return "SPECIAL READY! (%ds)  Lock up, then STICK + GRAB" % int(ceil(secs))
+		return _h("special", "SPECIAL READY! (%ds)  Lock up, then STICK + GRAB" % int(ceil(secs)))
 	if hud_clock < 6.0:
-		var first_tip: String = HUD_IDLE_TIPS[0]
-		return first_tip
-	# Idle tip rotation while nothing is happening (opponent not in your face).
+		var first_tip: Array = HUD_IDLE_TIPS[0]
+		return _h(str(first_tip[0]), str(first_tip[1]))
+	# Idle tip rotation while nothing is happening (opponent not in your face); tips for
+	# moves the player already uses are skipped.
 	if free and dist > 2.2 and opp != Wrestler.S.DOWN:
 		var slot := int(hud_clock / 7.0)
 		if slot % 2 == 0:
-			var tip: String = HUD_IDLE_TIPS[int(slot / 2.0) % HUD_IDLE_TIPS.size()]
-			return tip
+			var left: Array = []
+			for tip in HUD_IDLE_TIPS:
+				if int(hint_uses.get(tip[0], 0)) < HINT_USES_TO_HIDE:
+					left.append(tip)
+			if not left.is_empty():
+				var pick: Array = left[int(slot / 2.0) % left.size()]
+				return str(pick[1])
 	return ""
 
 
@@ -3649,6 +3748,10 @@ func _update_hud(delta: float) -> void:
 	else:
 		count_label.text = ""
 
+	# "?" button: half-faded while idle, full while hovered / pressed or the help panel is open.
+	var help_on := help_panel.visible or help_button.is_hovered() or help_button.button_pressed
+	help_button.modulate.a = move_toward(help_button.modulate.a, 1.0 if help_on else 0.5, delta * 3.0)
+	_track_hint_uses()
 	var hint := "" if match_over else _hint_text()
 	if hint != hint_label.text:
 		hint_label.text = hint
