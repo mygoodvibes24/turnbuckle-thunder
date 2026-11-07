@@ -524,8 +524,50 @@ func _update_view_size() -> void:
 	view.size = Vector2i(maxi(16, roundi(w)), maxi(16, roundi(h)))
 
 
+var _dbg := "?"
+func _dbgv() -> String:
+	if _dbg == "?":
+		_dbg = ""
+		if OS.has_feature("web"):
+			var hv: Variant = JavaScriptBridge.eval("window.location.hash")
+			_dbg = str(hv).trim_prefix("#")
+	return _dbg
+
+
 func _animate_camera(dt: float) -> void:
 	if camera == null:
+		return
+	var dv := _dbgv()
+	if dv != "":
+		if ui != null:
+			ui.visible = false
+		var tp := Vector3(-0.72, 0.0, 0.12)
+		var fy := 0.42
+		var d := 1.0
+		var a := 0.0
+		var hh := 1.0
+		var lh := 1.0
+		match dv:
+			"face":
+				d = 0.62; a = 0.0; hh = 1.75; lh = 1.73
+			"face3q":
+				d = 0.62; a = 0.7; hh = 1.76; lh = 1.73
+			"body":
+				d = 2.9; a = 0.0; hh = 1.2; lh = 1.0
+			"body3q":
+				d = 2.9; a = -0.8; hh = 1.2; lh = 1.0
+			"back":
+				d = 2.6; a = PI; hh = 1.5; lh = 1.0
+			"waistback":
+				d = 1.1; a = PI + 0.3; hh = 1.3; lh = 0.95
+			"legs":
+				d = 1.5; a = 0.3; hh = 0.7; lh = 0.55
+		camera.fov = 40.0
+		camera.h_offset = 0.0
+		camera.v_offset = 0.0
+		var ang := fy + a
+		camera.position = tp + Vector3(sin(ang) * d, hh, cos(ang) * d)
+		camera.look_at(tp + Vector3(0, lh, 0))
 		return
 	var c := Vector3(0.05, 1.0, -0.05)
 	var yaw := 0.2 + 0.32 * sin(t * 0.11)
@@ -1001,6 +1043,8 @@ func _animate_wrestlers(dt: float) -> void:
 		var w := wrestlers[i]
 		var plan: Dictionary = pose_plan[i]
 		var left: float = plan["left"] - dt
+		if _dbgv() != "":
+			left = 99.0
 		if left <= 0.0:
 			var seq: Array = plan["seq"]
 			var ni: int = (int(plan["i"]) + 1) % seq.size()
