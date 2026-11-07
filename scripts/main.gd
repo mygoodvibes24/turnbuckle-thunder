@@ -3562,6 +3562,8 @@ func _physics_process(delta: float) -> void:
 			p1.in_strike = js or buf_strike
 			p1.in_grapple = jg or buf_grapple
 			p1.in_grapple_held = Input.is_action_pressed("grapple")
+			p1.in_run_held = Input.is_action_pressed("run")  # flow & boost: hold RUN = boost
+			p1.in_pin_held = Input.is_action_pressed("pin")  # flow & boost: hold PIN = tweak
 			p1.in_run = jr or buf_run
 			p1.in_pin = jp or buf_pin
 			p1.any_pressed = p1.in_strike or p1.in_grapple or p1.in_run or p1.in_pin
