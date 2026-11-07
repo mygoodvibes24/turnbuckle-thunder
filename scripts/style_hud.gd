@@ -249,9 +249,9 @@ func _on_popped(text: String, points: int, kind: String, mult: int, d: Dictionar
 	pt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	# Anchor: centered over the head, kept clear of the top HUD and the bottom touch controls.
 	var head := _head_screen(d["w"])
-	var lift := 34.0 if not cpu else 20.0
+	var lift := 16.0 if not cpu else 10.0
 	var ax := clampf(head.x, sr.position.x + hw * 0.5 + 8.0, sr.end.x - hw * 0.5 - 8.0)
-	var ay := clampf(head.y - lift - holder.size.y, sr.position.y + 190.0, sr.end.y - 290.0 - holder.size.y * 0.5)
+	var ay := clampf(head.y - lift - holder.size.y, sr.position.y + 212.0, sr.end.y - 290.0 - holder.size.y * 0.5)
 	# Several in quick succession: shove the young ones up so the new one lands under them.
 	var step := holder.size.y + 4.0
 	for o in pops:
