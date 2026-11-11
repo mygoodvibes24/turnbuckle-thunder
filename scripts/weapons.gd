@@ -427,8 +427,8 @@ func _break_item(it: Item) -> void:
 func _spawn_all() -> void:
 	# Around the yard (yard_contract.md): two chairs near the patio, the trash can by the right
 	# fence, the 2x4 by the shed, the folded table leaning on the right fence.
-	_place_floor(_make_chair(), Vector3(-1.3, 0.0, -2.9), PI * 0.3)
-	_place_floor(_make_chair(), Vector3(-2.8, 0.0, -1.0), -PI * 0.2)
+	_place_floor(_make_chair(), Vector3(-0.7, 0.0, -3.6), PI * 0.3)  # well clear of the fight-start spots
+	_place_floor(_make_chair(), Vector3(-3.3, 0.0, -1.7), -PI * 0.2)
 	_place_floor(_make_trash_can(), Vector3(6.75, 0.0, -0.6), 0.0)
 	_place_floor(_make_plank(), Vector3(-6.3, 0.0, 1.9), 0.15)
 	_lean_table(_make_table(), Vector3(7.1, 0.0, 0.5), Vector3(-1.0, 0.0, 0.0))
