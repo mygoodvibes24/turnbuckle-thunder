@@ -671,6 +671,7 @@ func _set_card(i: int) -> void:
 		card_status.text = ""
 		_want_opponent("")
 		name_r.text = "???"
+		name_r.visible = false
 		return
 	card_name.text = str(ch.get("name", "")).to_upper()
 	card_teaser.text = str(ch.get("teaser", ""))
@@ -694,6 +695,10 @@ func _set_card(i: int) -> void:
 	card_status.add_theme_color_override("font_color", GREEN if _is_done(cur) else GOLD)
 	_want_opponent(_opp_id(cur))
 	name_r.text = _opp_name(cur)
+	name_r.visible = true
+	name_r.reset_size()
+	if view_rect != null:
+		name_r.position.x = view_rect.position.x + view_rect.size.x * 0.78 - name_r.size.x * 0.5
 
 
 # ---------------------------------------------------------------- chapter flow
@@ -1243,9 +1248,9 @@ func _build_view() -> void:
 	fill.look_at(Vector3(0, 1.0, 0))
 	camera = Camera3D.new()
 	camera.fov = 34.0
-	camera.position = Vector3(0.0, 1.15, 5.0)
+	camera.position = Vector3(0.05, 1.05, 3.9)
 	world.add_child(camera)
-	camera.look_at(Vector3(0.0, 0.95, 0.0))
+	camera.look_at(Vector3(0.05, 0.92, 0.0))
 	camera.current = true
 	# soft blob shadows
 	var grad := Gradient.new()
