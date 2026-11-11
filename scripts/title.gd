@@ -7,9 +7,11 @@ extends Node3D
 ## "PRESS START", then a thumb-friendly menu (START BRAWL / HOW TO PLAY / CREDITS).
 ## Keyboard (arrows/WASD + Enter/Space/J, Esc/K back), gamepad (d-pad/stick + A/B) and touch.
 ##
-## Loading is staged so the logo shows on the very first frame: the 3D set, the two
-## wrestlers (their textures are painted on build) and the sound clips are created one per
-## frame after the logo has landed, then the 3D fades in.
+## Loading is staged so the logo shows on the very first frame: the 3D set is built on the
+## next frame and fades straight in to ~60%, the two wrestlers (their textures are painted on
+## build) follow one per frame and bring it to full brightness, and only then are the sound
+## clips and the music synthesised. All intro timing runs on the wall clock
+## (Time.get_ticks_msec), so slow frames / loading hitches never stretch the intro.
 
 const Wrestler := preload("res://scripts/wrestler.gd")
 const Audio := preload("res://scripts/audio.gd")
@@ -19,9 +21,13 @@ const MATCH_SCENE := "res://main.tscn"
 enum Phase { INTRO, PRESS, MENU, PANEL, LEAVING }
 
 var phase: int = Phase.INTRO
-var t := 0.0                     # title clock (animation time, hitch-clamped)
+var t := 0.0                     # title clock: real seconds since _ready (+ skip offset)
+var start_ms := 0
+var t_skip := 0.0                # added to the clock when the intro is skipped
 var load_step := 0
-var loaded := false
+var loaded := false              # set + wrestlers + audio + music all built
+var set_t := -1.0                # clock time the set became visible (-1: not yet)
+var cast_t := -1.0               # clock time the wrestlers were added
 var fade_3d := 0.0
 var shake := 0.0
 var input_lock := 0.0            # seconds left during which confirm/back are ignored
@@ -171,6 +177,7 @@ void fragment() {
 
 func _ready() -> void:
 	Engine.time_scale = 1.0
+	start_ms = Time.get_ticks_msec()
 	headless = DisplayServer.get_name() == "headless"
 	grunge_tex = _make_grunge()
 	font_b = FontVariation.new()
@@ -190,8 +197,11 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	frames += 1
-	var dt := minf(delta, 1.0 / 20.0)  # loading hitches pause the animation instead of skipping it
-	t += dt
+	# Wall-clock driven: the logo and fades finish on time even at a few fps. Only the
+	# per-frame integrators (wrestler poses, camera easing) get a clamped step.
+	var prev_t := t
+	t = _now()
+	var dt := clampf(t - prev_t, 0.0, 0.1)
 	input_lock = maxf(0.0, input_lock - delta)  # real time: slow frames must not eat inputs
 
 	# Headless (CI smoke test): run through the title, then into the match, so the
@@ -206,9 +216,14 @@ func _process(delta: float) -> void:
 	_animate_camera(dt)
 	_animate_wrestlers(dt)
 
-	if loaded:
-		fade_3d = minf(1.0, fade_3d + dt / 1.4)
-	post_mat.set_shader_parameter("fade", _smooth(fade_3d))
+	# Set visible: quick fade to 60%. Wrestlers in: on up to full over ~0.6 s.
+	var f := 0.0
+	if set_t >= 0.0:
+		f = 0.6 * _smooth((t - set_t) / 0.35)
+	if cast_t >= 0.0:
+		f = lerpf(f, 1.0, _smooth((t - cast_t) / 0.6))
+	fade_3d = maxf(fade_3d, f)
+	post_mat.set_shader_parameter("fade", fade_3d)
 
 	if phase == Phase.INTRO and t > 1.2:
 		phase = Phase.PRESS
@@ -216,7 +231,7 @@ func _process(delta: float) -> void:
 	if phase == Phase.PRESS:
 		press_label.modulate.a = 1.0 if fmod(t, 1.0) < 0.62 else 0.15
 	vs_label.modulate.a = clampf((fade_3d - 0.5) * 2.0, 0.0, 1.0)
-	loading_label.visible = phase != Phase.LEAVING and not loaded and t > 1.0
+	loading_label.visible = phase != Phase.LEAVING and cast_t < 0.0 and t > 1.0
 	if loading_label.visible:
 		loading_label.modulate.a = 0.4 + 0.3 * sin(t * 6.0)
 
@@ -226,23 +241,34 @@ func _process(delta: float) -> void:
 	ui.position = Vector2(randf_range(-1.0, 1.0), randf_range(-1.0, 1.0)) * 14.0 * s
 
 
+func _now() -> float:
+	return float(Time.get_ticks_msec() - start_ms) / 1000.0 + t_skip
+
+
 func _smooth(x: float) -> float:
 	x = clampf(x, 0.0, 1.0)
 	return x * x * (3.0 - 2.0 * x)
 
 
 func _staged_load() -> void:
-	if loaded or t < 0.95:
+	# Frame 1 shows the logo alone; then one heavy step per frame. Picture first
+	# (set, then the wrestlers), sound last: the audio/music synthesis is the slowest part
+	# and the intro must not wait for it.
+	if loaded or frames < 2:
 		return
-	# One heavy step per frame, after the logo has slammed in.
 	match load_step:
 		0:
 			_build_set()
+			set_t = _now()  # after the build, so its hitch doesn't eat the fade
 		1:
 			_spawn_wrestlers_a()
 		2:
 			_spawn_wrestlers_b()
+			cast_t = _now()
 		3:
+			# Give the faded-in picture a few frames on screen before the synthesis hitch.
+			if t - cast_t < 0.6 and not headless:
+				return
 			audio = Audio.new()
 			add_child(audio)
 		4:
@@ -844,6 +870,27 @@ func _build_set() -> void:
 	var lens := _box(Vector3(0.42, 0.27, 0.04), Vector3.ZERO, _mat(Color(1.0, 0.94, 0.8), true, 4.0))
 	lens.transform = rim.transform * Transform3D(Basis(), Vector3(0, 0, -0.13))
 	_glow(rpos + (Vector3(0.0, 1.0, 0.0) - rpos).normalized() * 0.3, 2.4, Color(1.0, 0.85, 0.6, 0.6))
+
+	# Character lights: a warm key from the camera side so faces and gear read (no
+	# silhouettes against the fence) and a warm rim from behind-left to cut them out of
+	# the dark background. No shadows: the floodlight casts the only one.
+	var key := SpotLight3D.new()
+	var kpos := Vector3(-2.4, 2.7, 3.6)
+	key.transform = Transform3D(Basis.looking_at(Vector3(0.05, 1.05, -0.05) - kpos), kpos)
+	key.spot_angle = 26.0
+	key.spot_angle_attenuation = 0.9
+	key.spot_range = 9.0
+	key.light_energy = 2.2
+	key.light_color = Color(1.0, 0.8, 0.58)
+	world.add_child(key)
+	var back_rim := SpotLight3D.new()
+	var bpos := Vector3(-2.0, 2.9, -2.9)
+	back_rim.transform = Transform3D(Basis.looking_at(Vector3(0.05, 1.2, 0.0) - bpos), bpos)
+	back_rim.spot_angle = 30.0
+	back_rim.spot_range = 7.0
+	back_rim.light_energy = 3.0
+	back_rim.light_color = Color(1.0, 0.7, 0.42)
+	world.add_child(back_rim)
 
 	_build_string_lights()
 
@@ -1465,6 +1512,7 @@ func _relayout() -> void:
 
 
 func _finish_logo_intro() -> void:
+	t_skip += maxf(0.0, 1.3 - t)
 	t = maxf(t, 1.3)
 
 
@@ -1487,14 +1535,17 @@ func _animate_logo(dt: float) -> void:
 				c.scale = Vector2(maxf(k, 0.02), 1.0)
 				c.pivot_offset = Vector2(0.0, c.size.y * 0.5)
 			"slam":
+				# Drops in from just above its spot, slightly enlarged (stays on-screen).
 				var d := 0.22
 				if u < d:
 					var k := u / d
-					c.scale = Vector2.ONE * lerpf(3.2, 1.0, k * k)
-					c.modulate.a = k
+					c.scale = Vector2.ONE * lerpf(1.35, 1.0, k * k)
+					c.position = rest_pos + Vector2(0.0, -70.0 * (1.0 - k * k))
+					c.modulate.a = minf(1.0, k * 1.6)
 				else:
 					var b := u - d
 					c.scale = Vector2.ONE * (1.0 + 0.07 * exp(-b * 9.0) * cos(b * 30.0))
+					c.position = rest_pos
 					c.modulate.a = 1.0
 					if part.size() < 6:
 						part.append(true)
@@ -1502,7 +1553,7 @@ func _animate_logo(dt: float) -> void:
 						_snd("big_thud", -2.0)
 			"slide":
 				var k := _smooth(minf(u / 0.25, 1.0))
-				c.position = rest_pos + Vector2(-500.0 * (1.0 - k), 0.0)
+				c.position = rest_pos + Vector2(-60.0 * (1.0 - k), 0.0)  # short slide, never off-screen
 				c.modulate.a = k
 				c.rotation = rest_rot - 0.15 * (1.0 - k)
 			"stamp":

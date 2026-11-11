@@ -64,7 +64,8 @@ func setup(p_main: Node, wrestlers: Array) -> void:
 		for c in w.get_children():
 			if c.has_signal("popped"):
 				st = c
-		if st == null:
+		if st == null or st.get_parent() != w:
+			push_error("style_hud: wrestler %d (%s) has no StyleSys child; its STYLE column is off" % [i, w.name])
 			continue
 		cols.append(_build_col(w, st, i == 1))
 
@@ -510,6 +511,7 @@ func _update_col(d: Dictionary, sr: Rect2, delta: float) -> void:
 	var mult: int = w.combo_mult
 	var cpts: int = w.combo_points
 	var count: int = st.get("combo_count")
+	var min_count := 1 if not cpu else 2  # the player's tally shows from the first trick
 	if msg_t > 0.0:
 		msg_t -= delta
 		d["msg_t"] = msg_t
@@ -519,12 +521,12 @@ func _update_col(d: Dictionary, sr: Rect2, delta: float) -> void:
 		if d["msg_kind"] == "break":
 			var sh := 9.0 * clampf(msg_t - 0.4, 0.0, 1.0)
 			combo.position += Vector2(sin(clock * 75.0) * sh, cos(clock * 61.0) * sh * 0.4)
-		if count >= 2:
+		if count >= min_count:
 			msg_t = 0.0  # a new combo is already running: show it instead
 			d["msg_t"] = 0.0
 	if msg_t <= 0.0:
 		sub.visible = false
-		if count >= 2:
+		if count >= min_count:
 			var txt := "x%d   %s" % [mult, _fmt(cpts)]
 			if combo.text != txt:
 				combo.text = txt
