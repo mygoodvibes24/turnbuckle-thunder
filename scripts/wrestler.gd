@@ -2246,6 +2246,7 @@ func _update_special(delta: float) -> void:
 
 func tick(delta: float) -> void:
 	brawl_mode = true  # THROWAWAY PREVIEW ONLY
+	health = maxf(health, 60.0)  # THROWAWAY
 	if _sig_frozen(delta):
 		return  # signature supers hook: apex freeze-frame (the pose holds)
 	state_time += delta
@@ -4579,7 +4580,7 @@ func _sig_ai(delta: float, dist: float, toward: Vector2) -> bool:
 	if not _sig_ok() or reversal_window > 0.0:
 		sig_ai_run = false
 		return false
-	var want := 0.3 + 0.5 * ai_skill
+	var want := 1.0  # THROWAWAY
 	match state:
 		S.TIEUP_ATK:
 			if committed_move == "" and state_time > (0.5 if tie_strong else 0.35) and sig_ai_roll < want:

@@ -84,7 +84,7 @@ func _ready() -> void:
 		"shoe_color": Color(0.9, 0.9, 0.88), "shoe_accent": Color(0.13, 0.55, 0.26),
 		"wristband_color": Color(0.1, 0.1, 0.1), "bulk": 0.86,
 	}
-	p1 = _spawn("TANK MAGRUDER", tank, false, Vector3(-1.8, 0, 0.3))
+	p1 = _spawn("TANK MAGRUDER", tank, true, Vector3(-1.8, 0, 0.3))
 	p2 = _spawn("LIL PELIGRO", kid, true, Vector3(1.8, 0, -0.3))
 	p1.opponent = p2
 	p2.opponent = p1
