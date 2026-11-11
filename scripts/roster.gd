@@ -17,7 +17,8 @@ extends RefCounted
 ##   gear (signature colour), skin, face "tank"|"kid", hair "locs"|"curls"|"none", hair_color,
 ##   top "tee"|"hoodie", top_color, top_accent, graphic "skull_bolt"|"peligro"|"none",
 ##   undershirt, bottom_color, bottom_fade, shoe_color, shoe_accent, chain, bracelet, tattoos,
-##   wristband_color, mask, mask_color, mask_trim, bulk (0.8..1.15)
+##   wristband_color, sleeves "long"|"short"|"none", hood (bool, hoodies), mask, mask_base,
+##   mask_paint, bulk (0.8..1.15). (Peligro still carries main.gd's mask_color / mask_trim.)
 ## "hair" / "top" therefore hold the CLOSEST shape the model can build right now. The intended
 ## designs are described by extra keys for the roster-models work (not rendered yet):
 ##   body          "male" | "female"
@@ -92,7 +93,7 @@ const ROSTER := [
 			"graphic": "none",
 			"bottom_color": Color(0.6, 0.56, 0.72), "bottom_fade": Color(0.88, 0.85, 0.95),
 			"shoe_color": Color(0.96, 0.95, 0.97), "shoe_accent": Color(1.0, 0.36, 0.76),
-			"bracelet": true, "bulk": 0.8,
+			"sleeves": "short", "bracelet": true, "bulk": 0.8,
 			# not rendered yet (roster models)
 			"body": "female", "hair_style": "ponytail", "top_style": "stage_top",
 			"bottom_style": "glam_pants", "shoes": "platforms", "hat": "none",
@@ -117,7 +118,7 @@ const ROSTER := [
 			"graphic": "none",
 			"bottom_color": Color(0.08, 0.08, 0.1), "bottom_fade": Color(0.32, 0.32, 0.36),
 			"shoe_color": Color(0.08, 0.07, 0.07), "shoe_accent": Color(0.78, 0.1, 0.1),
-			"wristband_color": Color(0.05, 0.05, 0.05), "tattoos": true, "bulk": 0.92,
+			"wristband_color": Color(0.05, 0.05, 0.05), "tattoos": true, "sleeves": "none", "bulk": 0.92,
 			# not rendered yet (roster models)
 			"body": "male", "hair_style": "spikes", "top_style": "studded_vest",
 			"bottom_style": "ripped_skinny", "shoes": "boots", "hat": "none",
@@ -143,7 +144,7 @@ const ROSTER := [
 			"graphic": "none",
 			"bottom_color": Color(0.2, 0.3, 0.48), "bottom_fade": Color(0.52, 0.62, 0.76),
 			"shoe_color": Color(0.38, 0.22, 0.12), "shoe_accent": Color(0.62, 0.44, 0.26),
-			"bulk": 1.15,
+			"sleeves": "long", "bulk": 1.15,
 			# not rendered yet (roster models)
 			"body": "male", "hair_style": "curls", "top_style": "western",
 			"bottom_style": "bootcut", "shoes": "cowboy_boots",
@@ -170,7 +171,7 @@ const ROSTER := [
 			"graphic": "none",
 			"bottom_color": Color(0.07, 0.07, 0.08), "bottom_fade": Color(0.18, 0.18, 0.2),
 			"shoe_color": Color(0.95, 0.95, 0.93), "shoe_accent": Color(0.06, 0.06, 0.06),
-			"chain": true, "bulk": 1.02,
+			"hood": false, "chain": true, "bulk": 1.02,
 			# not rendered yet (roster models)
 			"body": "male", "hair_style": "buzz", "top_style": "tracksuit",
 			"bottom_style": "track_pants", "shoes": "shelltoes", "lace_style": "fat",
