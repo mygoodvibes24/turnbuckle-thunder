@@ -9,6 +9,27 @@ const Roster := preload("res://scripts/roster.gd")
 var p1_id := "tank"
 var p2_id := "peligro"   # the CPU opponent
 
+# ---- STORY MODE (scripts/story.gd writes these before a story match; main.gd reads them).
+# story_active is false for QUICK BRAWL, so main.gd behaves exactly as before.
+var story_active := false
+var story_chapter := -1          # index into StoryData.CHAPTERS of the match being played
+var story_cpu_skill := 0.3       # CPU ai_skill for the story match (0..1)
+var story_objective := ""        # main objective text shown at the bell
+var story_bonus := {}            # {"text", "type", "count", "cash"} (story_schema.md); {} = none
+var story_result := {}           # main.gd -> story.gd: {"won": bool, "style": int, "bonus_done": bool}
+var story_return := ""           # story.gd: what to show when the hub loads ("result" after a match)
+
+
+## Called by the title screen: leaving to the title ends any story run.
+func reset_story() -> void:
+	story_active = false
+	story_chapter = -1
+	story_cpu_skill = 0.3
+	story_objective = ""
+	story_bonus = {}
+	story_result = {}
+	story_return = ""
+
 
 func roster() -> Array:
 	return Roster.ROSTER

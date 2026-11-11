@@ -4,7 +4,7 @@ extends Node3D
 ## Everything is built in code: a small night-backyard corner (grass, fence, porch light,
 ## string lights, a floodlight) with both wrestlers posing, a slow camera orbit through the
 ## same warm grade/bloom post pass as the match, a spray-paint stencil logo that slams in,
-## "PRESS START", then a thumb-friendly menu (START BRAWL / HOW TO PLAY / CREDITS).
+## "PRESS START", then a thumb-friendly menu (STORY MODE / QUICK BRAWL / HOW TO PLAY / CREDITS).
 ## Keyboard (arrows/WASD + Enter/Space/J, Esc/K back), gamepad (d-pad/stick + A/B) and touch.
 ##
 ## Loading is staged so the logo shows on the very first frame: the 3D set is built on the
@@ -17,7 +17,11 @@ const Wrestler := preload("res://scripts/wrestler.gd")
 const Audio := preload("res://scripts/audio.gd")
 const Music := preload("res://scripts/music.gd")
 const MATCH_SCENE := "res://main.tscn"
-const SELECT_SCENE := "res://select.tscn"   # START BRAWL -> character select -> match
+const SELECT_SCENE := "res://select.tscn"   # QUICK BRAWL -> character select -> match
+const STORY_SCENE := "res://story.tscn"     # STORY MODE -> story hub (scripts/story.gd)
+# The menu opens on QUICK BRAWL so "Enter, Enter" still reaches the character select
+# (screenshot scripts rely on it); STORY MODE sits above it.
+const MENU_DEFAULT := 1
 
 enum Phase { INTRO, PRESS, MENU, PANEL, LEAVING }
 
@@ -75,7 +79,7 @@ var logo_scale_target := 1.0
 var logo_pos_target := Vector2.ZERO
 var margin := 60.0
 
-const MENU_ITEMS := ["START BRAWL", "HOW TO PLAY", "CREDITS"]
+const MENU_ITEMS := ["STORY MODE", "QUICK BRAWL", "HOW TO PLAY", "CREDITS"]
 const GOLD := Color(1.0, 0.82, 0.12)
 const RED := Color(0.86, 0.12, 0.08)
 
@@ -188,6 +192,10 @@ func _ready() -> void:
 	font_i.base_font = ThemeDB.fallback_font
 	font_i.variation_embolden = 1.2
 	font_i.variation_transform = Transform2D(Vector2(1, 0), Vector2(-0.24, 1), Vector2.ZERO)
+	# Back on the title: whatever story run was going on is over (QUICK BRAWL must not inherit it).
+	var game: Node = get_node_or_null("/root/Game")
+	if game != null and game.has_method("reset_story"):
+		game.call("reset_story")
 	_build_view()
 	_build_ui()
 	_relayout()
@@ -406,7 +414,7 @@ func _press_start() -> void:
 		var tw := create_tween()
 		tw.tween_interval(0.06 * i)
 		tw.tween_property(b, "modulate:a", 1.0, 0.18)
-	sel = 0
+	sel = MENU_DEFAULT
 	_update_sel()
 	_relayout()
 
@@ -445,14 +453,16 @@ func _activate(i: int) -> void:
 	_update_sel()
 	match i:
 		0:
-			_start_match()
+			_start_match(STORY_SCENE)
 		1:
-			_open_panel("how")
+			_start_match(SELECT_SCENE)
 		2:
+			_open_panel("how")
+		3:
 			_open_panel("credits")
 
 
-func _start_match() -> void:
+func _start_match(scene := SELECT_SCENE) -> void:
 	phase = Phase.LEAVING
 	shake = maxf(shake, 0.8)
 	_snd("punch", -2.0)
@@ -467,7 +477,7 @@ func _start_match() -> void:
 	tw.tween_callback(_show_loading)
 	# Let the "LOADING" frame reach the screen before the (blocking) match build.
 	tw.tween_interval(0.12)
-	tw.tween_callback(func(): get_tree().change_scene_to_file(SELECT_SCENE))
+	tw.tween_callback(func(): get_tree().change_scene_to_file(scene))
 
 
 func _show_loading() -> void:
@@ -1291,17 +1301,17 @@ func _build_ui() -> void:
 
 	# ---- menu
 	menu_box = VBoxContainer.new()
-	menu_box.add_theme_constant_override("separation", 14)
+	menu_box.add_theme_constant_override("separation", 10)
 	menu_box.visible = false
 	ui.add_child(menu_box)
 	for i in MENU_ITEMS.size():
 		var b := Button.new()
 		b.text = MENU_ITEMS[i]
 		b.focus_mode = Control.FOCUS_NONE
-		b.custom_minimum_size = Vector2(440, 70)
+		b.custom_minimum_size = Vector2(440, 62)
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		b.add_theme_font_override("font", font_i)
-		b.add_theme_font_size_override("font_size", 38)
+		b.add_theme_font_size_override("font_size", 36)
 		b.add_theme_color_override("font_outline_color", Color(0.02, 0.02, 0.02))
 		b.add_theme_color_override("font_pressed_color", Color(0.06, 0.04, 0.02))
 		b.add_theme_stylebox_override("pressed", _btn_box(true))

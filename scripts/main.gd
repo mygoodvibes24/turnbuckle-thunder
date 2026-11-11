@@ -48,6 +48,9 @@ var count_timer := 0.0
 var hint_label: Label
 var win_panel: Control
 var win_label: Label
+# STORY MODE hook (scripts/story_match.gd): only created when Game.story_active, else null.
+const StoryMatch := preload("res://scripts/story_match.gd")
+var story_hook: Node = null
 
 
 func _ready() -> void:
@@ -126,6 +129,12 @@ func _ready() -> void:
 	add_child(style_hud)
 	style_hud.setup(self, [p1, p2])
 	_setup_presentation()   # trick cam / trails / speed lines / hype MC (see "presentation")
+	# ---- STORY MODE hook: CPU skill, objective / bonus card + tracking, CONTINUE at the end.
+	if game != null and bool(game.get("story_active")):
+		story_hook = StoryMatch.new()
+		add_child(story_hook)
+		story_hook.call("setup", self, p1, p2)
+	# ---- end STORY MODE hook
 	_announce("FIGHT!", 1.5)
 	audio.ring_bell(1)
 	audio.start_crowd()
@@ -3386,6 +3395,8 @@ func _on_win(w: Node3D) -> void:
 		var bg := gear.darkened(0.7).lerp(Color(0.06, 0.06, 0.08), 0.5)
 		sb.bg_color = Color(bg.r, bg.g, bg.b, 0.9)
 	help_panel.visible = false
+	if story_hook != null:   # STORY MODE hook: REMATCH -> CONTINUE, chapter header
+		story_hook.call("on_match_end", w)
 	get_tree().create_timer(1.2).timeout.connect(_show_win)
 
 
@@ -4114,8 +4125,11 @@ func _physics_process(delta: float) -> void:
 	else:
 		p1.in_move = Vector2.ZERO
 		if Input.is_action_just_pressed("restart"):
-			_restart()
-			return
+			if story_hook != null:   # STORY MODE hook: back to the story hub instead of a rematch
+				story_hook.call("continue_story")
+			else:
+				_restart()
+				return
 	if not frozen:
 		p1.tick(delta)
 		p2.tick(delta)
