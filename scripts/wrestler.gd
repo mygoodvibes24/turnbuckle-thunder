@@ -1289,14 +1289,14 @@ func _paint_rips(img: Image, skin: Color, spots: Array) -> void:
 		var sp: Vector3 = q
 		var rw := 24.0 * sp.z
 		var rh := 10.0 * sp.z
-		_dab(img, sp.x, sp.y, rw + 5.0, rh + 4.0, thread.darkened(0.12), 0.85, 0.55)
+		_dab(img, sp.x, sp.y, rw + 3.0, rh + 2.5, thread.darkened(0.25), 0.5, 0.7)
 		_dab(img, sp.x, sp.y, rw, rh, skin, 1.0, 0.3)
 		_dab(img, sp.x, sp.y + rh * 0.4, rw * 0.8, rh * 0.5, skin.darkened(0.25), 0.5, 1.0)
 		var nt := int(5.0 * sp.z) + 2
 		for k in nt:
 			var y := sp.y - rh + 2.0 + float(k) * (2.0 * rh - 4.0) / float(nt - 1)
 			_lines(img, PackedVector2Array([Vector2(sp.x - rw - 3.0, y), Vector2(sp.x, y + 1.6), Vector2(sp.x + rw + 3.0, y + 0.5)]),
-				0.9, thread, 0.95, 0.4)
+				0.7, thread, 0.7, 0.4)
 	var s0: Vector3 = spots[0]
 	var pin := Color(0.84, 0.85, 0.88)
 	for k in 2:
@@ -2468,7 +2468,7 @@ const WAIST_FIT := [
 const WAIST_F := [
 	Vector4(0.25, 0.13, 0.093, 0.0), Vector4(0.2, 0.137, 0.097, 0.0), Vector4(0.12, 0.155, 0.105, -0.004),
 	Vector4(0.04, 0.177, 0.117, -0.01), Vector4(-0.04, 0.19, 0.124, -0.014), Vector4(-0.1, 0.188, 0.122, -0.014),
-	Vector4(-0.16, 0.162, 0.11, -0.01), Vector4(-0.21, 0.108, 0.08, -0.006), Vector4(-0.245, 0.06, 0.05, -0.004)]
+	Vector4(-0.16, 0.15, 0.106, -0.01), Vector4(-0.21, 0.1, 0.078, -0.006), Vector4(-0.245, 0.058, 0.05, -0.004)]
 # Shared long-sleeve profiles (shoulder space / elbow space, before scaling).
 const SLEEVE_UP := [
 	Vector4(0.03, 0.074, 0.078, 0.0), Vector4(-0.06, 0.08, 0.082, 0.005), Vector4(-0.16, 0.079, 0.08, 0.006),
@@ -3065,7 +3065,7 @@ func _build_arm_ex(side: int, m: Dictionary, top: String, bulk: float, female: b
 		var puffer := top == "puffer"
 		var su: Material = m["sl_up"]
 		var sf: Material = m["sl_fore"]
-		var shb := 1.3 if top == "stage_top" else 1.0                                                     # padded glam shoulders
+		var shb := 1.12 if top == "stage_top" else 1.0                                                     # padded glam shoulders
 		_ball(sh, 0.082 * r * shb, Vector3(-inset * s, -0.01 + 0.012 * (shb - 1.0), 0.0), su, Vector3(1.0, 0.86, 1.05), 12)
 		var up: Array = _bulked(SLEEVE_UP, r, r)
 		if puffer:
@@ -3230,8 +3230,8 @@ func _build_leg_ex(side: int, m: Dictionary, bottom: String, bulk: float, female
 	var smi := _loft(kn, shin, sn_m, false, false, Vector3.ZERO, 16, PackedFloat32Array(), fold, 8.0 + s * 2.3)
 	smi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	if bottom == "high_shorts":
-		var sl := [Vector4(0.06, 0.104, 0.108, 0.002), Vector4(-0.04, 0.101, 0.106, 0.004), Vector4(-0.098, 0.099, 0.104, 0.005),
-			Vector4(-0.104, 0.102, 0.107, 0.005), Vector4(-0.122, 0.101, 0.106, 0.005)]
+		var sl := [Vector4(0.06, 0.098, 0.103, 0.003), Vector4(-0.03, 0.095, 0.1, 0.005), Vector4(-0.082, 0.091, 0.097, 0.006),
+			Vector4(-0.088, 0.094, 0.1, 0.006), Vector4(-0.104, 0.092, 0.098, 0.006)]
 		_loft(hp, sl, m["shorts_leg"], false, false, Vector3.ZERO, 16, _leg_xo(sl, t_in, s))
 	_build_shoe(kn, m, female)
 	return hp
@@ -3388,8 +3388,8 @@ func _build_ponytail(hg: Node3D, mat: Material) -> void:
 		_tube_into(st, pts, radii, 8, 0.0, 1.0)
 	for sg in [-1.0, 1.0]:
 		var s: float = sg
-		_tube_into(st, PackedVector3Array([Vector3(0.066 * s, 0.182, 0.066), Vector3(0.08 * s, 0.15, 0.068), Vector3(0.084 * s, 0.11, 0.064),
-			Vector3(0.08 * s, 0.07, 0.058)]), PackedFloat32Array([0.006, 0.007, 0.006, 0.002]), 6, 0.0, 0.6)
+		_tube_into(st, PackedVector3Array([Vector3(0.062 * s, 0.186, 0.07), Vector3(0.074 * s, 0.156, 0.072), Vector3(0.079 * s, 0.118, 0.068),
+			Vector3(0.076 * s, 0.084, 0.062)]), PackedFloat32Array([0.0035, 0.0042, 0.0036, 0.0012]), 5, 0.0, 0.6)
 	_add_mesh(hg, st.commit(), Vector3.ZERO, mat)
 	var acc: Color = look.get("top_accent", gear_color)
 	var e2 := Vector3(0, 0.8, 0.6)
@@ -3474,7 +3474,7 @@ func _build_accessories(hg: Node3D, shell: Array) -> void:
 		var dark := _mat(Color(0.12, 0.12, 0.13), null, 0.4, 0.4)
 		var band := PackedVector3Array()
 		for i in 15:
-			var t := lerpf(1.25, TAU - 1.25, float(i) / 14.0)
+			var t := lerpf(1.75, TAU - 1.75, float(i) / 14.0)
 			var y := 0.122 + 0.012 * (1.0 - cos(t)) * 0.5
 			var r := _ring_at(HAIR_CAP, y)
 			band.append(Vector3(sin(t) * (r.y + 0.004), y, cos(t) * (r.z + 0.004) + r.w))
@@ -3506,7 +3506,7 @@ func _build_accessories(hg: Node3D, shell: Array) -> void:
 		_loft(torso, [Vector4(0.632, 0.068, 0.072, 0.002), Vector4(0.608, 0.076, 0.079, -0.002), Vector4(0.588, 0.083, 0.083, -0.006)],
 			bm, false, false, Vector3.ZERO, 16, PackedFloat32Array(), 0.06, 1.0)
 		var fz := _ring_at(shell, 0.585)
-		_add_mesh(torso, _patch_mesh(shell, -0.62, 0.62, 0.592, 0.43, 0.016, 8, 8), Vector3.ZERO,
+		_add_mesh(torso, _patch_mesh(shell, -0.46, 0.46, 0.592, 0.47, 0.016, 8, 8), Vector3.ZERO,
 			_scissor(_mat(white, _tex("bandt" + str(bc), _bandana_tex.bind(bc, true)))))
 		_ball(torso, 0.017, Vector3(0, 0.592, fz.z + fz.w + 0.012), bm, Vector3(1.4, 1.0, 0.8), 8)       # knot
 	if "rope_chain" in accs:

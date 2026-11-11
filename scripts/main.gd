@@ -169,6 +169,63 @@ func _setup_input() -> void:
 	_add_action("run", [KEY_L, KEY_C])
 	_add_action("pin", [KEY_SPACE, KEY_V])
 	_add_action("restart", [KEY_R, KEY_ENTER])
+	_add_gamepad_bindings()
+
+
+## Gamepad support for the match (the title/select screens read the pad directly).
+## Xbox-style layout (Godot's standard mapping; PlayStation/Switch pads map the same positions):
+##   left stick / d-pad = move, X (left face) = STRIKE, A (bottom) = GRAB, B (right) = RUN,
+##   Y (top) = PIN/TAUNT, RT/RB = RUN (hold to boost), LT/LB = PIN (hold to tweak),
+##   START = rematch after the match.
+func _add_joy_button(action_name: String, button: JoyButton) -> void:
+	var ev := InputEventJoypadButton.new()
+	ev.button_index = button
+	ev.device = -1  # any controller
+	if not InputMap.action_has_event(action_name, ev):
+		InputMap.action_add_event(action_name, ev)
+
+
+func _add_joy_axis(action_name: String, axis: JoyAxis, dir: float) -> void:
+	var ev := InputEventJoypadMotion.new()
+	ev.axis = axis
+	ev.axis_value = dir
+	ev.device = -1
+	if not InputMap.action_has_event(action_name, ev):
+		InputMap.action_add_event(action_name, ev)
+
+
+func _add_gamepad_bindings() -> void:
+	for a in ["move_left", "move_right", "move_up", "move_down"]:
+		InputMap.action_set_deadzone(a, 0.25)
+	_add_joy_axis("move_left", JOY_AXIS_LEFT_X, -1.0)
+	_add_joy_axis("move_right", JOY_AXIS_LEFT_X, 1.0)
+	_add_joy_axis("move_up", JOY_AXIS_LEFT_Y, -1.0)
+	_add_joy_axis("move_down", JOY_AXIS_LEFT_Y, 1.0)
+	_add_joy_button("move_left", JOY_BUTTON_DPAD_LEFT)
+	_add_joy_button("move_right", JOY_BUTTON_DPAD_RIGHT)
+	_add_joy_button("move_up", JOY_BUTTON_DPAD_UP)
+	_add_joy_button("move_down", JOY_BUTTON_DPAD_DOWN)
+	_add_joy_button("strike", JOY_BUTTON_X)
+	_add_joy_button("grapple", JOY_BUTTON_A)
+	_add_joy_button("run", JOY_BUTTON_B)
+	_add_joy_button("run", JOY_BUTTON_RIGHT_SHOULDER)
+	_add_joy_axis("run", JOY_AXIS_TRIGGER_RIGHT, 1.0)
+	_add_joy_button("pin", JOY_BUTTON_Y)
+	_add_joy_button("pin", JOY_BUTTON_LEFT_SHOULDER)
+	_add_joy_axis("pin", JOY_AXIS_TRIGGER_LEFT, 1.0)
+	_add_joy_button("restart", JOY_BUTTON_START)
+
+
+## Hide the on-screen touch controls while a controller is being used; show them again on touch.
+func _input(event: InputEvent) -> void:
+	if touch == null:
+		return
+	if event is InputEventJoypadButton or (event is InputEventJoypadMotion and absf((event as InputEventJoypadMotion).axis_value) > 0.5):
+		if touch.visible:
+			touch.visible = false
+	elif event is InputEventScreenTouch and not match_over:
+		if not touch.visible:
+			touch.visible = true
 
 
 # ---------------------------------------------------------------- world building
