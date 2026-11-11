@@ -14,23 +14,27 @@ extends RefCounted
 ##   look          the Dictionary passed to wrestler.gd setup()
 ##
 ## look keys. wrestler.gd reads everything with look.get(key, default), so unknown keys are
-## safely ignored. Keys it renders TODAY:
-##   gear (signature colour), skin, face "tank"|"kid", hair "locs"|"curls"|"none", hair_color,
-##   top "tee"|"hoodie", top_color, top_accent, graphic "skull_bolt"|"peligro"|"none",
-##   undershirt, bottom_color, bottom_fade, shoe_color, shoe_accent, chain, bracelet, tattoos,
-##   wristband_color, sleeves "long"|"short"|"none", hood (bool, hoodies), mask, mask_base,
-##   mask_paint, bulk (0.8..1.15). (Peligro still carries main.gd's mask_color / mask_trim.)
-## "hair" / "top" therefore hold the CLOSEST shape the model can build right now. The intended
-## designs are described by extra keys for the roster-models work (not rendered yet):
+## safely ignored. Base model: gear (signature colour), skin, face "tank"|"kid", hair, hair_color,
+##   top "tee"|"hoodie", top_color, top_accent, graphic, undershirt, bottom_color, bottom_fade,
+##   shoe_color, shoe_accent, chain, bracelet, tattoos, wristband_color, sleeves, hood, mask,
+##   mask_base, mask_paint, bulk (0.8..1.15).
+## Generic outfit keys (all rendered; full list in wrestler.gd "# ---- outfits"):
 ##   body          "male" | "female"
 ##   hair_style    "locs" | "curls" | "ponytail" | "spikes" | "twists" | "buzz"  (overrides hair)
 ##   top_style     "tee" | "hoodie" | "stage_top" | "studded_vest" | "western" | "tracksuit" |
-##                 "designer_hoodie"                                            (overrides top)
-##   bottom_style  "baggy_jeans" | "glam_pants" | "ripped_skinny" | "bootcut" | "track_pants" | "slim"
-##   shoes         "sneakers" | "platforms" | "boots" | "cowboy_boots" | "shelltoes" | "high_tops"
-##   hat           "none" | "cowboy" | "fedora" | "bucket";  hat_color
-##   chain_color, chain_style ("rope" | "rope_thick" | "layered"), hair_tips, stripe_color,
-##   stripe_count, lace_style, buckle_color, accessories: Array of tags (see each entry)
+##                 "puffer" ("designer_hoodie" = puffer)                          (overrides top)
+##   bottom_style  "baggy_jeans" | "high_shorts" | "leggings" | "skinny_ripped" | "bootcut" |
+##                 "track_pants" | "stacked"  (aliases: glam_pants, ripped_skinny, slim)
+##   shoes         "sneakers" | "platforms" | "combat_boots" | "cowboy_boots" | "shelltoes" |
+##                 "hightops"  (aliases: boots, high_tops)
+##   hat           "none" | "cowboy" | "fedora" | "bucket";  hat_color, hat_band
+##   face          also "popstar" | "punk" | "country" (stubble) | "oldschool" (moustache) | "newschool"
+##   makeup        "none" | "glam" | "eyeliner";  lip_color, shadow_color
+##   outer_color / vest_color (jacket, vest), stripe_color (track stripes), bottom_accent,
+##   hair_tips, chain_style ("rope" | "rope_thick" | "layered"), chain_color, buckle_color,
+##   belt_color, bandana_color, metal ("gold" | "silver"),
+##   accessories: Array of "headset", "hoops", "buckle", "rope_chain", "layered_chains",
+##   "glasses", "bandana", "studded_belt", "face_tattoos"
 ## Characters are original archetypes inspired by music genres (no real people, bands or logos).
 
 const STATS := ["POWER", "AIR", "FLOW", "GRIT"]
@@ -91,17 +95,14 @@ const ROSTER := [
 		"signature": "ENCORE SPLIT",
 		"look": {
 			"anim_style": "diva", "signature_set": "peligro",
-			"gear": Color(1.0, 0.28, 0.72), "skin": Color(0.8, 0.6, 0.47), "face": "kid",
-			"hair": "curls", "hair_color": Color(0.96, 0.84, 0.58),
-			"top": "tee", "top_color": Color(0.86, 0.16, 0.6), "top_accent": Color(0.82, 0.84, 0.92),
-			"graphic": "none",
-			"bottom_color": Color(0.6, 0.56, 0.72), "bottom_fade": Color(0.88, 0.85, 0.95),
-			"shoe_color": Color(0.96, 0.95, 0.97), "shoe_accent": Color(1.0, 0.36, 0.76),
-			"sleeves": "short", "bracelet": true, "bulk": 0.8,
-			# not rendered yet (roster models)
-			"body": "female", "hair_style": "ponytail", "top_style": "stage_top",
-			"bottom_style": "glam_pants", "shoes": "platforms", "hat": "none",
-			"accessories": ["headset_mic", "sequins", "star_earrings", "fingerless_gloves"],
+			"gear": Color(1.0, 0.28, 0.72), "skin": Color(0.8, 0.6, 0.47), "body": "female", "face": "popstar",
+			"hair_style": "ponytail", "hair_color": Color(0.94, 0.84, 0.6), "hair_tips": Color(0.98, 0.9, 0.78),
+			"makeup": "glam", "lip_color": Color(0.84, 0.14, 0.44), "shadow_color": Color(0.62, 0.36, 0.84),
+			"top_style": "stage_top", "top_color": Color(0.9, 0.18, 0.62), "top_accent": Color(0.98, 0.82, 0.95),
+			"outer_color": Color(0.74, 0.76, 0.88),
+			"bottom_style": "high_shorts", "bottom_color": Color(0.07, 0.06, 0.09), "bottom_accent": Color(1.0, 0.8, 0.35),
+			"shoes": "platforms", "shoe_color": Color(0.96, 0.95, 0.97), "shoe_accent": Color(1.0, 0.42, 0.78),
+			"hat": "none", "accessories": ["headset", "hoops"], "metal": "gold", "bulk": 0.9,
 		},
 	},
 	{
@@ -117,18 +118,15 @@ const ROSTER := [
 		"signature": "STAGE DIVE",
 		"look": {
 			"anim_style": "punk", "signature_set": "tank",
-			"gear": Color(0.78, 1.0, 0.1), "skin": Color(0.86, 0.68, 0.56), "face": "kid",
-			"hair": "curls", "hair_color": Color(0.48, 0.95, 0.12),
-			"top": "tee", "top_color": Color(0.06, 0.06, 0.07), "top_accent": Color(0.82, 0.82, 0.84),
-			"graphic": "none",
-			"bottom_color": Color(0.08, 0.08, 0.1), "bottom_fade": Color(0.32, 0.32, 0.36),
-			"shoe_color": Color(0.08, 0.07, 0.07), "shoe_accent": Color(0.78, 0.1, 0.1),
-			"wristband_color": Color(0.05, 0.05, 0.05), "tattoos": true, "sleeves": "none", "bulk": 0.92,
-			# not rendered yet (roster models)
-			"body": "male", "hair_style": "spikes", "top_style": "studded_vest",
-			"bottom_style": "ripped_skinny", "shoes": "boots", "hat": "none",
-			"vest_color": Color(0.1, 0.09, 0.09), "plaid_color": Color(0.72, 0.1, 0.12),
-			"accessories": ["studs", "safety_pins", "studded_wristbands", "plaid_shirt_round_waist"],
+			"gear": Color(0.78, 1.0, 0.1), "skin": Color(0.86, 0.68, 0.56), "body": "male", "face": "punk",
+			"hair_style": "spikes", "hair_color": Color(0.42, 0.9, 0.1), "hair_tips": Color(0.8, 1.0, 0.42),
+			"makeup": "eyeliner",
+			"top_style": "studded_vest", "top_color": Color(0.06, 0.06, 0.07), "top_accent": Color(0.82, 0.12, 0.1),
+			"vest_color": Color(0.08, 0.075, 0.075), "graphic": "vermin",
+			"bottom_style": "skinny_ripped", "bottom_color": Color(0.08, 0.08, 0.1), "bottom_fade": Color(0.32, 0.32, 0.36),
+			"shoes": "combat_boots", "shoe_color": Color(0.05, 0.05, 0.05), "shoe_accent": Color(0.3, 0.3, 0.3),
+			"hat": "none", "accessories": ["studded_belt"], "wristband_color": Color(0.05, 0.05, 0.05),
+			"tattoos": true, "bulk": 0.92,
 		},
 	},
 	{
@@ -144,18 +142,14 @@ const ROSTER := [
 		"signature": "HOEDOWN SLAM",
 		"look": {
 			"anim_style": "cowboy", "signature_set": "tank",
-			"gear": Color(0.92, 0.58, 0.18), "skin": Color(0.74, 0.52, 0.38), "face": "tank",
-			"hair": "curls", "hair_color": Color(0.34, 0.21, 0.11),
-			"top": "tee", "top_color": Color(0.6, 0.15, 0.12), "top_accent": Color(0.95, 0.92, 0.85),
-			"graphic": "none",
-			"bottom_color": Color(0.2, 0.3, 0.48), "bottom_fade": Color(0.52, 0.62, 0.76),
-			"shoe_color": Color(0.38, 0.22, 0.12), "shoe_accent": Color(0.62, 0.44, 0.26),
-			"sleeves": "long", "bulk": 1.15,
-			# not rendered yet (roster models)
-			"body": "male", "hair_style": "curls", "top_style": "western",
-			"bottom_style": "bootcut", "shoes": "cowboy_boots",
-			"hat": "cowboy", "hat_color": Color(0.9, 0.84, 0.7), "buckle_color": Color(0.95, 0.78, 0.3),
-			"accessories": ["big_buckle", "pearl_snaps", "yoke_piping"],
+			"gear": Color(0.92, 0.58, 0.18), "skin": Color(0.74, 0.52, 0.38), "body": "male", "face": "country",
+			"hair_style": "buzz", "hair_color": Color(0.34, 0.21, 0.11),
+			"hat": "cowboy", "hat_color": Color(0.86, 0.78, 0.6), "hat_band": Color(0.3, 0.17, 0.08),
+			"top_style": "western", "top_color": Color(0.5, 0.11, 0.12), "top_accent": Color(0.9, 0.85, 0.72),
+			"bottom_style": "bootcut", "bottom_color": Color(0.2, 0.3, 0.48), "bottom_fade": Color(0.52, 0.62, 0.76),
+			"shoes": "cowboy_boots", "shoe_color": Color(0.42, 0.24, 0.12), "shoe_accent": Color(0.86, 0.78, 0.6),
+			"buckle_color": Color(0.95, 0.78, 0.3), "belt_color": Color(0.3, 0.17, 0.08),
+			"bandana_color": Color(0.66, 0.08, 0.07), "accessories": ["buckle", "bandana"], "metal": "silver", "bulk": 1.15,
 		},
 	},
 	{
@@ -172,20 +166,15 @@ const ROSTER := [
 		"signature": "BREAKBEAT LOCK",
 		"look": {
 			"anim_style": "oldschool", "signature_set": "tank",
-			"gear": Color(1.0, 0.8, 0.16), "skin": Color(0.3, 0.2, 0.14), "face": "tank",
-			"hair": "none", "hair_color": Color(0.04, 0.03, 0.03),
-			"top": "hoodie", "top_color": Color(0.06, 0.06, 0.07), "top_accent": Color(0.95, 0.95, 0.95),
-			"graphic": "none",
-			"bottom_color": Color(0.07, 0.07, 0.08), "bottom_fade": Color(0.18, 0.18, 0.2),
-			"shoe_color": Color(0.95, 0.95, 0.93), "shoe_accent": Color(0.06, 0.06, 0.06),
-			"hood": false, "chain": true, "bulk": 1.02,
-			# not rendered yet (roster models)
-			"body": "male", "hair_style": "buzz", "top_style": "tracksuit",
-			"bottom_style": "track_pants", "shoes": "shelltoes", "lace_style": "fat",
-			"hat": "fedora", "hat_color": Color(0.05, 0.05, 0.055),
+			"gear": Color(1.0, 0.8, 0.16), "skin": Color(0.3, 0.2, 0.14), "body": "male", "face": "oldschool",
+			"hair_style": "buzz", "hair_color": Color(0.04, 0.03, 0.03),
+			"hat": "fedora", "hat_color": Color(0.05, 0.05, 0.055), "hat_band": Color(0.16, 0.16, 0.17),
+			"top_style": "tracksuit", "top_color": Color(0.06, 0.06, 0.07),
+			"bottom_style": "track_pants", "bottom_color": Color(0.06, 0.06, 0.07),
 			"stripe_color": Color(0.95, 0.95, 0.95), "stripe_count": 2,
-			"chain_color": Color(1.0, 0.8, 0.26), "chain_style": "rope_thick",
-			"accessories": ["gold_rope_chain", "fat_laces", "track_stripes"],
+			"shoes": "shelltoes", "lace_style": "fat", "shoe_color": Color(0.95, 0.95, 0.93), "shoe_accent": Color(0.06, 0.06, 0.06),
+			"chain_style": "rope_thick", "chain_color": Color(1.0, 0.8, 0.26),
+			"accessories": ["glasses"], "metal": "gold", "bulk": 1.02,
 		},
 	},
 	{
@@ -202,18 +191,14 @@ const ROSTER := [
 		"signature": "PLATINUM FLURRY",
 		"look": {
 			"anim_style": "newschool", "signature_set": "peligro",
-			"gear": Color(0.62, 0.36, 1.0), "skin": Color(0.46, 0.31, 0.22), "face": "kid",
-			"hair": "locs", "hair_color": Color(0.06, 0.045, 0.04),
-			"top": "hoodie", "top_color": Color(0.7, 0.6, 0.9), "top_accent": Color(0.2, 0.95, 0.75),
-			"graphic": "none",
-			"bottom_color": Color(0.1, 0.1, 0.12), "bottom_fade": Color(0.32, 0.32, 0.36),
-			"shoe_color": Color(0.92, 0.15, 0.2), "shoe_accent": Color(0.98, 0.98, 0.98),
-			"chain": true, "bracelet": true, "bulk": 0.84,
-			# not rendered yet (roster models)
-			"body": "male", "hair_style": "twists", "hair_tips": Color(0.95, 0.75, 0.3),
-			"top_style": "designer_hoodie", "bottom_style": "slim", "shoes": "high_tops",
-			"hat": "none", "chain_style": "layered", "chain_color": Color(0.92, 0.92, 0.96),
-			"accessories": ["layered_chains", "stud_earrings", "tinted_shades"],
+			"gear": Color(0.62, 0.36, 1.0), "skin": Color(0.46, 0.31, 0.22), "body": "male", "face": "newschool",
+			"hair_style": "twists", "hair_color": Color(0.06, 0.045, 0.04), "hair_tips": Color(0.95, 0.75, 0.3),
+			"top_style": "puffer", "top_color": Color(0.42, 0.24, 0.7), "top_accent": Color(0.2, 0.95, 0.75),
+			"graphic": "drip_heart",
+			"bottom_style": "stacked", "bottom_color": Color(0.1, 0.1, 0.12), "bottom_fade": Color(0.32, 0.32, 0.36),
+			"shoes": "hightops", "shoe_color": Color(0.96, 0.96, 0.96), "shoe_accent": Color(0.92, 0.15, 0.2),
+			"hat": "none", "chain_style": "layered", "chain_color": Color(1.0, 0.8, 0.3),
+			"accessories": ["face_tattoos"], "metal": "gold", "bulk": 0.88,
 		},
 	},
 ]

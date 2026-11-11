@@ -254,7 +254,7 @@ var rev_tell: Label3D  # "!" over our head while a reversal window is open on us
 
 func setup(p_name: String, p_look: Dictionary, p_cpu: bool) -> void:
 	display_name = p_name
-	look = p_look
+	look = _norm_look(p_look)
 	gear_color = look.get("gear", Color.RED)
 	trunk_color = look.get("trunks", Color.BLACK)
 	skin_color = look.get("skin", Color(0.86, 0.64, 0.48))
@@ -1564,7 +1564,7 @@ func _eye_arc(ex: float, ey: float, hw: float, hh: float, sgn: float) -> Array:
 	return out
 
 
-func _head_tex(skin: Color, hair_c: Color, kind: String, ex: Dictionary = {}) -> ImageTexture:
+func _head_tex(skin: Color, hair_c: Color, kind: String, opts: Dictionary = {}) -> ImageTexture:
 	var img := _new_img(512, 256, skin)
 	var lt := _skin_light(skin, 0.2)
 	_fd(img, 0, 178, 42, 20, _skin_light(skin, 0.24), 0.7, 1.0)        # forehead
@@ -1613,17 +1613,17 @@ func _head_tex(skin: Color, hair_c: Color, kind: String, ex: Dictionary = {}) ->
 		_fd(img, ex + 1.6, 128.8, 1.3, 1.3, Color(1, 1, 1), 0.9, 0.4)                       # catchlight
 		_fl(img, _eye_arc(ex, 127.0, 14.3, 5.7, 1.0), 1.8, Color(0.03, 0.02, 0.015), 0.95, 0.5)  # lash line
 		_fl(img, _eye_arc(ex, 127.0, 13.0, 4.8, -1.0), 0.9, _skin_shade(skin, 0.6), 0.6, 0.6)
-		if not ex.get("fem", false):
+		if not opts.get("fem", false):
 			_fl(img, [Vector2(10 * e, 143.5), Vector2(26 * e, 148), Vector2(45 * e, 145)], 3.8, brow_c, 0.95, 0.5)  # brows
 	for ec in [128.0, 384.0]:
 		var col: float = ec
 		var row := _trow(0.112, HEAD_TOP, 0.0, 256)
 		_dab(img, col, row, 10, 24, _skin_shade(skin, 0.3), 0.5, 0.9)      # ears
 		_dab(img, col, row, 5, 13, _skin_shade(skin, 0.5), 0.5, 0.8)
-	if not ex.is_empty():
-		_paint_face_ex(img, skin, hair_c, kind, ex)
-	if ex.has("scalp"):
-		_paint_scalp_ex(img, hair_c, str(ex["scalp"]))
+	if not opts.is_empty():
+		_paint_face_ex(img, skin, hair_c, kind, opts)
+	if opts.has("scalp"):
+		_paint_scalp_ex(img, hair_c, str(opts["scalp"]))
 	else:
 		_paint_scalp(img, hair_c, kind)
 	_cloth_pass(img, "head", "skin", 0.0, 16)
@@ -2512,6 +2512,65 @@ static var _glitter_shader: Shader
 
 var _waist_rings: Array = []          # the current fitted bottom's waist (hips space): hems lie over it
 var _belt_y := Vector2(0.092, 0.06)   # belt band (top, bottom) on that waist, hips space
+
+
+## The roster's descriptive look keys (scripts/roster.gd) mapped onto the model keys:
+## hair_style / top_style / bottom_style override hair / top / bottom, shoe and accessory
+## aliases, hair_tips, vest_color, stripe_color, chain_style. Returns a copy (roster looks are
+## const); looks without those keys come back unchanged.
+const LOOK_ALIASES := {
+	"hair": {"buzz": "short"},
+	"top": {"designer_hoodie": "puffer"},
+	"bottom": {"baggy_jeans": "baggy", "glam_pants": "high_shorts", "ripped_skinny": "skinny_ripped", "slim": "stacked"},
+	"shoes": {"boots": "combat_boots", "high_tops": "hightops"},
+	"acc": {"headset_mic": "headset", "star_earrings": "hoops", "big_buckle": "buckle", "gold_rope_chain": "rope_chain",
+		"tinted_shades": "glasses", "studs": "studded_belt"},
+}
+
+
+func _norm_look(src: Dictionary) -> Dictionary:
+	var keys := ["hair_style", "top_style", "bottom_style", "hair_tips", "vest_color", "stripe_color", "chain_style"]
+	var any := false
+	for k in keys:
+		if src.has(k):
+			any = true
+	if not any and not src.has("shoes") and not src.has("accessories"):
+		return src
+	var o := src.duplicate(true)
+	var al: Dictionary = LOOK_ALIASES
+	for pair in [["hair_style", "hair"], ["top_style", "top"], ["bottom_style", "bottom"]]:
+		var from: String = pair[0]
+		var to: String = pair[1]
+		if o.has(from):
+			var v := str(o[from])
+			var amap: Dictionary = al[to]
+			o[to] = amap.get(v, v)
+	if o.has("shoes"):
+		var sm: Dictionary = al["shoes"]
+		var sv := str(o["shoes"])
+		o["shoes"] = sm.get(sv, sv)
+	if o.has("hair_tips"):
+		o["hair_tip"] = o["hair_tips"]
+	if o.has("vest_color"):
+		o["outer_color"] = o["vest_color"]
+	if o.has("stripe_color"):
+		o["top_accent"] = o["stripe_color"]
+		o["bottom_accent"] = o["stripe_color"]
+	var acc_in: Array = o.get("accessories", [])
+	var am: Dictionary = al["acc"]
+	var acc_out: Array = []
+	for a in acc_in:
+		var t := str(a)
+		acc_out.append(am.get(t, t))
+	match str(o.get("chain_style", "")):
+		"rope", "rope_thick":
+			acc_out.append("rope_chain")
+			o["chain"] = false
+		"layered":
+			acc_out.append("layered_chains")
+			o["chain"] = false
+	o["accessories"] = acc_out
+	return o
 
 
 func _accs() -> Array:
@@ -3403,6 +3462,8 @@ func _build_accessories(hg: Node3D, shell: Array) -> void:
 	var white := Color.WHITE
 	var metal := str(look.get("metal", "gold"))
 	var mc := Color(1.0, 0.77, 0.32) if metal == "gold" else Color(0.9, 0.91, 0.94)
+	if look.has("chain_color"):
+		mc = look.get("chain_color", mc)
 	var mm := _mat(mc, null, 0.95, 0.22)
 	var chain_m := _mat(white, _tex("chain" + str(mc), _chain_tex.bind(mc)), 0.95, 0.22)
 	if "hoops" in accs:
@@ -3471,7 +3532,8 @@ func _build_accessories(hg: Node3D, shell: Array) -> void:
 		if "buckle" in accs:
 			var my := (_belt_y.x + _belt_y.y) * 0.5
 			var wr := _ring_at(_waist_rings, my)
-			var bk := _mat(white, _tex("buckle" + str(mc), _buckle_tex.bind(mc)), 0.95, 0.25)
+			var bkc: Color = look.get("buckle_color", mc)
+			var bk := _mat(white, _tex("buckle" + str(bkc), _buckle_tex.bind(bkc)), 0.95, 0.25)
 			_add_mesh(hips, _flat_mesh(_oval_pts(0.052, 0.036, 24), 0.008, 0.003), Vector3(0, my, wr.z + wr.w + 0.01), bk)
 
 
