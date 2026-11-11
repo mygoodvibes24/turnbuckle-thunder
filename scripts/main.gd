@@ -94,6 +94,21 @@ func _ready() -> void:
 		kid = game.call("p2_look")
 		p1_name = str(game.call("p1_name"))
 		p2_name = str(game.call("p2_name"))
+	# TEMP preview (throwaway branch): ?c1=<id>&c2=<id>&cam=<n>&down=1
+	var RL = preload("res://scripts/roster.gd")
+	for e in RL.ROSTER:
+		var tw: Node3D = Wrestler.new()
+		ring_root.add_child(tw)
+		tw.setup(str(e["id"]), e["look"], false)
+		tw.queue_free()
+	var e1: Dictionary = RL.find(_dbg_q("c1", "starla"))
+	var e2: Dictionary = RL.find(_dbg_q("c2", "razz"))
+	tank = e1["look"]
+	kid = e2["look"]
+	p1_name = str(e1["display_name"])
+	p2_name = str(e2["display_name"])
+	dbg_view = int(_dbg_q("cam", "0"))
+	dbg_down = _dbg_q("down", "0") == "1"
 	p1 = _spawn(p1_name, tank, false, Vector3(-1.8, 0, 0.3))
 	p2 = _spawn(p2_name, kid, true, Vector3(1.8, 0, -0.3))
 	p1.opponent = p2
@@ -4108,6 +4123,61 @@ func _update_camera(delta: float) -> void:
 	if cam_shake > 0.0:
 		camera.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * cam_shake * 0.25
 		cam_shake = max(0.0, cam_shake - delta * 2.5)
+	_dbg_cam(delta)
+
+
+var dbg_view := 0
+var dbg_down := false
+var dbg_t := 0.0
+
+
+func _dbg_q(k: String, dflt: String) -> String:
+	if not OS.has_feature("web"):
+		return dflt
+	var v = JavaScriptBridge.eval("new URLSearchParams(location.search).get('%s') || ''" % k)
+	var sv := str(v)
+	return dflt if sv == "" or sv == "<null>" else sv
+
+
+func _dbg_cam(delta: float) -> void:
+	dbg_t += delta
+	for k in 9:
+		if Input.is_physical_key_pressed(KEY_1 + k):
+			dbg_view = k + 1
+	if Input.is_physical_key_pressed(KEY_0):
+		dbg_view = 0
+	if dbg_view != 0:
+		p2.is_cpu = false
+	if dbg_down and dbg_t > 2.0 and p2.is_standing():
+		p2.receive_strike(p1, 1.0, true)
+	if dbg_view == 0:
+		return
+	p1.visible = dbg_view <= 4 or dbg_view >= 8
+	p2.visible = dbg_view >= 5
+	var w: Node3D = p1 if dbg_view <= 4 else p2
+	var f: Vector3 = w.facing
+	var side := Vector3(f.z, 0, -f.x)
+	var c: Vector3 = w.global_position
+	var at := c + Vector3(0, 1.0, 0)
+	var eye := c + f * 2.6 + Vector3(0, 1.15, 0)
+	match dbg_view:
+		2, 6:
+			eye = c + (f + side * 0.9).normalized() * 2.6 + Vector3(0, 1.2, 0)
+		3:
+			eye = c - f * 2.6 + Vector3(0, 1.2, 0)
+		4, 7:
+			at = c + Vector3(0, 1.62, 0)
+			eye = c + (f + side * 0.35).normalized() * 0.95 + Vector3(0, 1.66, 0)
+		8:
+			var m := (p1.global_position + p2.global_position) * 0.5
+			at = m + Vector3(0, 0.9, 0)
+			eye = m + Vector3(0, 1.4, 5.5)
+		9:
+			at = c + Vector3(0, 0.25, 0)
+			eye = c + Vector3(0.4, 1.0, 2.2)
+	camera.position = eye
+	camera.look_at(at)
+	camera.fov = 40.0
 
 
 # ---- presentation: trick cam, trails, speed lines, hype MC (scripts/mc.gd)
