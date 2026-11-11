@@ -11,6 +11,9 @@ extends Node3D
 ##   ground_hit(pos, strength, surface)  # "grass": green-brown clumps + dirt puff; "concrete": grey dust
 ##   body_flash(node)       # ~2-frame additive white overlay on every mesh under node (hit victim)
 ##   hurt(strength)         # subtle red screen-edge vignette pulse (player took a big hit)
+##   trail(node, tint)      # call every frame while a wrestler boosts / flies: pooled additive
+##                          # afterimages of its biggest body parts + two hand ribbons
+##   speed_lines(amount)    # 0..1 radial streak overlay (player boosting); call every frame
 
 const SPARK_POOL := 12
 const SHARD_POOL := 48            # shared by splinters and debris (ring buffer)
@@ -85,6 +88,36 @@ var _flash_layer: CanvasLayer
 var _flash_rect: ColorRect
 var _flash_life := 0.0
 var _flash_peak := 0.0
+
+# ---- trails (afterimages + hand ribbons) and speed lines
+const GHOST_SETS := 8             # pooled afterimages (shared by both wrestlers)
+const GHOST_PARTS := 14           # biggest meshes of a wrestler copied into one afterimage
+const GHOST_LIFE := 0.26
+const GHOST_EVERY := 0.055        # game seconds between afterimages of one wrestler
+const GHOST_ALPHA := 0.38
+const GHOST_MIN_MOVE := 0.18      # metres moved since the last afterimage before a new one
+const RIBBON_PTS := 12            # samples per hand ribbon
+const RIBBON_EVERY := 0.025
+const RIBBON_WIDTH := 0.11
+const SPEED_LINES := 26
+var _ghost_parts: Array = []      # set -> Array[MeshInstance3D]
+var _ghost_mats: Array[StandardMaterial3D] = []
+var _ghost_life := PackedFloat32Array()
+var _ghost_tint: Array[Color] = []
+var _next_ghost := 0
+var _part_cache := {}             # node id -> Array[MeshInstance3D] (biggest parts first)
+var _trails := {}                 # node id -> trail state (see trail())
+var _ribbon_mesh: ImmediateMesh
+var _ribbon_mi: MeshInstance3D
+var _ribbon_mat: StandardMaterial3D
+var _clock := 0.0
+var _lines_layer: CanvasLayer
+var _lines_ctl: Control
+const TRAIL_HOLD := 0.06          # seconds a trail()/speed_lines() request stays alive
+var _lines_amount := 0.0          # requested amount (held for TRAIL_HOLD real seconds)
+var _lines_hold := 0.0
+var _lines_shown := 0.0
+var _lines_seed := PackedFloat32Array()   # per streak: angle, length, phase
 
 
 func _ready() -> void:
@@ -178,6 +211,8 @@ func _ready() -> void:
 	_flash_rect.color = Color(1, 1, 1, 0)
 	_flash_rect.visible = false
 	_flash_layer.add_child(_flash_rect)
+
+	_build_trails()
 
 	_body_mat = StandardMaterial3D.new()
 	_body_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -483,6 +518,8 @@ func _process(delta: float) -> void:
 
 	if _flash_life > 0.0 or _hurt_life > 0.0 or _body_life[0] > 0.0 or _body_life[1] > 0.0:
 		_update_screen_fx(delta / maxf(Engine.time_scale, 0.05))
+	_update_trails(delta)
+	_update_speed_lines(delta / maxf(Engine.time_scale, 0.05))
 
 
 func _update_screen_fx(real_dt: float) -> void:
@@ -510,6 +547,305 @@ func _update_screen_fx(real_dt: float) -> void:
 			_flash_rect.visible = false
 		else:
 			_flash_rect.color = Color(1, 1, 1, _flash_peak * (_flash_life / FLASH_TIME))
+
+
+# ---------------------------------------------------------------- trails & speed lines
+
+func _build_trails() -> void:
+	for i in GHOST_SETS:
+		var m := StandardMaterial3D.new()
+		m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		m.cull_mode = BaseMaterial3D.CULL_BACK
+		m.albedo_color = Color(1, 1, 1, 0)
+		m.render_priority = 1
+		var parts: Array = []
+		for j in GHOST_PARTS:
+			var mi := MeshInstance3D.new()
+			mi.material_override = m
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			mi.visible = false
+			add_child(mi)
+			parts.append(mi)
+		_ghost_parts.append(parts)
+		_ghost_mats.append(m)
+		_ghost_life.append(0.0)
+		_ghost_tint.append(Color.WHITE)
+	_ribbon_mesh = ImmediateMesh.new()
+	_ribbon_mat = StandardMaterial3D.new()
+	_ribbon_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_ribbon_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_ribbon_mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	_ribbon_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_ribbon_mat.vertex_color_use_as_albedo = true
+	_ribbon_mat.render_priority = 1
+	_ribbon_mi = MeshInstance3D.new()
+	_ribbon_mi.mesh = _ribbon_mesh
+	_ribbon_mi.material_override = _ribbon_mat
+	_ribbon_mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_ribbon_mi.extra_cull_margin = 16384.0   # vertices are world space and move every frame
+	add_child(_ribbon_mi)
+	# Speed lines: own layer under the HUD (1), above the 3D view (-1) and the hurt vignette.
+	_lines_layer = CanvasLayer.new()
+	_lines_layer.layer = 0
+	add_child(_lines_layer)
+	_lines_ctl = Control.new()
+	_lines_ctl.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_lines_ctl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_lines_ctl.visible = false
+	_lines_ctl.draw.connect(_draw_speed_lines)
+	_lines_layer.add_child(_lines_ctl)
+	for i in SPEED_LINES:
+		_lines_seed.append(randf() * TAU)
+		_lines_seed.append(randf_range(0.18, 0.4))
+		_lines_seed.append(randf())
+
+
+## Keeps a wrestler's trail alive this frame (call every frame while it should show).
+func trail(node: Node3D, tint: Color) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	var id: int = node.get_instance_id()
+	var t: Dictionary = _trails.get(id, {})
+	if t.is_empty():
+		t = {"node": node, "tint": tint, "last_ghost": -1.0, "last_pt": -1.0,
+			"pts_l": PackedVector3Array(), "pts_r": PackedVector3Array(), "ages": PackedFloat32Array(), "until": 0.0}
+		_trails[id] = t
+	t["tint"] = tint
+	# Callers run on physics ticks; a short hold keeps the trail steady on frames without one.
+	t["until"] = _clock + TRAIL_HOLD
+	t["req"] = true   # also counts on slow frames longer than the hold
+
+
+func speed_lines(amount: float) -> void:
+	if _lines_hold <= 0.0:
+		_lines_amount = 0.0
+	_lines_amount = maxf(_lines_amount, clampf(amount, 0.0, 1.0))
+	_lines_hold = TRAIL_HOLD
+
+
+## The node's biggest body meshes (by AABB volume), cached.
+func _parts_of(node: Node3D) -> Array:
+	var id: int = node.get_instance_id()
+	var cached: Array = _part_cache.get(id, [])
+	var ok: bool = not cached.is_empty()
+	for mi in cached:
+		if not is_instance_valid(mi) or not mi.is_inside_tree():
+			ok = false
+			break
+	if ok:
+		return cached
+	var all: Array = _meshes_of(node)
+	var scored: Array = []
+	for mi in all:
+		var m: MeshInstance3D = mi
+		if m.mesh == null or not m.is_visible_in_tree():
+			continue
+		var bb: AABB = m.mesh.get_aabb()
+		var sc: Vector3 = m.global_transform.basis.get_scale()
+		var vol: float = absf(bb.size.x * sc.x * bb.size.y * sc.y * bb.size.z * sc.z)
+		scored.append([vol, m])
+	scored.sort_custom(func(a, b): return a[0] > b[0])
+	var out: Array = []
+	for e in scored:
+		if out.size() >= GHOST_PARTS:
+			break
+		out.append(e[1])
+	_part_cache[id] = out
+	return out
+
+
+func _spawn_ghost(node: Node3D, tint: Color) -> void:
+	var parts: Array = _parts_of(node)
+	if parts.is_empty():
+		return
+	var gi := _next_ghost
+	_next_ghost = (_next_ghost + 1) % GHOST_SETS
+	var ghost: Array = _ghost_parts[gi]
+	for j in GHOST_PARTS:
+		var g: MeshInstance3D = ghost[j]
+		if j < parts.size() and is_instance_valid(parts[j]):
+			var src: MeshInstance3D = parts[j]
+			g.mesh = src.mesh
+			g.global_transform = src.global_transform
+			g.visible = true
+		else:
+			g.visible = false
+	_ghost_life[gi] = GHOST_LIFE
+	_ghost_tint[gi] = tint
+	_ghost_mats[gi].albedo_color = Color(tint.r, tint.g, tint.b, GHOST_ALPHA)
+
+
+func _hand_pos(node: Node3D, prop: String, fallback: Vector3) -> Vector3:
+	var h = node.get(prop)
+	if h is Node3D and is_instance_valid(h) and (h as Node3D).is_inside_tree():
+		return (h as Node3D).global_position
+	return node.global_position + fallback
+
+
+func _update_trails(delta: float) -> void:
+	_clock += delta
+	for i in GHOST_SETS:
+		var life: float = _ghost_life[i]
+		if life <= 0.0:
+			continue
+		life -= delta
+		_ghost_life[i] = life
+		if life <= 0.0:
+			for g in _ghost_parts[i]:
+				(g as MeshInstance3D).visible = false
+			continue
+		var k: float = life / GHOST_LIFE
+		var c: Color = _ghost_tint[i]
+		_ghost_mats[i].albedo_color = Color(c.r, c.g, c.b, GHOST_ALPHA * k * k)
+	_ribbon_mesh.clear_surfaces()
+	if _trails.is_empty():
+		return
+	var cam := get_viewport().get_camera_3d()
+	var drop: Array = []
+	var any := false
+	var max_age: float = RIBBON_EVERY * float(RIBBON_PTS)
+	for id in _trails:
+		var t: Dictionary = _trails[id]
+		var node: Node3D = t["node"]
+		if not is_instance_valid(node) or not node.is_inside_tree():
+			drop.append(id)
+			continue
+		# renewed by trail() while it should show
+		var on: bool = bool(t.get("req", false)) or _clock <= float(t["until"])
+		t["req"] = false
+		var tint: Color = t["tint"]
+		var pts_l: PackedVector3Array = t["pts_l"]
+		var pts_r: PackedVector3Array = t["pts_r"]
+		var ages: PackedFloat32Array = t["ages"]
+		for a in ages.size():
+			ages[a] += delta
+		if on:
+			var lg: float = t["last_ghost"]
+			if lg < 0.0 or _clock - lg >= GHOST_EVERY:
+				# Only leave an afterimage once the body has actually moved away from the last one:
+				# a ghost on top of a standing wrestler would just tint them.
+				var gp: Vector3 = node.global_position
+				var last_p: Vector3 = t.get("ghost_pos", Vector3(INF, INF, INF))
+				if last_p.x == INF or gp.distance_to(last_p) >= GHOST_MIN_MOVE:
+					t["last_ghost"] = _clock
+					t["ghost_pos"] = gp
+					_spawn_ghost(node, tint)
+			var lp: float = t["last_pt"]
+			var hl := _hand_pos(node, "hand_l", Vector3(-0.3, 1.1, 0))
+			var hr := _hand_pos(node, "hand_r", Vector3(0.3, 1.1, 0))
+			if lp < 0.0 or _clock - lp >= RIBBON_EVERY:
+				t["last_pt"] = _clock
+				pts_l.insert(0, hl)
+				pts_r.insert(0, hr)
+				ages.insert(0, 0.0)
+			elif pts_l.size() > 0:
+				pts_l[0] = hl
+				pts_r[0] = hr
+		# age out samples (this also drains the ribbon once the trail stops)
+		while ages.size() > 0 and (ages.size() > RIBBON_PTS or ages[ages.size() - 1] > max_age):
+			ages.resize(ages.size() - 1)
+			pts_l.resize(ages.size())
+			pts_r.resize(ages.size())
+		t["pts_l"] = pts_l
+		t["pts_r"] = pts_r
+		t["ages"] = ages
+		if ages.size() >= 2 and cam != null:
+			if not any:
+				_ribbon_mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLES)
+				any = true
+			_ribbon_strip(pts_l, ages, max_age, tint, cam)
+			_ribbon_strip(pts_r, ages, max_age, tint, cam)
+		elif ages.is_empty() and not on:
+			drop.append(id)
+	if any:
+		_ribbon_mesh.surface_end()
+	for id in drop:
+		_trails.erase(id)
+
+
+func _ribbon_strip(pts: PackedVector3Array, ages: PackedFloat32Array, max_age: float, tint: Color, cam: Camera3D) -> void:
+	var eye: Vector3 = cam.global_position
+	var prev_a := Vector3.ZERO
+	var prev_b := Vector3.ZERO
+	var prev_c := Color()
+	for i in pts.size():
+		var p: Vector3 = pts[i]
+		var dir: Vector3
+		if i + 1 < pts.size():
+			dir = pts[i + 1] - p
+		else:
+			dir = p - pts[i - 1]
+		var side: Vector3 = dir.cross(eye - p)
+		if side.length_squared() < 0.000001:
+			side = Vector3.UP
+		var k: float = 1.0 - clampf(ages[i] / max_age, 0.0, 1.0)
+		side = side.normalized() * (RIBBON_WIDTH * (0.25 + 0.75 * k) * 0.5)
+		var a := p + side
+		var b := p - side
+		var c := Color(tint.r, tint.g, tint.b, 0.55 * k * k)
+		if i > 0:
+			_ribbon_mesh.surface_set_color(prev_c)
+			_ribbon_mesh.surface_add_vertex(prev_a)
+			_ribbon_mesh.surface_add_vertex(prev_b)
+			_ribbon_mesh.surface_set_color(c)
+			_ribbon_mesh.surface_add_vertex(a)
+			_ribbon_mesh.surface_add_vertex(a)
+			_ribbon_mesh.surface_set_color(prev_c)
+			_ribbon_mesh.surface_add_vertex(prev_b)
+			_ribbon_mesh.surface_set_color(c)
+			_ribbon_mesh.surface_add_vertex(b)
+		prev_a = a
+		prev_b = b
+		prev_c = c
+
+
+func _update_speed_lines(real_dt: float) -> void:
+	# Read the request first: on slow frames real_dt can exceed the hold itself.
+	var want: float = _lines_amount
+	_lines_hold -= real_dt
+	if _lines_hold <= 0.0:
+		_lines_amount = 0.0
+	_lines_shown = lerpf(_lines_shown, want, clampf(real_dt * (10.0 if want > _lines_shown else 5.0), 0.0, 1.0))
+	if _lines_shown < 0.02 and want <= 0.0:
+		_lines_shown = 0.0
+		if _lines_ctl.visible:
+			_lines_ctl.visible = false
+		return
+	_lines_ctl.visible = true
+	# Each streak rushes outward and respawns at a fresh angle (manga-style speed lines).
+	for i in SPEED_LINES:
+		var ph: float = _lines_seed[i * 3 + 2] + minf(real_dt, 0.05) * 3.2
+		if ph >= 1.0:
+			ph = fposmod(ph, 1.0)
+			_lines_seed[i * 3] = randf() * TAU
+			_lines_seed[i * 3 + 1] = randf_range(0.18, 0.4)
+		_lines_seed[i * 3 + 2] = ph
+	_lines_ctl.queue_redraw()
+
+
+func _draw_speed_lines() -> void:
+	var sz: Vector2 = _lines_ctl.size
+	var c: Vector2 = sz * 0.5
+	for i in SPEED_LINES:
+		var ang: float = _lines_seed[i * 3]
+		var ln: float = _lines_seed[i * 3 + 1]
+		var ph: float = _lines_seed[i * 3 + 2]
+		# Streaks live on the screen's ellipse (inner end 55..90% of the way to the edge), so they
+		# frame the action at every edge and never cover the middle.
+		var e := Vector2(cos(ang) * c.x, sin(ang) * c.y)
+		var k0: float = 0.55 + 0.35 * ph
+		var p0: Vector2 = c + e * k0
+		var p1: Vector2 = c + e * (k0 + ln * 1.6)
+		var d: Vector2 = (p1 - p0).normalized()
+		var hw: float = lerpf(1.5, 6.0, ph)
+		var n := Vector2(-d.y, d.x)
+		var a: float = 0.5 * _lines_shown * sin(ph * PI)
+		var col := Color(1.0, 1.0, 0.95, a)
+		var tip := Color(1.0, 1.0, 0.95, 0.0)
+		var pts := PackedVector2Array([p0, p1 + n * hw, p1 - n * hw])
+		_lines_ctl.draw_polygon(pts, PackedColorArray([tip, col, col]))
 
 
 # ---------------------------------------------------------------- textures

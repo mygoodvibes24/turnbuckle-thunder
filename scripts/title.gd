@@ -992,7 +992,7 @@ func _look_tank() -> Dictionary:
 		"gear": Color(0.8, 0.14, 0.1), "skin": Color(0.42, 0.28, 0.2), "face": "tank",
 		"hair": "locs", "hair_color": Color(0.05, 0.036, 0.03),
 		"top": "tee", "top_color": Color(0.075, 0.072, 0.078), "graphic": "skull_bolt", "undershirt": true,
-		"bottom_color": Color(0.12, 0.115, 0.125), "bottom_fade": Color(0.34, 0.31, 0.28),
+		"bottom_color": Color(0.13, 0.13, 0.16), "bottom_fade": Color(0.33, 0.3, 0.28),
 		"shoe_color": Color(0.06, 0.06, 0.065), "shoe_accent": Color(0.92, 0.92, 0.9),
 		"chain": true, "bracelet": true, "tattoos": true, "bulk": 1.0,
 	}
