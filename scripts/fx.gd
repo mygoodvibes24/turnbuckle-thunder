@@ -95,6 +95,7 @@ const GHOST_PARTS := 14           # biggest meshes of a wrestler copied into one
 const GHOST_LIFE := 0.26
 const GHOST_EVERY := 0.055        # game seconds between afterimages of one wrestler
 const GHOST_ALPHA := 0.38
+const GHOST_MIN_MOVE := 0.18      # metres moved since the last afterimage before a new one
 const RIBBON_PTS := 12            # samples per hand ribbon
 const RIBBON_EVERY := 0.025
 const RIBBON_WIDTH := 0.11
@@ -723,8 +724,14 @@ func _update_trails(delta: float) -> void:
 		if on:
 			var lg: float = t["last_ghost"]
 			if lg < 0.0 or _clock - lg >= GHOST_EVERY:
-				t["last_ghost"] = _clock
-				_spawn_ghost(node, tint)
+				# Only leave an afterimage once the body has actually moved away from the last one:
+				# a ghost on top of a standing wrestler would just tint them.
+				var gp: Vector3 = node.global_position
+				var last_p: Vector3 = t.get("ghost_pos", Vector3(INF, INF, INF))
+				if last_p.x == INF or gp.distance_to(last_p) >= GHOST_MIN_MOVE:
+					t["last_ghost"] = _clock
+					t["ghost_pos"] = gp
+					_spawn_ghost(node, tint)
 			var lp: float = t["last_pt"]
 			var hl := _hand_pos(node, "hand_l", Vector3(-0.3, 1.1, 0))
 			var hr := _hand_pos(node, "hand_r", Vector3(0.3, 1.1, 0))
@@ -809,9 +816,9 @@ func _update_speed_lines(real_dt: float) -> void:
 	_lines_ctl.visible = true
 	# Each streak rushes outward and respawns at a fresh angle (manga-style speed lines).
 	for i in SPEED_LINES:
-		var ph: float = _lines_seed[i * 3 + 2] + real_dt * 3.2
+		var ph: float = _lines_seed[i * 3 + 2] + minf(real_dt, 0.05) * 3.2
 		if ph >= 1.0:
-			ph -= 1.0
+			ph = fposmod(ph, 1.0)
 			_lines_seed[i * 3] = randf() * TAU
 			_lines_seed[i * 3 + 1] = randf_range(0.18, 0.4)
 		_lines_seed[i * 3 + 2] = ph
