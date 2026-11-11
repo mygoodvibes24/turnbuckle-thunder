@@ -4281,6 +4281,10 @@ func _update_trick_cam(delta: float) -> float:
 	# Low and close, under the flyer, looking up at them.
 	var want_pos := Vector3(center.x, 0.0, center.z) + off
 	want_pos.y = clampf(0.55 + f.y * 0.45, 0.5, 2.0)
+	# Can't get side-on (pinned against the shed / a fence): if the opponent stands between
+	# the lens and the flyer, rise up and look over their shoulder instead.
+	if flat.dot(off) > 0.0 and spread_t < 2.5:
+		want_pos.y += 1.1 * clampf(flat.normalized().dot(off.normalized()), 0.0, 1.0)
 	want_pos.x = clampf(want_pos.x, yard_bounds.position.x - 0.2, yard_bounds.end.x + 0.2)
 	want_pos.z = clampf(want_pos.z, yard_bounds.position.y + 1.5, yard_bounds.end.y + 4.0)
 	var want_look := Vector3(center.x, 0.85 + f.y * 0.75, center.z)
