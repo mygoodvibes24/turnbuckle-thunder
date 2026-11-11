@@ -8,8 +8,9 @@ extends RefCounted
 ##   genre         music-genre tag shown on the select screen
 ##   bio           one line
 ##   stats         POWER / AIR / FLOW / GRIT, 1..10 (every fighter totals 25)
-##   anim_style    taunt / idle flavour for the animation agents
-##   signature_set the move-set family; signature = its finisher's display name
+##   anim_style    idle / taunt flavour (wrestler.gd EX_ANIM_STYLES); repeated inside look,
+##                 which is where wrestler.gd reads it
+##   signature_set wrestler.gd SIG_SETS key (also inside look); signature = finisher display name
 ##   look          the Dictionary passed to wrestler.gd setup()
 ##
 ## look keys. wrestler.gd reads everything with look.get(key, default), so unknown keys are
@@ -42,14 +43,15 @@ const ROSTER := [
 		"genre": "HARDCORE",
 		"bio": "Backyard legend from the block. Hits like a dropped fridge and never stays down.",
 		"stats": {"POWER": 9, "AIR": 3, "FLOW": 4, "GRIT": 9},
-		"anim_style": "heavy",
-		"signature_set": "heavy_hitter",
+		"anim_style": "swagger",
+		"signature_set": "tank",
 		"signature": "FRIDGE DROP",
 		"look": {
+			"anim_style": "swagger", "signature_set": "tank",
 			"gear": Color(0.8, 0.14, 0.1), "skin": Color(0.42, 0.28, 0.2), "face": "tank",
 			"hair": "locs", "hair_color": Color(0.05, 0.036, 0.03),
 			"top": "tee", "top_color": Color(0.075, 0.072, 0.078), "graphic": "skull_bolt", "undershirt": true,
-			"bottom_color": Color(0.12, 0.115, 0.125), "bottom_fade": Color(0.34, 0.31, 0.28),
+			"bottom_color": Color(0.13, 0.13, 0.16), "bottom_fade": Color(0.33, 0.3, 0.28),
 			"shoe_color": Color(0.06, 0.06, 0.065), "shoe_accent": Color(0.92, 0.92, 0.9),
 			"chain": true, "bracelet": true, "tattoos": true, "bulk": 1.0,
 		},
@@ -61,10 +63,11 @@ const ROSTER := [
 		"genre": "LUCHA LIBRE",
 		"bio": "Masked high-flyer who learned to fly off his cousin's trampoline. Lands nothing twice.",
 		"stats": {"POWER": 4, "AIR": 9, "FLOW": 7, "GRIT": 5},
-		"anim_style": "luchador",
-		"signature_set": "high_flyer",
+		"anim_style": "hyper",
+		"signature_set": "peligro",
 		"signature": "TRAMPOLINE RANA",
 		"look": {
+			"anim_style": "hyper", "signature_set": "peligro",
 			"gear": Color(0.15, 0.75, 0.3), "skin": Color(0.62, 0.43, 0.3), "face": "kid",
 			"mask": true, "mask_color": Color(0.12, 0.7, 0.28), "mask_trim": Color(1.0, 0.82, 0.1),
 			"hair": "curls", "hair_color": Color(0.07, 0.055, 0.045),
@@ -83,10 +86,11 @@ const ROSTER := [
 		"genre": "POP",
 		"bio": "Arena-pop headliner who does her own stunts. Hits the high notes and the top rope.",
 		"stats": {"POWER": 3, "AIR": 10, "FLOW": 8, "GRIT": 4},
-		"anim_style": "acrobatic",
-		"signature_set": "pop_acrobat",
+		"anim_style": "diva",
+		"signature_set": "peligro",
 		"signature": "ENCORE SPLIT",
 		"look": {
+			"anim_style": "diva", "signature_set": "peligro",
 			"gear": Color(1.0, 0.28, 0.72), "skin": Color(0.8, 0.6, 0.47), "face": "kid",
 			"hair": "curls", "hair_color": Color(0.96, 0.84, 0.58),
 			"top": "tee", "top_color": Color(0.86, 0.16, 0.6), "top_accent": Color(0.82, 0.84, 0.92),
@@ -108,10 +112,11 @@ const ROSTER := [
 		"genre": "PUNK",
 		"bio": "Three-chord chaos merchant. Started a mosh pit at his own birthday party. Age six.",
 		"stats": {"POWER": 7, "AIR": 5, "FLOW": 4, "GRIT": 9},
-		"anim_style": "chaotic",
-		"signature_set": "punk_chaos",
+		"anim_style": "punk",
+		"signature_set": "tank",
 		"signature": "STAGE DIVE",
 		"look": {
+			"anim_style": "punk", "signature_set": "tank",
 			"gear": Color(0.78, 1.0, 0.1), "skin": Color(0.86, 0.68, 0.56), "face": "kid",
 			"hair": "curls", "hair_color": Color(0.48, 0.95, 0.12),
 			"top": "tee", "top_color": Color(0.06, 0.06, 0.07), "top_accent": Color(0.82, 0.82, 0.84),
@@ -134,10 +139,11 @@ const ROSTER := [
 		"genre": "COUNTRY",
 		"bio": "Honky-tonk heartbreaker with a bull-rider's grip. Ropes steers, slams city boys.",
 		"stats": {"POWER": 10, "AIR": 2, "FLOW": 4, "GRIT": 9},
-		"anim_style": "power",
-		"signature_set": "power_grapple",
+		"anim_style": "cowboy",
+		"signature_set": "tank",
 		"signature": "HOEDOWN SLAM",
 		"look": {
+			"anim_style": "cowboy", "signature_set": "tank",
 			"gear": Color(0.92, 0.58, 0.18), "skin": Color(0.74, 0.52, 0.38), "face": "tank",
 			"hair": "curls", "hair_color": Color(0.34, 0.21, 0.11),
 			"top": "tee", "top_color": Color(0.6, 0.15, 0.12), "top_accent": Color(0.95, 0.92, 0.85),
@@ -161,10 +167,11 @@ const ROSTER := [
 		"genre": "OLD SCHOOL HIP HOP",
 		"bio": "Park-jam MC from back in the day. Every hold lands on the one, every slam on the two.",
 		"stats": {"POWER": 6, "AIR": 4, "FLOW": 9, "GRIT": 6},
-		"anim_style": "technical",
-		"signature_set": "technical",
+		"anim_style": "oldschool",
+		"signature_set": "tank",
 		"signature": "BREAKBEAT LOCK",
 		"look": {
+			"anim_style": "oldschool", "signature_set": "tank",
 			"gear": Color(1.0, 0.8, 0.16), "skin": Color(0.3, 0.2, 0.14), "face": "tank",
 			"hair": "none", "hair_color": Color(0.04, 0.03, 0.03),
 			"top": "hoodie", "top_color": Color(0.06, 0.06, 0.07), "top_accent": Color(0.95, 0.95, 0.95),
@@ -190,10 +197,11 @@ const ROSTER := [
 		"genre": "NEW SCHOOL RAP",
 		"bio": "Chart-climbing phenom. Drops combos faster than he drops singles, and he drops weekly.",
 		"stats": {"POWER": 5, "AIR": 6, "FLOW": 9, "GRIT": 5},
-		"anim_style": "swagger",
-		"signature_set": "speed_combos",
+		"anim_style": "newschool",
+		"signature_set": "peligro",
 		"signature": "PLATINUM FLURRY",
 		"look": {
+			"anim_style": "newschool", "signature_set": "peligro",
 			"gear": Color(0.62, 0.36, 1.0), "skin": Color(0.46, 0.31, 0.22), "face": "kid",
 			"hair": "locs", "hair_color": Color(0.06, 0.045, 0.04),
 			"top": "hoodie", "top_color": Color(0.7, 0.6, 0.9), "top_accent": Color(0.2, 0.95, 0.75),

@@ -170,7 +170,6 @@ void fragment() {
 func _ready() -> void:
 	Engine.time_scale = 1.0
 	randomize()
-	print("select: ready")
 	start_ms = Time.get_ticks_msec()
 	headless = DisplayServer.get_name() == "headless"
 	game = get_node_or_null("/root/Game")
@@ -394,7 +393,6 @@ func _on_back_btn() -> void:
 
 
 func _confirm() -> void:
-	print("select: confirm phase=%d sel=%d frame=%d" % [phase, sel, frames])
 	var n := Roster.count()
 	var pick := sel
 	if phase == Phase.PICK_P1:
@@ -473,7 +471,6 @@ func _go_ready() -> void:
 
 
 func _leave(scene: String) -> void:
-	print("select: leave -> " + scene)
 	if phase == Phase.LEAVING:
 		return
 	phase = Phase.LEAVING
