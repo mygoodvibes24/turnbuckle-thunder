@@ -34,6 +34,13 @@ const HYPE_BANK_CAP := 20.0
 const LETTERS := ["B", "R", "A", "W", "L"]
 const HANG_SCALE := 0.6         # "apex hang": brief slow-mo when the player lands a 540+ spin
 const HANG_SECS := 0.12         # real seconds
+# FLOW (G1): moving fast (boosting / full-speed run / roll / airborne, wrestler.flow_moving_fast())
+# holds the combo timer once it is down to COAST_AT, for up to COAST_MAX extra seconds per gap.
+const COAST_AT := 1.0
+const COAST_MAX := 1.5
+# A letter re-arms once hype has dipped to LETTER_REARM (boost burns it, SPECIAL drains to 80):
+# hovering at 100 with tiny boosts / nicks doesn't farm letters.
+const LETTER_REARM := 90.0
 const WHIFF_GAP := 0.6          # a whiff leaves at most this much combo gap
 
 var w: Node3D                  # the wrestler we belong to
@@ -46,6 +53,9 @@ var _repeats := {}             # trick name -> times used in this combo
 var _prev_spirit := 0.0
 var _prev_health := 0.0        # health at the end of the last tick: tells "hurt" from "whiffed"
 var _done := false             # match over: freeze
+var coast := 0.0               # FLOW: extra seconds the current gap has been held by moving fast
+var coasting := false          # HUD: the combo timer is being held by speed
+var _letter_armed := true
 
 
 func _ready() -> void:
@@ -82,6 +92,7 @@ func _on_trick(trick_name: String, points: int, kind: String) -> void:
 			_break()
 		elif combo_count > 0:
 			combo_gap = minf(combo_gap, WHIFF_GAP)  # whiffed: the chain banks shortly
+			coast = COAST_MAX  # FLOW: no coasting after a whiff
 		return
 	if points <= 0:
 		return
@@ -98,6 +109,7 @@ func _on_trick(trick_name: String, points: int, kind: String) -> void:
 		pts = maxi(10, int(float(pts) / pow(2.0, float(mini(used, 3)))))
 	combo_count += 1
 	combo_gap = COMBO_GAP
+	coast = 0.0
 	var mult := mini(combo_count, _mult_cap())
 	w.combo_mult = mult
 	w.combo_points = w.combo_points + pts
@@ -183,6 +195,8 @@ func _reset_combo() -> void:
 	combo_count = 0
 	combo_gap = 0.0
 	_repeats.clear()
+	coast = 0.0
+	coasting = false
 	w.combo_mult = 1
 	w.combo_points = 0
 
@@ -227,7 +241,12 @@ func _physics_process(delta: float) -> void:
 		_done = true
 		return
 	if combo_count > 0:
-		combo_gap -= delta
+		coasting = combo_gap <= COAST_AT and coast < COAST_MAX and w.has_method("flow_moving_fast") \
+			and bool(w.flow_moving_fast())
+		if coasting:
+			coast += delta  # FLOW: still moving fast: the combo stays alive
+		else:
+			combo_gap -= delta
 		if combo_gap <= 0.0:
 			_bank()
 	if w.brawl_mode:
@@ -239,7 +258,10 @@ func _physics_process(delta: float) -> void:
 			_end_brawl()
 	else:
 		var sp: float = w.spirit
-		if _prev_spirit < 100.0 and sp >= 100.0:
+		if sp <= LETTER_REARM:
+			_letter_armed = true
+		if _letter_armed and _prev_spirit < 100.0 and sp >= 100.0:
+			_letter_armed = false
 			_earn_letter()
 	_prev_spirit = w.spirit
 	_prev_health = w.health
