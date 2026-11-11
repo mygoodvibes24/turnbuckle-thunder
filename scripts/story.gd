@@ -11,7 +11,7 @@ extends Node3D
 ## story hook (scripts/story_match.gd) writes Game.story_result and comes back here ->
 ## win / lose scene -> payout + save -> next chapter / retry.
 ##
-## Data: scripts/story_data.gd (story_schema.md); scripts/story_data_stub.gd until it lands.
+## Data: scripts/story_data.gd (story_schema.md: CAST + CHAPTERS consts).
 ## Save: ConfigFile at user://story.cfg, section "progress": unlocked (index), completed (ids),
 ## bonus (ids whose bonus cash was paid), cash, best_style {id: score}.
 ## Keyboard (arrows/WASD, Enter/Space/J, Esc/K), gamepad (d-pad/stick, A/B/START) and touch.
@@ -20,7 +20,6 @@ const Wrestler := preload("res://scripts/wrestler.gd")
 const Audio := preload("res://scripts/audio.gd")
 const Music := preload("res://scripts/music.gd")
 const DATA_PATH := "res://scripts/story_data.gd"
-const STUB_PATH := "res://scripts/story_data_stub.gd"
 const CUTSCENE_SCENE := "res://cutscene.tscn"
 const MATCH_SCENE := "res://main.tscn"
 const TITLE_SCENE := "res://title.tscn"
@@ -178,10 +177,9 @@ func _game() -> Node:
 # ---------------------------------------------------------------- data + save
 
 func _load_data() -> void:
-	var path := DATA_PATH if ResourceLoader.exists(DATA_PATH) else STUB_PATH
-	var scr: Script = load(path) as Script
-	if scr == null and path != STUB_PATH:
-		scr = load(STUB_PATH) as Script
+	if not ResourceLoader.exists(DATA_PATH):
+		return
+	var scr: Script = load(DATA_PATH) as Script
 	if scr == null:
 		return
 	var consts: Dictionary = scr.get_script_constant_map()
@@ -368,7 +366,7 @@ func _staged_audio() -> void:
 		0:
 			_spawn_fighter(0, "tank")
 		1:
-			if want_opp != "":
+			if want_opp != "" and want_opp != fighter_ids[1]:
 				_spawn_fighter(1, want_opp)
 		2:
 			if not headless:
@@ -467,7 +465,7 @@ func _input(event: InputEvent) -> void:
 				return
 			if tap or input_lock > 0.0:
 				return   # buttons handle taps themselves
-			var mv := dir.y if dir.y != 0 else dir.x
+			var mv: int = dir.y if dir.y != 0 else dir.x
 			if mv != 0:
 				_move_sel(mv)
 				get_viewport().set_input_as_handled()
@@ -573,7 +571,7 @@ func _show_hub() -> void:
 	var items: Array[Button] = []
 	for c in menu_box.get_children():
 		items.append(c as Button)
-	var first := "START STORY" if completed.is_empty() and cash == 0 else "CONTINUE"
+	var first: String = "START STORY" if completed.is_empty() and cash == 0 else "CONTINUE"
 	items[0].set_meta("label", "%s  -  CH %d" % [first, cur + 1])
 	var acts: Array[Callable] = [func(): _start_chapter(_continue_index()), _show_chapters, func(): _go(TITLE_SCENE)]
 	_set_buttons(items, acts, 0)
@@ -587,6 +585,7 @@ func _show_chapters() -> void:
 	list_box.visible = true
 	list_title.visible = true
 	for c in list_box.get_children():
+		list_box.remove_child(c)
 		c.queue_free()
 	var rows: Array[Button] = []
 	var acts: Array[Callable] = []
@@ -609,7 +608,7 @@ func _show_chapters() -> void:
 		icon.offset_right = -16
 		icon.offset_top = -20
 		icon.offset_bottom = 20
-		var kind := "lock" if locked else ("medal" if _has_medal(i) else ("check" if _is_done(i) else "new"))
+		var kind: String = "lock" if locked else ("medal" if _has_medal(i) else ("check" if _is_done(i) else "new"))
 		icon.draw.connect(func(): _draw_icon(icon, kind))
 		b.add_child(icon)
 		list_box.add_child(b)
@@ -1305,8 +1304,8 @@ func _spawn_fighter(slot: int, id: String) -> void:
 	var w: Node3D = Wrestler.new()
 	world.add_child(w)
 	w.call("setup", nm, look, false)
-	var pos := Vector3(-0.8, 0.0, 0.05) if slot == 0 else Vector3(0.85, 0.0, -0.1)
-	var yaw := 0.5 if slot == 0 else -0.55
+	var pos: Vector3 = Vector3(-0.8, 0.0, 0.05) if slot == 0 else Vector3(0.85, 0.0, -0.1)
+	var yaw: float = 0.5 if slot == 0 else -0.55
 	w.position = pos
 	w.rotation.y = yaw
 	w.set("facing", Vector3(sin(yaw), 0.0, cos(yaw)))
@@ -1492,7 +1491,6 @@ func _draw_bg() -> void:
 	for i in 8:
 		var k := float(i) / 8.0
 		bg.draw_rect(Rect2(0, h * (0.82 + k * 0.18), w, h * 0.03), Color(0, 0, 0, 0.08 + 0.05 * i))
-	bg.draw_rect(Rect2(0, 0, w * 0.46, h), Color(0, 0, 0, 0.0))
 	for i in 10:
 		bg.draw_rect(Rect2(0, 0, w * (0.5 - 0.04 * i), h), Color(0, 0, 0, 0.045))
 
@@ -1524,8 +1522,7 @@ func _draw_icon(c: Control, kind: String) -> void:
 			c.draw_rect(Rect2(m + Vector2(-11, -4), Vector2(22, 17)), Color(0.6, 0.6, 0.62))
 			c.draw_rect(Rect2(m + Vector2(-2, 2), Vector2(4, 6)), INK)
 		"new":
-			var on := 0.6 + 0.4 * sin(t * 6.0)
-			c.draw_rect(Rect2(m + Vector2(-20, -10), Vector2(40, 20)), Color(RED.r, RED.g, RED.b, on))
+			c.draw_rect(Rect2(m + Vector2(-20, -10), Vector2(40, 20)), RED)
 			c.draw_string(font_b, m + Vector2(-17, 6), "NEW", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, CREAM)
 
 

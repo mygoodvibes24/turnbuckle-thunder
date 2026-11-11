@@ -34,6 +34,7 @@ var leaving := false
 var perch_armed := false
 var prev_state := -1
 var style_node: Node = null
+var last_sig_ms := -100000
 
 var layer: CanvasLayer
 var card: PanelContainer
@@ -73,6 +74,12 @@ func setup(p_main: Node3D, p_p1: Node3D, p_p2: Node3D) -> void:
 	if p1.has_signal("signature_started"):
 		p1.connect("signature_started", func(_nm): _on_signature())
 	_build_ui(objective)
+	# Test hook for the browser screenshot scripts: ?story_autowin in the page URL wins the
+	# match (with the bonus) after a few seconds, so the CONTINUE / payout flow can be checked.
+	if OS.has_feature("web"):
+		var q: Variant = JavaScriptBridge.eval("window.location.search", true)
+		if str(q).contains("story_autowin"):
+			get_tree().create_timer(9.0).timeout.connect(_test_autowin)
 	# The objective call follows the "FIGHT!" call.
 	get_tree().create_timer(1.7).timeout.connect(func():
 		if not ended and main.has_method("_announce"):
@@ -89,8 +96,9 @@ func _on_p1_trick(trick_name: String, _points: int, kind: String) -> void:
 			if kind == "air_trick" and trick_name != "" and not _is_clean_call(trick_name):
 				_progress(1)
 		"signature":
-			if kind == "super":
-				_progress(bonus_need)
+			# Fallback when the wrestler has no signature_started signal: count supers.
+			if kind == "super" and not p1.has_signal("signature_started"):
+				_on_signature()
 		"table_break":
 			if trick_name.to_upper().contains("TABLE"):
 				_progress(bonus_need)
@@ -109,8 +117,11 @@ func _on_p2_sfx(kind: String, _s: float, _where: Vector3) -> void:
 
 
 func _on_signature() -> void:
-	if not ended and bonus_type == "signature":
-		_progress(bonus_need)
+	# One signature = one count (debounced: a move may report itself more than once).
+	var now := Time.get_ticks_msec()
+	if not ended and bonus_type == "signature" and now - last_sig_ms > 2500:
+		last_sig_ms = now
+		_progress(1)
 
 
 func _progress(n: int) -> void:
@@ -147,6 +158,15 @@ func _physics_process(_delta: float) -> void:
 			else:
 				_update_tracker(false)
 	prev_state = st
+
+
+func _test_autowin() -> void:
+	if ended:
+		return
+	_progress(bonus_need)
+	p1.call("set_state", Wrestler.S.WIN)
+	p2.call("set_state", Wrestler.S.LOSE)
+	main.call("_on_win", p1)
 
 
 # ---------------------------------------------------------------- match end
@@ -333,7 +353,7 @@ func _update_tracker(pop: bool) -> void:
 	if bonus_done:
 		t = "[DONE]  " + t
 		bonus_label.add_theme_color_override("font_color", Color(0.45, 1.0, 0.45))
-	elif bonus_type == "air_tricks" or bonus_type == "style_score":
+	elif bonus_type in ["air_tricks", "style_score", "signature"] and bonus_need > 1:
 		t += "  %d / %d" % [bonus_have, bonus_need]
 	bonus_label.text = t
 	if pop and tracker != null:
