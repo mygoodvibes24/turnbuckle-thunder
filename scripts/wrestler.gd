@@ -13,6 +13,8 @@ signal sfx(kind: String, strength: float, where: Vector3)
 ## Style points: every landed move / trick (kind "strike", "grapple", "aerial", "air_trick",
 ## "weapon", "movement", "super"); kind "break" (no name, 0 points) = we got hit or whiffed.
 signal trick(name: String, points: int, kind: String)
+## A signature super just started (BRAWL MODE; see "# ---- signature supers"): camera swoop hook.
+signal signature_started(name: String)
 
 enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THROWING, THROWN,
 	DOWN, GETTING_UP, PINNING, PINNED, TAUNT, WIN, LOSE,
@@ -39,7 +41,9 @@ enum S { IDLE, WALK, RUN, PUNCH, RUN_ATTACK, STUNNED, TIEUP_ATK, TIEUP_DEF, THRO
 	# --- strike strings (appended; see "# ---- strike strings & grapple chains") ---
 	JUGGLED,      # popped up by a launcher: airborne, can be juggled, caught or lariated
 	# --- movement (appended; see "# ---- movement & air tricks") ---
-	ROLL }        # dodge roll (double-tap RUN): brief invulnerability
+	ROLL,         # dodge roll (double-tap RUN): brief invulnerability
+	# --- signature supers (appended; see "# ---- signature supers") ---
+	SIGNATURE }   # performing a signature super (BRAWL MODE)
 
 const RING_HALF := 3.5        # throws always land inside this
 const ROPE_BOUNCE := 3.75     # runners rebound here (the ropes are at 4.15)
@@ -124,6 +128,13 @@ const MOVES := {
 	"super_spinebuster": {"name": "CYCLONE SPINEBUSTER!!", "anim": "spinebuster", "dmg": 20.0, "kind": "throw", "tier": "strong", "time": 1.15, "height": 1.6, "land": 1.3, "flip": false, "pts": 1300, "lift": 0.7, "spin": 1},
 	"super_neckbreaker": {"name": "WHIRLYBIRD NECKBREAKER!!", "anim": "neckbreaker", "dmg": 18.0, "kind": "throw", "tier": "strong", "time": 1.15, "height": 1.5, "land": -0.7, "flip": false, "pts": 1200, "lift": 0.9, "spin": 2},
 	"super_finisher": {"name": "THUNDER DRIVER MAXIMUM!!!", "anim": "finisher", "dmg": 34.0, "kind": "throw", "tier": "finisher", "time": 1.75, "height": 3.4, "land": 0.9, "flip": true, "pts": 2500, "lift": 1.0, "spin": 1},
+	# --- SIGNATURE SUPERS (BRAWL MODE, PIN; see "# ---- signature supers"): three per signature set.
+	"sig_tank_grapple": {"name": "BLOCK PARTY BOMB!!!", "who": "tank", "ctx": "grapple", "dmg": 30.0, "kind": "throw", "tier": "finisher", "T": 2.8, "freeze": 0.6, "p0": 0.0, "p1": 0.88, "time": 2.46, "height": 3.0, "land": 1.1, "land_yaw": 0.5 * PI, "flip": false, "pts": 5000, "call": "THE WHOLE BLOCK IS WATCHING!"},
+	"sig_tank_air": {"name": "PENTHOUSE CANNONBALL!!!", "who": "tank", "ctx": "air", "dmg": 28.0, "kind": "throw", "tier": "finisher", "T": 2.3, "freeze": 0.45, "hit": 0.82, "p0": 0.82, "p1": 1.12, "time": 0.69, "height": 0.5, "land": 0.4, "flip": false, "pts": 4500, "call": "TANK'S GOT A ROOM WITH A VIEW!"},
+	"sig_tank_run": {"name": "BOOMBOX BULLDOZER!!!", "who": "tank", "ctx": "run", "dmg": 28.0, "kind": "throw", "tier": "finisher", "T": 2.6, "freeze": 0.5, "p0": 0.0, "p1": 0.72, "time": 1.87, "height": 2.5, "land": 3.2, "land_yaw": 1.5 * PI, "reach": 1.2, "flip": false, "pts": 4500, "call": "TURN IT UP!!"},
+	"sig_peligro_grapple": {"name": "FIRECRACKER 'RANA!!!", "who": "peligro", "ctx": "grapple", "dmg": 28.0, "kind": "throw", "tier": "finisher", "T": 2.6, "freeze": 0.56, "p0": 0.0, "p1": 0.8, "time": 2.08, "height": 2.4, "land": -1.3, "land_yaw": PI, "flip": false, "pts": 5000, "call": "LIL PELIGRO IS UPSIDE DOWN!"},
+	"sig_peligro_air": {"name": "ROOFTOP 1080 PINWHEEL!!!", "who": "peligro", "ctx": "air", "dmg": 28.0, "kind": "throw", "tier": "finisher", "T": 2.4, "freeze": 0.48, "hit": 0.82, "p0": 0.82, "p1": 1.12, "time": 0.72, "height": 0.5, "land": 0.4, "flip": false, "pts": 5000, "call": "HE TOUCHED THE CLOUDS!"},
+	"sig_peligro_run": {"name": "DOUBLE-DARE DROPKICK!!!", "who": "peligro", "ctx": "run", "dmg": 26.0, "kind": "throw", "tier": "finisher", "T": 2.2, "freeze": 0.4, "hit": 0.48, "p0": 0.48, "p1": 0.95, "time": 1.03, "height": 2.4, "land": 4.0, "land_yaw": PI, "reach": 2.0, "flip": false, "pts": 4500, "call": "NO FEAR! NO BRAKES!"},
 }
 
 var display_name := "Wrestler"
@@ -2448,6 +2459,8 @@ func _down_time() -> float:
 
 
 func _clamp_ring() -> void:
+	if state == S.SIGNATURE and _sig_clamp():
+		return  # signature supers hook: airborne over props / the yard's edge
 	if _hf_clamp():  # high flying hook: corners / height allowed while climbing, perched, diving
 		if state == S.CORNER_STUN:
 			_col_push_out()  # yard collision: slumped next to a prop, not inside it
@@ -2489,6 +2502,8 @@ func _update_special(delta: float) -> void:
 # ---------------------------------------------------------------- main update
 
 func tick(delta: float) -> void:
+	if _sig_frozen(delta):
+		return  # signature supers hook: apex freeze-frame (the pose holds)
 	state_time += delta
 	anim_clock += delta
 	if combo_timer > 0.0:
@@ -2568,6 +2583,8 @@ func tick(delta: float) -> void:
 			_juggled(delta)  # strike strings: popped up by a launcher
 		S.ROLL:
 			_mv_roll(delta)  # movement hook: dodge roll
+		S.SIGNATURE:
+			_sig_tick(delta)  # signature supers hook
 	_flow_post()  # flow & boost hook: +FLOW for a cancel / in-window follow-up
 
 	_separate()
@@ -2753,6 +2770,8 @@ func _run(delta: float) -> void:
 			set_state(S.IDLE)
 		return
 
+	if in_pin and _sig_try_run():
+		return  # signature supers hook: BRAWL MODE PIN on the run / right off the fence
 	if held_item != null and in_strike:
 		_start_swing(true)  # weapons hook: running swing
 		return
@@ -3009,6 +3028,9 @@ func _tieup_attacker(delta: float) -> void:
 		return
 	if state_time < (0.45 if tie_strong else 0.3):
 		return  # collar-and-elbow struggle
+	if in_pin and _sig_ok():
+		_commit(_sig_key("grapple"))  # signature supers hook: BRAWL MODE PIN in a lock-up
+		return
 	var dir_held := in_move.length() > 0.5
 	var move := ""
 	if in_run:
@@ -3046,6 +3068,9 @@ func _commit(move: String) -> void:
 
 
 func _do_move(base_key: String, chained := false) -> void:
+	if base_key.begins_with("sig_"):
+		_sig_start_grapple(base_key)  # signature supers hook: the committed lock-up signature
+		return
 	var key := base_key
 	if brawl_mode and MOVES.has("super_" + key):
 		key = "super_" + key  # BRAWL MODE: the flashy super version
@@ -4048,6 +4073,801 @@ func _pose_juggled() -> void:
 	pt_hd = Vector3(-0.45, 0.0, 0.0)
 	r_limb = 16.0
 	r_body = 14.0
+
+
+# ---- signature supers
+# Three SIGNATURE SUPERS per wrestler, BRAWL MODE only (brawl_mode), all on PIN - the
+# "signature button" - picked by context:
+#   lock-up (TIEUP_ATK)                       PIN -> grapple signature (committed like any lock-up
+#                                                    move: the defender still gets a reversal window)
+#   perched on top, or right off the fence     PIN -> air signature (fence: within HF_SPRING_WINDOW
+#     (after a rebound)                               of the rebound, like a springboard)
+#   running at a standing opponent             PIN -> running signature (charge, then catch / hit)
+# TANK MAGRUDER (power + swagger): BLOCK PARTY BOMB (grapple: overhead press, airplane strut,
+#   sky-high toss, sit-out bomb), PENTHOUSE CANNONBALL (air: front flip, lounging in the sky,
+#   cannonball senton), BOOMBOX BULLDOZER (run: shoulder scoop, carry, spinning leap, powerslam).
+# LIL PELIGRO (daredevil acrobat): FIRECRACKER 'RANA (grapple: onto the shoulders, tornado spin
+#   around the head, backflip 'rana spike), ROOFTOP 1080 PINWHEEL (air: corkscrew backflip into a
+#   flat-spinning starfish splash), DOUBLE-DARE DROPKICK (run: handspring, twisting launch,
+#   dropkick that blasts the victim across the yard, kip-up).
+# The attacker plays state SIGNATURE: a long multi-phase path (_sig_a_at: forward / side / pelvis
+# height + orientation in its start frame) baked into throw keys (_key) and sampled with _keys_at
+# into throw_pose_q / throw_pose_y (the basis-posed body, like a thrown victim). The victim rides
+# a matching THROWN path (_sig_throw_keys, hooked into _throw_keys). At the apex both wrestlers
+# freeze (sig_freeze: tick is skipped, the pose holds) for SIG_FREEZE s. Height is visual only
+# (position.y stays 0, the blob shadow stays on the grass); SIGNATURE is not a standing state, so
+# the attacker can't be struck or grabbed mid-move. Emits signature_started(name) + sfx
+# "signature" on takeoff and trick(name, pts, "super") on impact (a miss breaks the combo).
+# MOVES "sig_*" fields: who / ctx (grapple, air, run) / T (attacker time, s) / freeze (apex, as a
+# fraction of T) / p0, p1 (the victim's THROWN path runs over that span of the attacker's
+# timeline) / hit (contact time: air & dropkick) / reach (running: charge until this close) /
+# land (victim landing, along our facing) / land_yaw / call (apex callout) / pts.
+
+const SIG_FREEZE := 0.3        # apex freeze-frame (s)
+const SIG_DASH_TIME := 0.9     # running signatures: longest charge before it whiffs
+const SIG_BAKE := 96           # samples per baked signature path
+## Per-character signature sets, chosen by the look key "signature_set" (setup's p_look). A new
+## character adds a row here (it may remix existing moves: any MOVES "sig_*" key per context) or
+## just names an existing set. Without the key: "peligro" for the kid face, else "tank".
+const SIG_SETS := {
+	"tank": {"grapple": "sig_tank_grapple", "air": "sig_tank_air", "run": "sig_tank_run"},
+	"peligro": {"grapple": "sig_peligro_grapple", "air": "sig_peligro_air", "run": "sig_peligro_run"},
+}
+
+var sig_key := ""              # the signature being performed (a MOVES key)
+var sig_phase := ""            # "dash" (running ones: the charge) / "main" (the keyframed move)
+var sig_t0 := 0.0              # state_time the main phase began
+var sig_origin := Vector3.ZERO # where the main phase began (the frame of its keys)
+var sig_yaw0 := 0.0
+var sig_keys: Array = []       # baked attacker path
+var sig_q := Quaternion.IDENTITY
+var sig_y := STAND_Y
+var sig_dist := 0.0            # air: flight distance
+var sig_y0 := STAND_Y          # air: starting pelvis height (perch height + STAND_Y)
+var sig_freeze := 0.0          # > 0: frozen at a signature's apex (both wrestlers)
+var sig_froze := false
+var sig_hit_done := false
+var sig_scored := false
+var sig_missed := false
+var sig_vkeys: Array = []      # victim: cached baked path ...
+var sig_vtag := ""             # ... and what it was baked for
+var sig_ai_roll := 1.0
+var sig_ai_seen := -1
+var sig_ai_run := false
+var sig_ai_timer := 1.0
+
+
+## This wrestler's signature set (a SIG_SETS key).
+func _sig_who() -> String:
+	var ss: String = str(look.get("signature_set", ""))
+	if SIG_SETS.has(ss):
+		return ss
+	var f: String = str(look.get("face", ""))
+	if f == "kid" or display_name.to_upper().contains("PELIGRO"):
+		return "peligro"
+	return "tank"
+
+
+func _sig_key(ctx: String) -> String:
+	var t: Dictionary = SIG_SETS[_sig_who()]
+	var k: String = t.get(ctx, SIG_SETS["tank"][ctx])
+	return k
+
+
+func _sig_ok() -> bool:
+	return brawl_mode and held_item == null and opponent != null
+
+
+func _sig_m(k := "") -> Dictionary:
+	var m: Dictionary = MOVES[k if k != "" else sig_key]
+	return m
+
+
+func _sgs(x: float, a: float, b: float) -> float:
+	return _smooth(_seg(x, a, b))
+
+
+func _sgi(x: float, a: float, b: float) -> float:
+	return _ease_in(_seg(x, a, b))
+
+
+func _sgo(x: float, a: float, b: float) -> float:
+	return _ease_out(_seg(x, a, b))
+
+
+# --- hooks called from the core state machine ----------------------------------------
+
+## tick: frozen at a signature's apex (the whole tick is skipped, so the pose holds).
+func _sig_frozen(delta: float) -> bool:
+	if sig_freeze <= 0.0:
+		return false
+	sig_freeze -= delta
+	in_strike = false
+	in_grapple = false
+	in_run = false
+	in_pin = false
+	any_pressed = false
+	return true
+
+
+## _clamp_ring: in the air the attacker may cross props and the yard's edge (perches sit on it).
+func _sig_clamp() -> bool:
+	if sig_phase == "dash":
+		return false
+	var r := _yard_rect()
+	position.x = clampf(position.x, r.position.x - 0.8, r.end.x + 0.8)
+	position.z = clampf(position.z, r.position.y - 0.8, r.end.y + 0.8)
+	position.y = 0.0
+	return true
+
+
+## _run (PIN): right off the fence = air signature, else charge a standing opponent.
+func _sig_try_run() -> bool:
+	if not _sig_ok():
+		return false
+	if anim_clock - hf_rope_at <= HF_SPRING_WINDOW:
+		_sig_start_air()
+		return true
+	if not opponent.is_standing() or _flat_to_opponent().length() > 6.5:
+		return false
+	_sig_begin(_sig_key("run"))
+	sig_phase = "dash"
+	return true
+
+
+# --- starting -------------------------------------------------------------------------
+
+func _sig_begin(key: String) -> void:
+	var m := _sig_m(key)
+	set_state(S.SIGNATURE)
+	sig_key = key
+	current_move_key = key
+	sig_phase = ""
+	sig_froze = false
+	sig_hit_done = false
+	sig_scored = false
+	sig_missed = false
+	sig_freeze = 0.0
+	var nm: String = m["name"]
+	announce.emit(nm)
+	signature_started.emit(nm)
+	sfx.emit("signature", 1.0, _chest())
+	sfx.emit("finisher", 1.0, _chest())
+	opponent.reversal_window = 0.0
+
+
+## The keyframed part starts here (grapples at once, running ones on the catch).
+func _sig_main() -> void:
+	sig_phase = "main"
+	sig_t0 = state_time
+	sig_origin = Vector3(position.x, 0.0, position.z)
+	sig_yaw0 = rotation.y
+	sig_keys = []
+	for i in range(SIG_BAKE + 1):
+		var p := float(i) / float(SIG_BAKE)
+		var a := _sig_a_at(sig_key, p)
+		var v: Vector3 = a[0]
+		var q: Quaternion = a[1]
+		sig_keys.append(_key(p, v.x, v.y, v.z, q, 3))
+	var k0: Array = sig_keys[0]
+	sig_q = k0[2]
+	var v0: Vector3 = k0[1]
+	sig_y = v0.z
+
+
+## _do_move("sig_..."): the committed lock-up signature fires.
+func _sig_start_grapple(key: String) -> void:
+	_snap_face_opponent()
+	_sig_begin(key)
+	_sig_main()
+	_sig_throw_victim(position + facing * float(_sig_m()["land"]))
+
+
+## Off the perch / the fence at the opponent (standing or down).
+func _sig_start_air() -> void:
+	var perch_h := maxf(position.y, 0.0)
+	var to := _flat_to_opponent()
+	var dist := to.length()
+	var dir := to / dist if dist > 0.01 else facing
+	var op: Vector3 = opponent.position
+	var flat := Vector3(position.x, 0.0, position.z)
+	var target := Vector3(op.x, 0.0, op.z) - dir * 0.3
+	var max_d := HF_MAX_DIVE + 1.5 * perch_h + 2.0
+	if target.distance_to(flat) > max_d:
+		target = flat + dir * max_d  # too far: coming up short
+	target = _col_nudge_pt(_yard_clamp_pt(target, 0.4), 0.4)
+	var d := target - flat
+	if d.length() > 0.05:
+		_set_facing_angle(atan2(d.x, d.z))
+	sig_dist = d.length()
+	sig_y0 = perch_h + STAND_Y
+	position.y = 0.0
+	_sig_begin(_sig_key("air"))
+	_sig_main()
+
+
+func _sig_throw_victim(land_pos: Vector3) -> void:
+	var m := _sig_m()
+	var vm: Dictionary = m.duplicate()
+	vm["time"] = (float(m["p1"]) - float(m["p0"])) * float(m["T"])
+	opponent.start_thrown(land_pos, vm, sig_key)
+
+
+# --- the state ------------------------------------------------------------------------
+
+func _sig_tick(delta: float) -> void:
+	var m := _sig_m()
+	if sig_phase == "dash":
+		var to := _flat_to_opponent()
+		var dist := to.length()
+		if dist > 0.01:
+			run_dir = run_dir.lerp(to / dist, clampf(delta * 8.0, 0.0, 1.0)).normalized()
+		position += run_dir * maxf(run_speed, RUN_SPEED) * 1.15 * delta
+		_set_facing_angle(atan2(run_dir.x, run_dir.z))
+		if dist <= float(m["reach"]) and opponent.is_standing():
+			_snap_face_opponent()
+			_sig_main()
+			if not m.has("hit"):
+				_sig_throw_victim(position + facing * float(m["land"]))  # caught on the charge
+		elif state_time > SIG_DASH_TIME:
+			_sig_whiff()
+		return
+	var p := clampf((state_time - sig_t0) / float(m["T"]), 0.0, 1.0)
+	if not sig_froze and p >= float(m["freeze"]):
+		# apex: freeze-frame on both wrestlers, the big callout
+		sig_froze = true
+		sig_freeze = SIG_FREEZE
+		opponent.sig_freeze = SIG_FREEZE
+		announce.emit(str(m["call"]))
+		sfx.emit("whoa", 1.0, _chest())
+		impact.emit(0.35)
+	var sm := _keys_at(sig_keys, p)
+	var v: Vector3 = sm[0]
+	sig_q = sm[1]
+	sig_y = v.z
+	var fwd := Vector3(sin(sig_yaw0), 0.0, cos(sig_yaw0))
+	var rgt := Vector3(cos(sig_yaw0), 0.0, -sin(sig_yaw0))
+	position = sig_origin + fwd * v.x + rgt * v.y
+	_set_facing_angle(sig_yaw0)
+	if m.has("hit") and not sig_hit_done and p >= float(m["hit"]):
+		sig_hit_done = true
+		_sig_contact(m)
+		if state != S.SIGNATURE:
+			return
+	if not m.has("hit") and not sig_scored and p >= float(m["p1"]):
+		_sig_score(m)  # the victim hits the grass right now (its THROWN path ends)
+	if p >= 1.0:
+		position.y = 0.0
+		set_state(S.IDLE)
+
+
+## Air / dropkick contact: did the opponent stay in range?
+func _sig_contact(m: Dictionary) -> void:
+	var op: Vector3 = opponent.position
+	var d := Vector3(op.x - position.x, 0.0, op.z - position.z)
+	var dist := d.length()
+	var os := _opp_state()
+	var air := str(m["ctx"]) == "air"
+	if dist <= (1.7 if air else 1.9) and (opponent.is_standing() or os == S.JUGGLED):
+		if air:
+			var dir := d / dist if dist > 0.01 else facing
+			_sig_throw_victim(Vector3(op.x, 0.0, op.z) + dir * 0.4)  # flattened where he stood
+		else:
+			_sig_throw_victim(position + facing * float(m["land"]))  # blasted across the yard
+		_sig_score(m)
+	elif air and dist <= 1.7 and (os == S.DOWN or os == S.ON_TABLE):
+		opponent.receive_ground_hit(self, float(m["dmg"]), "sig")
+		opponent.last_hit_tier = "finisher"
+		var ost: float = opponent.state_time
+		var odd: float = opponent.down_duration
+		opponent.down_duration = maxf(odd, ost + 2.5)
+		_sig_score(m)
+	else:
+		_sig_miss(m)
+
+
+func _sig_score(m: Dictionary) -> void:
+	sig_scored = true
+	var nm: String = m["name"]
+	trick.emit(nm.rstrip("!"), int(m["pts"]), "super")
+	announce.emit("%s  -  SIGNATURE SUPER!!" % display_name)
+	sfx.emit("finisher", 1.0, _chest())
+	if m.has("hit"):
+		sfx.emit("big_thud", 1.3, global_position + Vector3(0, 0.4, 0))  # contact (throws thud on landing)
+	impact.emit(1.3)
+	gain_spirit(20.0)
+
+
+func _sig_miss(m: Dictionary) -> void:
+	sig_missed = true
+	trick.emit("", 0, "break")
+	impact.emit(0.7)
+	sfx.emit(_hf_thud("big_thud"), 1.0, global_position + Vector3(0, 0.4, 0))
+	if str(m["ctx"]) == "air":
+		take_damage(10.0 * _surface_mult())
+		announce.emit("SIGNATURE... INTO THE DIRT!")
+		_hf_go_down(0.0, _down_time() + 0.4)
+	else:
+		announce.emit("WHIFFED IT! Nobody home!")  # dropkick: falls on the back, kips up anyway
+
+
+## The charge never reached them.
+func _sig_whiff() -> void:
+	set_state(S.WHIFF)
+	whiff_time = 0.7
+	current_move_key = "whiff_strong"
+	announce.emit("Signature whiffed!")
+	sfx.emit("whoosh", 0.4, _chest())
+	trick.emit("", 0, "break")
+
+
+# --- paths ----------------------------------------------------------------------------
+# [Vector3(forward, side, pelvis y), orientation] in the attacker's start frame, at p of T.
+
+func _sig_a_at(key: String, p: float) -> Array:
+	match key:
+		"sig_tank_grapple":
+			# dip, press him overhead, strut two full turns, heave him to the sky (apex: point at
+			# it), jump to catch him and drop into a sit-out bomb, brush the shoulders off
+			var dip := _hump(p, 0.0, 0.16)
+			var spin := _sgs(p, 0.16, 0.5)
+			var jump := _hump(p, 0.68, 0.8)
+			var sit := _sgs(p, 0.79, 0.86) * (1.0 - _sgs(p, 0.9, 1.0))
+			var y := STAND_Y - 0.28 * dip - 0.07 * absf(sin(spin * TAU * 2.0)) \
+				+ 0.06 * _hump(p, 0.5, 0.6) + 0.45 * jump
+			y = lerpf(y, 0.42, sit)
+			var pitch := 0.15 * dip - 0.2 * _hump(p, 0.54, 0.7) - 0.45 * sit
+			return [Vector3(0.18 * sit, 0.0, y), _qe(TAU * 2.0 * spin, pitch)]
+		"sig_tank_air":
+			# crouch, launch with a slow front flip, lounge at the apex, cannonball down onto
+			# him, bounce off with a 360 and land on the feet
+			var crouch := _hump(p, 0.0, 0.1)
+			var rise := _sgo(p, 0.1, 0.45)
+			var fall := _sgi(p, 0.52, 0.82)
+			var y := sig_y0 - 0.3 * crouch
+			y = lerpf(y, sig_y0 + 3.0, rise)
+			y = lerpf(y, 0.5, fall)
+			y += 0.7 * _hump(p, 0.82, 0.95)
+			y = lerpf(y, STAND_Y, _sgs(p, 0.93, 1.0))
+			var f := sig_dist * (0.45 * rise + 0.55 * fall) + 0.6 * _sgs(p, 0.82, 1.0)
+			var pitch := TAU * _sgs(p, 0.12, 0.4) - 0.55 * _hump(p, 0.38, 0.58) \
+				- 0.35 * _sgs(p, 0.6, 0.75) * (1.0 - _sgs(p, 0.84, 0.95))
+			return [Vector3(f, 0.0, y), _qe(TAU * _sgs(p, 0.84, 1.0), pitch)]
+		"sig_tank_run":
+			# shoulder scoop, carry him on the run, spinning leap (apex: flex), powerslam onto
+			# the knees, pop up and raise the roof
+			var scoop := _hump(p, 0.0, 0.12)
+			var carry := _sgs(p, 0.1, 0.34)
+			var leap := _sgo(p, 0.34, 0.5)
+			var drop := _sgi(p, 0.53, 0.72)
+			var up := _sgs(p, 0.74, 0.86)
+			var y := STAND_Y - 0.25 * scoop + 0.07 * absf(sin(carry * PI * 5.0)) + 1.5 * leap
+			y = lerpf(y, 0.55, drop)
+			y = lerpf(y, STAND_Y, up)
+			var f := 1.6 * carry + 0.5 * leap + 0.35 * drop
+			var pitch := 0.45 * scoop + 0.6 * drop * (1.0 - up)
+			return [Vector3(f, 0.0, y), _qe(TAU * 2.0 * _sgs(p, 0.34, 0.5), pitch)]
+		"sig_peligro_grapple":
+			# hop onto his shoulders, two tornado turns around his head, backflip off them
+			# (apex: upside down) pulling him over, land crouched, pop up and show off
+			var crouch := _hump(p, 0.0, 0.07)
+			var hop := _sgs(p, 0.05, 0.14)
+			var ang := TAU * 2.0 * _sgs(p, 0.14, 0.4)
+			var flip := _sgs(p, 0.4, 0.72)
+			var seat := Vector2(1.05, 0.0) - 0.2 * Vector2(cos(ang), sin(ang))
+			var fs := Vector2.ZERO.lerp(seat, hop).lerp(Vector2(0.05, 0.0), flip)
+			var y := lerpf(STAND_Y - 0.25 * crouch, 1.8, hop) + 0.3 * _hump(p, 0.05, 0.14)
+			y += 0.9 * _hump(p, 0.4, 0.64)
+			y = lerpf(y, 0.62, _sgs(p, 0.6, 0.72))
+			y = lerpf(y, STAND_Y, _sgs(p, 0.78, 0.88))
+			y += 0.25 * _hump(p, 0.88, 0.97)
+			var pitch := -TAU * flip + 0.25 * crouch - 0.15 * _hump(p, 0.14, 0.4)
+			return [Vector3(fs.x, fs.y, y), _qe(ang, pitch)]
+		"sig_peligro_air":
+			# corkscrew: two spins with a backflip on the way up, a face-down starfish at the
+			# apex, one more flat spin on the way down, splash, roll out onto the feet
+			var crouch := _hump(p, 0.0, 0.08)
+			var rise := _sgo(p, 0.08, 0.48)
+			var fall := _sgi(p, 0.54, 0.82)
+			var y := sig_y0 - 0.3 * crouch
+			y = lerpf(y, sig_y0 + 3.4, rise)
+			y = lerpf(y, 0.45, fall)
+			y += 0.45 * _hump(p, 0.84, 0.95)
+			y = lerpf(y, STAND_Y, _sgs(p, 0.9, 1.0))
+			var f := sig_dist * (0.45 * rise + 0.55 * fall) + 0.8 * _sgs(p, 0.82, 1.0)
+			var yaw := TAU * 2.0 * _sgs(p, 0.1, 0.44) + TAU * _sgs(p, 0.54, 0.8)
+			var pitch := -TAU * _sgs(p, 0.12, 0.38) + 0.5 * PI * _sgs(p, 0.38, 0.48) \
+				+ 1.5 * PI * _sgs(p, 0.84, 1.0)
+			return [Vector3(f, 0.0, y), _qe(yaw, pitch)]
+		"sig_peligro_run":
+			# front handspring, twisting launch (apex: laid out, feet first), dropkick, flat on
+			# the back, kip-up, finger guns
+			var y := STAND_Y - 0.35 * _hump(p, 0.0, 0.1) + 0.2 * _hump(p, 0.08, 0.18)
+			y = lerpf(y, 2.5, _sgo(p, 0.16, 0.4))
+			y = lerpf(y, 1.35, _sgi(p, 0.42, 0.48))
+			y = lerpf(y, 0.32, _sgi(p, 0.5, 0.62))
+			y += 0.12 * _hump(p, 0.62, 0.68) + 0.55 * _hump(p, 0.72, 0.84)
+			y = lerpf(y, STAND_Y, _sgs(p, 0.8, 0.9))
+			var f := 0.9 * _sgs(p, 0.0, 0.16) + 0.4 * _sgs(p, 0.16, 0.4) + 0.25 * _sgs(p, 0.42, 0.48) \
+				- 0.3 * _sgs(p, 0.5, 0.62)
+			var pitch := TAU * _sgs(p, 0.0, 0.16) - 0.5 * PI * _sgs(p, 0.24, 0.4) \
+				+ 0.5 * PI * _sgs(p, 0.72, 0.84)
+			return [Vector3(f, 0.0, y), _qe(TAU * _sgs(p, 0.18, 0.38), pitch)]
+	return [Vector3(0.0, 0.0, STAND_Y), Quaternion.IDENTITY]
+
+
+## Victim path at attacker time pa (thrower's frame at the start of the victim's throw).
+func _sig_v_at(key: String, pa: float) -> Array:
+	var m: Dictionary = MOVES[key]
+	if str(m["ctx"]) == "air":
+		# flattened backward by the landing, one bounce
+		var crush := _sgo(pa, 0.82, 0.92)
+		var y := lerpf(STAND_Y, LIE_Y + 0.05, _sgi(pa, 0.82, 0.92))
+		y += 0.35 * _hump(pa, 0.93, 1.05)
+		y = lerpf(y, LIE_Y, _sgs(pa, 1.05, 1.12))
+		return [Vector3(lerpf(0.3, 0.7, _sgo(pa, 0.82, 1.0)), 0.0, y), _qe(throw_yaw_start, -0.5 * PI * crush)]
+	match key:
+		"sig_tank_grapple":
+			# pressed overhead lying across the hands, rides the strut, tossed up flipping,
+			# caught overhead, bombed down in front
+			var hoist := _sgs(pa, 0.02, 0.16)
+			var ang := TAU * 2.0 * _sgs(pa, 0.16, 0.5)
+			var fc := lerpf(1.05, 0.1, hoist)
+			var f := fc * cos(ang)
+			var s := fc * sin(ang)
+			var y := lerpf(STAND_Y, 2.3, hoist) + 1.8 * _sgo(pa, 0.5, 0.6)
+			var fall := _sgi(pa, 0.62, 0.78)
+			y = lerpf(y, 2.35, fall)
+			f = lerpf(f, 0.3, fall)
+			var slam := _sgi(pa, 0.8, 0.88)
+			y = lerpf(y, LIE_Y, slam)
+			f = lerpf(f, 1.1, slam)
+			var yaw := PI - 0.5 * PI * hoist + ang
+			var pitch := -0.5 * PI * hoist - PI * _sgo(pa, 0.5, 0.6) - PI * fall
+			return [Vector3(f, s, y), _qe(yaw, pitch)]
+		"sig_tank_run":
+			# draped across the shoulders (airplane-spin style), rides the leap, slammed
+			var a := _sig_a_at(key, pa)
+			var av: Vector3 = a[0]
+			var ang := TAU * 2.0 * _sgs(pa, 0.34, 0.5)
+			var on := Vector3(av.x + 0.05 * cos(ang), 0.05 * sin(ang), av.z + 1.0)
+			var on_q := _qe(PI + ang, 0.0, 0.5 * PI)
+			var w := _sgs(pa, 0.0, 0.1)
+			var pos := Vector3(1.0, 0.0, STAND_Y).lerp(on, w)
+			var q := _qe(PI, 0.0).slerp(on_q, w)
+			var drop := _sgs(pa, 0.53, 0.72)
+			if drop > 0.0:
+				pos = Vector3(lerpf(pos.x, 3.2, drop), lerpf(pos.y, 0.0, drop), lerpf(pos.z, LIE_Y, _sgi(pa, 0.53, 0.72)))
+				q = q.slerp(_qe(1.5 * PI, -0.5 * PI), drop)
+			return [pos, q]
+		"sig_peligro_grapple":
+			# staggers under him, spun around with him, flipped forward over him and spiked
+			var ang := TAU * 2.0 * _sgs(pa, 0.14, 0.4)
+			var y := STAND_Y - 0.08 * _hump(pa, 0.1, 0.2) - 0.05 * _hump(pa, 0.14, 0.4)
+			y = lerpf(y, 2.4, _sgo(pa, 0.4, 0.56))
+			y = lerpf(y, LIE_Y, _sgi(pa, 0.58, 0.8))
+			var flip := _sgs(pa, 0.42, 0.8)
+			return [Vector3(lerpf(1.05, -1.3, flip), 0.0, y), _qe(PI + ang, 1.5 * PI * flip)]
+		"sig_peligro_run":
+			# blasted backward across the yard: a backflip with a full twist, onto the back
+			var y := lerpf(STAND_Y, 2.4, _sgo(pa, 0.48, 0.62))
+			y = lerpf(y, LIE_Y, _sgi(pa, 0.64, 0.95))
+			var f := lerpf(0.4, 4.0, _sgo(pa, 0.48, 0.95))
+			var pitch := -(0.5 * PI + TAU) * _sgs(pa, 0.48, 0.95)
+			return [Vector3(f, 0.0, y), _qe(PI + TAU * _sgs(pa, 0.5, 0.9), pitch)]
+	return [Vector3(1.0, 0.0, STAND_Y), _qe(PI, 0.0)]
+
+
+## _throw_keys hook (victim): the signature path baked once per throw, blended from where we
+## actually stood and onto where the throw lands (throw_to). Sets throw_land_yaw.
+func _sig_throw_keys(key: String, f0: float, s0: float, fl: float, sl: float) -> Array:
+	var m: Dictionary = MOVES[key]
+	throw_land_yaw = float(m.get("land_yaw", throw_yaw_start))
+	var tag := "%s|%s|%s" % [key, throw_from, throw_to]
+	if tag == sig_vtag and not sig_vkeys.is_empty():
+		return sig_vkeys
+	var p0: float = m["p0"]
+	var p1: float = m["p1"]
+	var st := _sig_v_at(key, p0)
+	var en := _sig_v_at(key, p1)
+	var vs: Vector3 = st[0]
+	var ve: Vector3 = en[0]
+	var d0 := Vector3(f0 - vs.x, s0 - vs.y, throw_start_y - vs.z)
+	var d1 := Vector3(fl - ve.x, sl - ve.y, 0.0)
+	var q0 := _qe(throw_yaw_start, throw_start_pitch)
+	var out: Array = []
+	for i in range(SIG_BAKE):
+		var u := float(i) / float(SIG_BAKE)
+		var r := _sig_v_at(key, lerpf(p0, p1, u))
+		var v: Vector3 = r[0]
+		var q: Quaternion = r[1]
+		v += d0 * (1.0 - _sgs(u, 0.0, 0.3)) + d1 * _sgs(u, 0.5, 1.0)
+		out.append([u, v, q0.slerp(q, _sgs(u, 0.0, 0.2)).normalized(), 3])
+	out.append(_key(1.0, fl, sl, LIE_Y, _qe(throw_land_yaw, -PI / 2)))
+	sig_vtag = tag
+	sig_vkeys = out
+	return out
+
+
+# --- poses (the attacker) -------------------------------------------------------------
+
+func _pose_sig(delta: float) -> void:
+	if sig_phase != "main":
+		_pose_run(delta)  # the charge: head down, shoulder first
+		pt_tor.x += 0.2
+		pt_hd.x += 0.15
+		if sig_key == "sig_tank_run":
+			pt_ar = Vector3(-0.5, 0.0, 0.5)
+			pt_el_r = Vector3(-1.9, 0.0, 0.0)
+		return
+	var m := _sig_m()
+	var p := clampf((state_time - sig_t0) / float(m["T"]), 0.0, 1.0)
+	pt_use_basis = true
+	throw_pose_q = sig_q
+	throw_pose_y = sig_y
+	r_limb = 20.0
+	r_body = 18.0
+	match sig_key:
+		"sig_tank_grapple":
+			_pose_sig_tank_grapple(p)
+		"sig_tank_air":
+			_pose_sig_tank_air(p)
+		"sig_tank_run":
+			_pose_sig_tank_run(p)
+		"sig_peligro_grapple":
+			_pose_sig_peligro_grapple(p)
+		"sig_peligro_air":
+			_pose_sig_peligro_air(p)
+		"sig_peligro_run":
+			_pose_sig_peligro_run(p)
+
+
+func _sig_pitch() -> float:
+	return Basis(sig_q).get_euler().x
+
+
+## Feet planted under a pelvis yr above the ground (crouches); lifts into `air` legs above STAND_Y.
+func _sig_ground_legs(yr: float) -> float:
+	_legs_for(minf(yr, STAND_Y), _sig_pitch(), -0.3, -0.05)
+	pt_ll.z = -0.14
+	pt_lr.z = 0.14
+	var air := clampf((yr - STAND_Y) / 0.22, 0.0, 1.0)
+	_sig_legs(Vector3(-0.7, 0.0, -0.15), Vector3(-0.35, 0.0, 0.15), 1.1, 0.8, air)
+	return air
+
+
+func _sig_legs(l: Vector3, r: Vector3, kl: float, kr: float, w: float) -> void:
+	if w <= 0.0:
+		return
+	pt_ll = pt_ll.lerp(l, w)
+	pt_lr = pt_lr.lerp(r, w)
+	pt_kn_l = lerpf(pt_kn_l, kl, w)
+	pt_kn_r = lerpf(pt_kn_r, kr, w)
+
+
+func _sig_arms(al: Vector3, el_l: Vector3, ar: Vector3, el_r: Vector3, w: float) -> void:
+	if w <= 0.0:
+		return
+	pt_al = pt_al.lerp(al, w)
+	pt_el_l = pt_el_l.lerp(el_l, w)
+	pt_ar = pt_ar.lerp(ar, w)
+	pt_el_r = pt_el_r.lerp(el_r, w)
+
+
+## Both hands on the victim (hips + chest) while he rides our signature.
+func _sig_hold(w := 1.0) -> void:
+	if _opp_state() != S.THROWN or w <= 0.0:
+		return
+	var vh := _opp_node("hips")
+	var vt := _opp_node("torso")
+	_reach_pair(vh.global_position, vt.to_global(Vector3(0.0, 0.3, 0.0)), w)
+
+
+func _pose_sig_tank_grapple(p: float) -> void:
+	_sig_ground_legs(sig_y)
+	var sit := _sgs(p, 0.79, 0.86) * (1.0 - _sgs(p, 0.9, 1.0))
+	_sig_legs(Vector3(-1.4, 0.0, -0.5), Vector3(-1.4, 0.0, 0.5), 0.3, 0.3, sit)
+	var strut := _hump(p, 0.16, 0.5)
+	var step := sin(p * TAU * 8.0) * strut  # swagger steps through the turns
+	pt_ll.x -= 0.2 * step
+	pt_lr.x += 0.2 * step
+	pt_tor = Vector3(0.1 - 0.15 * _hump(p, 0.54, 0.7), 0.0, 0.08 * step)
+	pt_hd = Vector3(-0.25, 0.2 * step, 0.0)
+	pt_breath = 1.0
+	_sig_hold()
+	# apex: one finger to the sky, the other hand on the hip
+	var sky := _sgs(p, 0.55, 0.6) * (1.0 - _sgs(p, 0.64, 0.7))
+	_sig_arms(Vector3(0.15, 0.0, -0.6), Vector3(0.0, 0.0, 1.3), Vector3(-2.95, 0.0, 0.3), Vector3(-0.1, 0.0, 0.0), sky)
+	pt_hd.x -= 0.35 * sky
+	# done: brush the dirt off the shoulder, look away
+	var br := _sgs(p, 0.9, 0.95)
+	_sig_arms(Vector3(-0.5, 0.0, -0.25), Vector3(-0.4, 0.0, 0.0),
+		Vector3(-1.25, 0.0, -0.55 + 0.18 * sin(anim_clock * 24.0)), Vector3(-2.2, 0.0, 0.0), br)
+	pt_hd = pt_hd.lerp(Vector3(-0.2, 0.5, 0.0), br)
+
+
+func _pose_sig_tank_air(p: float) -> void:
+	var base := sig_y0 - STAND_Y if p < 0.5 else 0.0
+	var air := _sig_ground_legs(sig_y - base)
+	var crouch := _hump(p, 0.0, 0.1)
+	var tuck := _sgs(p, 0.1, 0.16) * (1.0 - _sgs(p, 0.36, 0.42))
+	var lounge := _sgs(p, 0.38, 0.46) * (1.0 - _sgs(p, 0.56, 0.62))
+	var ball := _sgs(p, 0.58, 0.66) * (1.0 - _sgs(p, 0.84, 0.9))
+	var wide := _sgs(p, 0.84, 0.9) * (1.0 - _sgs(p, 0.96, 1.0))
+	pt_tor = Vector3(0.3 * crouch, 0.0, 0.0)
+	_sig_arms(Vector3(0.7, 0.0, -0.3), Vector3(-0.3, 0.0, 0.0), Vector3(0.7, 0.0, 0.3), Vector3(-0.3, 0.0, 0.0), crouch)
+	# the flip: tucked tight
+	_sig_legs(Vector3(-2.0, 0.0, -0.15), Vector3(-2.0, 0.0, 0.15), 2.3, 2.3, tuck)
+	_sig_arms(Vector3(-1.2, 0.0, 0.1), Vector3(-1.9, 0.0, 0.0), Vector3(-1.2, 0.0, -0.1), Vector3(-1.9, 0.0, 0.0), tuck)
+	# apex: lounging in the sky, hands behind the head, ankles crossed
+	_sig_legs(Vector3(-1.3, 0.0, 0.12), Vector3(-1.35, 0.0, -0.12), 0.15, 0.2, lounge)
+	_sig_arms(Vector3(-2.7, 0.0, -0.75), Vector3(-2.4, 0.0, 0.0), Vector3(-2.7, 0.0, 0.75), Vector3(-2.4, 0.0, 0.0), lounge)
+	pt_tor.x -= 0.2 * lounge
+	pt_hd = Vector3(-0.15 * lounge, 0.35 * lounge, 0.0)
+	pt_breath = lounge
+	# cannonball
+	_sig_legs(Vector3(-2.2, 0.0, -0.1), Vector3(-2.2, 0.0, 0.1), 2.5, 2.5, ball)
+	_sig_arms(Vector3(-1.4, 0.0, 0.2), Vector3(-1.6, 0.0, 0.0), Vector3(-1.4, 0.0, -0.2), Vector3(-1.6, 0.0, 0.0), ball)
+	pt_tor.x += 0.35 * ball
+	pt_hd.x += 0.35 * ball
+	# bounce off: airplane arms through the 360
+	_sig_arms(Vector3(-0.2, 0.0, -1.45), Vector3(-0.2, 0.0, 0.0), Vector3(-0.2, 0.0, 1.45), Vector3(-0.2, 0.0, 0.0), wide)
+	_sig_legs(Vector3(-0.5, 0.0, -0.2), Vector3(-0.2, 0.0, 0.2), 0.8, 0.5, wide * air)
+
+
+func _pose_sig_tank_run(p: float) -> void:
+	_sig_ground_legs(sig_y)
+	var carry := _hump(p, 0.1, 0.34)
+	var s := sin(p * PI * 10.0)
+	pt_ll.x -= 0.6 * s * carry
+	pt_lr.x += 0.6 * s * carry
+	var kneel := _sgs(p, 0.6, 0.72) * (1.0 - _sgs(p, 0.74, 0.86))
+	_sig_legs(Vector3(-1.5, 0.0, -0.15), Vector3(0.1, 0.0, 0.15), 1.6, 2.4, kneel)
+	pt_tor = Vector3(0.15 + 0.2 * carry, 0.15 * s * carry, 0.0)
+	pt_hd = Vector3(-0.2, 0.0, 0.0)
+	_sig_hold(1.0 - _sgs(p, 0.74, 0.8))
+	# apex: the free arm flexes
+	var flex := _sgs(p, 0.46, 0.5) * (1.0 - _sgs(p, 0.56, 0.6))
+	pt_al = pt_al.lerp(Vector3(0.0, 0.0, -1.45), flex)
+	pt_el_l = pt_el_l.lerp(Vector3(0.0, 0.0, -1.8), flex)
+	pt_hd.x -= 0.3 * flex
+	pt_breath = maxf(flex, carry)
+	# raise the roof
+	var roof := _sgs(p, 0.84, 0.9)
+	var pump := 0.5 * sin(anim_clock * 16.0)
+	_sig_arms(Vector3(-2.6, 0.0, -0.55), Vector3(-1.3 + pump, 0.0, 0.0), Vector3(-2.6, 0.0, 0.55), Vector3(-1.3 + pump, 0.0, 0.0), roof)
+	pt_hd.x -= 0.3 * roof
+	pt_tor.x -= 0.1 * roof
+
+
+func _pose_sig_peligro_grapple(p: float) -> void:
+	var air := _sig_ground_legs(sig_y)
+	var crouch := _hump(p, 0.0, 0.07)
+	var seated := _sgs(p, 0.1, 0.14) * (1.0 - _sgs(p, 0.52, 0.6))
+	var tuck := _sgs(p, 0.54, 0.62) * (1.0 - _sgs(p, 0.66, 0.72))
+	var spin := _hump(p, 0.14, 0.4)
+	_sig_arms(Vector3(0.6, 0.0, -0.3), Vector3(-0.3, 0.0, 0.0), Vector3(0.6, 0.0, 0.3), Vector3(-0.3, 0.0, 0.0), crouch)
+	# on his shoulders: thighs around his head, shins down his back
+	_sig_legs(Vector3(-1.45, 0.0, -0.5), Vector3(-1.45, 0.0, 0.5), 1.6, 1.6, seated)
+	var wave := sin(anim_clock * 12.0)
+	_sig_arms(Vector3(-0.3 + 0.3 * wave, 0.0, -1.45), Vector3(-0.2, 0.0, 0.0),
+		Vector3(-0.3 - 0.3 * wave, 0.0, 1.45), Vector3(-0.2, 0.0, 0.0), seated)
+	# the backflip: arms thrown back over the head toward the grass
+	var reach := _sgs(p, 0.4, 0.46) * (1.0 - _sgs(p, 0.62, 0.7))
+	_sig_arms(Vector3(-2.9, 0.0, -0.35), Vector3(-0.1, 0.0, 0.0), Vector3(-2.9, 0.0, 0.35), Vector3(-0.1, 0.0, 0.0), reach)
+	_sig_legs(Vector3(-1.9, 0.0, -0.15), Vector3(-1.9, 0.0, 0.15), 2.3, 2.3, tuck)
+	pt_tor = Vector3(0.3 * crouch - 0.2 * spin - 0.25 * reach, 0.25 * spin * wave, 0.0)
+	pt_hd = Vector3(-0.3 * reach - 0.2 * spin, 0.0, 0.0)
+	# landed crouched, one hand on the grass ...
+	var down := _sgs(p, 0.7, 0.74) * (1.0 - _sgs(p, 0.78, 0.86))
+	_sig_arms(Vector3(-1.1, 0.0, -0.5), Vector3(-0.2, 0.0, 0.0), Vector3(-0.3, 0.0, 1.2), Vector3(-0.2, 0.0, 0.0), down)
+	# ... then hops up arms high: "SHOWTIME"
+	var show := _sgs(p, 0.84, 0.9)
+	_sig_arms(Vector3(-2.6, 0.0, -0.7), Vector3(-0.1, 0.0, 0.0), Vector3(-2.6, 0.0, 0.7), Vector3(-0.1, 0.0, 0.0), show)
+	pt_tor.x -= 0.15 * show
+	pt_hd.x -= 0.4 * show
+	_sig_legs(Vector3(-0.2, 0.0, -0.25), Vector3(0.2, 0.0, 0.25), 0.9, 0.6, show * air)
+
+
+func _pose_sig_peligro_air(p: float) -> void:
+	var base := sig_y0 - STAND_Y if p < 0.5 else 0.0
+	var air := _sig_ground_legs(sig_y - base)
+	var crouch := _hump(p, 0.0, 0.08)
+	var tuck := _sgs(p, 0.08, 0.14) * (1.0 - _sgs(p, 0.34, 0.4))
+	var star := _sgs(p, 0.36, 0.44) * (1.0 - _sgs(p, 0.82, 0.86))
+	var roll := _sgs(p, 0.84, 0.88) * (1.0 - _sgs(p, 0.94, 1.0))
+	pt_tor = Vector3(0.3 * crouch, 0.0, 0.0)
+	_sig_arms(Vector3(0.7, 0.0, -0.3), Vector3(-0.3, 0.0, 0.0), Vector3(0.7, 0.0, 0.3), Vector3(-0.3, 0.0, 0.0), crouch)
+	_sig_legs(Vector3(-1.9, 0.0, -0.1), Vector3(-1.9, 0.0, 0.1), 2.3, 2.3, tuck)
+	_sig_arms(Vector3(-1.3, 0.0, 0.15), Vector3(-1.8, 0.0, 0.0), Vector3(-1.3, 0.0, -0.15), Vector3(-1.8, 0.0, 0.0), tuck)
+	# the starfish: everything spread, chin up at the target
+	var flut := 0.12 * sin(anim_clock * 18.0)
+	_sig_legs(Vector3(-0.1, 0.0, -0.6), Vector3(-0.1, 0.0, 0.6), 0.1, 0.1, star)
+	_sig_arms(Vector3(-0.2 + flut, 0.0, -1.5), Vector3(-0.1, 0.0, 0.0), Vector3(-0.2 - flut, 0.0, 1.5), Vector3(-0.1, 0.0, 0.0), star)
+	pt_tor.x -= 0.25 * star
+	pt_hd.x -= 0.5 * star
+	_sig_legs(Vector3(-2.0, 0.0, -0.1), Vector3(-2.0, 0.0, 0.1), 2.4, 2.4, roll)
+	_sig_arms(Vector3(-1.4, 0.0, 0.1), Vector3(-1.7, 0.0, 0.0), Vector3(-1.4, 0.0, -0.1), Vector3(-1.7, 0.0, 0.0), roll)
+	pt_tor.x += 0.4 * roll
+	var ta := _sgs(p, 0.95, 1.0) * (1.0 - air)  # "ta-daa"
+	_sig_arms(Vector3(-2.4, 0.0, -0.9), Vector3(-0.1, 0.0, 0.0), Vector3(-2.4, 0.0, 0.9), Vector3(-0.1, 0.0, 0.0), ta)
+
+
+func _pose_sig_peligro_run(p: float) -> void:
+	var air := _sig_ground_legs(sig_y)
+	var hand := _hump(p, 0.0, 0.18)
+	var tuck := _sgs(p, 0.16, 0.22) * (1.0 - _sgs(p, 0.34, 0.38))
+	var chamber := _sgs(p, 0.34, 0.4) * (1.0 - _sgs(p, 0.44, 0.47))
+	var kick := _sgs(p, 0.44, 0.47) * (1.0 - _sgs(p, 0.52, 0.6))
+	var flat := _sgs(p, 0.5, 0.6) * (1.0 - _sgs(p, 0.7, 0.74))
+	var kip := _hump(p, 0.7, 0.84)
+	var guns := _sgs(p, 0.86, 0.92)
+	# handspring: hands to the grass, legs whip over in a split
+	_sig_arms(Vector3(-2.9, 0.0, -0.3), Vector3(-0.1, 0.0, 0.0), Vector3(-2.9, 0.0, 0.3), Vector3(-0.1, 0.0, 0.0), hand)
+	_sig_legs(Vector3(-0.7, 0.0, -0.1), Vector3(0.5, 0.0, 0.1), 0.2, 0.3, hand)
+	_sig_legs(Vector3(-1.9, 0.0, -0.1), Vector3(-1.9, 0.0, 0.1), 2.3, 2.3, tuck)
+	_sig_arms(Vector3(-1.3, 0.0, 0.1), Vector3(-1.8, 0.0, 0.0), Vector3(-1.3, 0.0, -0.1), Vector3(-1.8, 0.0, 0.0), tuck)
+	# apex: laid out, both feet cocked at his chest, arms out for balance
+	_sig_legs(Vector3(-1.6, 0.0, -0.08), Vector3(-1.6, 0.0, 0.08), 2.2, 2.2, chamber)
+	_sig_arms(Vector3(-0.5, 0.0, -1.2), Vector3(-0.3, 0.0, 0.0), Vector3(-0.5, 0.0, 1.2), Vector3(-0.3, 0.0, 0.0), chamber)
+	pt_hd.x += 0.4 * chamber
+	_sig_legs(Vector3(0.0, 0.0, -0.08), Vector3(0.0, 0.0, 0.08), 0.05, 0.05, kick)
+	_sig_arms(Vector3(-0.3, 0.0, -1.4), Vector3(-0.1, 0.0, 0.0), Vector3(-0.3, 0.0, 1.4), Vector3(-0.1, 0.0, 0.0), kick)
+	# flat on the back, arms slapping the grass
+	_sig_legs(Vector3(-0.5, 0.0, -0.15), Vector3(-0.4, 0.0, 0.15), 0.4, 0.3, flat)
+	_sig_arms(Vector3(0.0, 0.0, -1.4), Vector3(0.0, 0.0, 0.0), Vector3(0.0, 0.0, 1.4), Vector3(0.0, 0.0, 0.0), flat)
+	# kip-up
+	_sig_legs(Vector3(-2.2, 0.0, -0.1), Vector3(-2.2, 0.0, 0.1), 2.4, 2.4, kip * (1.0 - _sgs(p, 0.8, 0.86)))
+	_sig_arms(Vector3(-2.9, 0.0, -0.4), Vector3(-1.8, 0.0, 0.0), Vector3(-2.9, 0.0, 0.4), Vector3(-1.8, 0.0, 0.0), kip)
+	# finger guns at the body he just sent flying
+	_sig_arms(Vector3(-1.55, 0.0, -0.05), Vector3(-0.05, 0.0, 0.0), Vector3(-1.55, 0.0, 0.05), Vector3(-0.05, 0.0, 0.0), guns)
+	pt_tor = Vector3(-0.12 * guns + 0.3 * hand * (1.0 - air), 0.0, 0.0)
+	pt_hd = pt_hd.lerp(Vector3(0.0, 0.0, 0.25), guns)
+
+
+# --- CPU ------------------------------------------------------------------------------
+
+## _ai_think hook (BRAWL MODE): signature in a lock-up, off a perch / the fence, or charge one in.
+func _sig_ai(delta: float, dist: float, toward: Vector2) -> bool:
+	if state != sig_ai_seen:
+		sig_ai_seen = state
+		sig_ai_roll = randf()
+		if not (state in [S.IDLE, S.WALK, S.RUN]):
+			sig_ai_run = false
+	if not _sig_ok() or reversal_window > 0.0:
+		sig_ai_run = false
+		return false
+	var want := 0.3 + 0.5 * ai_skill
+	match state:
+		S.TIEUP_ATK:
+			if committed_move == "" and state_time > (0.5 if tie_strong else 0.35) and sig_ai_roll < want:
+				in_pin = true
+				return true
+		S.PERCHED:
+			if state_time > 0.35 and sig_ai_roll < want:
+				in_pin = true
+				return true
+		S.RUN:
+			if whipped:
+				return false
+			if anim_clock - hf_rope_at < 0.25 and sig_ai_roll < want:
+				in_pin = true  # straight off the fence
+				return true
+			if sig_ai_run:
+				in_move = toward
+				if opponent.is_standing() and dist < 4.0:
+					in_pin = true
+				return true
+		S.IDLE, S.WALK:
+			sig_ai_timer -= delta
+			if sig_ai_timer <= 0.0 and ai_react <= 0.0:
+				sig_ai_timer = randf_range(0.9, 1.6)
+				if opponent.is_standing() and dist > 2.2 and dist < 7.0 and randf() < 0.25 + 0.35 * ai_skill:
+					sig_ai_run = true
+					in_run = true
+					in_move = toward
+					return true
+	return false
 
 
 # ---- weapons
@@ -5222,6 +6042,8 @@ func _ai_think(delta: float) -> void:
 	if free_now and ai_backoff > 0.0:
 		_ai_back_off(dist, toward, os)  # after a flurry / big move: walk away, maybe taunt
 		return
+	if _sig_ai(delta, dist, toward):  # signature supers hook (BRAWL MODE)
+		return
 	if _hf_ai(dist, toward, os):  # high flying hook: climbs, dives, springboards, corner spots
 		return
 	match state:
@@ -5769,6 +6591,8 @@ func _update_pose(delta: float) -> void:
 			_pose_juggled()  # strike strings
 		S.ROLL:
 			_pose_mv_roll()  # movement: dodge roll
+		S.SIGNATURE:
+			_pose_sig(delta)  # signature supers
 	if held_item != null:
 		_pose_hold_item()  # weapons hook: carry / hoist the item with both hands
 	_pose_exaggerate()  # arcade feel: amplify, snap and overshoot (see "# --- arcade exaggeration")
@@ -6876,6 +7700,8 @@ func _throw_keys(key: String) -> Array:
 	var land_ease := EASE_IN
 	var mv: Dictionary = MOVES.get(key, {})
 	var kk: String = mv.get("keys", mv.get("anim", key))
+	if kk.begins_with("sig_"):
+		return _sig_throw_keys(kk, f0, s0, fl, sl)  # signature supers hook: own full victim path
 	match kk:
 		"triple_suplex":
 			# up and over like the suplex, but held upside down at the very top first
@@ -7997,7 +8823,9 @@ func _hf_perched(delta: float) -> void:
 		return
 	position = _perch_pos(hf_perch)
 	_face_opponent(delta)
-	if in_strike:
+	if in_pin and _sig_ok():
+		_sig_start_air()  # signature supers hook: BRAWL MODE PIN on top
+	elif in_strike:
 		_hf_start_dive()
 	elif in_grapple:
 		_hf_start_climb("jump")
