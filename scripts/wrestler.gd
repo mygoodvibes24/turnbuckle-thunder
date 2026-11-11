@@ -559,12 +559,35 @@ func _patch_mesh(rings: Array, a0: float, a1: float, y_top: float, y_bot: float,
 			if bump > 0.0:
 				p.z += bump * exp(-pow(a / 0.24, 2.0) - pow((y - 0.093) / 0.026, 2.0))   # nose
 				p.z += bump * 0.3 * exp(-pow(a / 0.6, 2.0) - pow((y - 0.142) / 0.02, 2.0))  # brow
+				for sg in [-1.0, 1.0]:
+					var ea: float = sg
+					var brow := 0.6 * exp(-pow((a - 0.4 * ea) / 0.26, 2.0) - pow((y - 0.152) / 0.016, 2.0))
+					var cheek := 0.55 * exp(-pow((a - 0.62 * ea) / 0.26, 2.0) - pow((y - 0.082) / 0.024, 2.0))
+					var bulge := (brow + cheek) * bump
+					p.x += sin(a) * bulge
+					p.z += cos(a) * bulge
+				p.z += bump * 0.4 * exp(-pow(a / 0.35, 2.0) - pow((y - 0.028) / 0.02, 2.0))   # chin
 			prow.append(p)
 			nrow.append(Vector3(sin(a) / rx, 0.0, cos(a) / rz).normalized())
 			urow.append(Vector2(u, 0.02 + 0.96 * v))
 		pts.append(prow)
 		nrs.append(nrow)
 		uvs.append(urow)
+	if bump > 0.0:
+		# moulded: shade the bulges with normals taken from the displaced grid
+		for j in rows + 1:
+			var nrow: PackedVector3Array = nrs[j]
+			var pc: PackedVector3Array = pts[j]
+			var pu: PackedVector3Array = pts[maxi(j - 1, 0)]
+			var pd: PackedVector3Array = pts[mini(j + 1, rows)]
+			for i in cols + 1:
+				var du: Vector3 = pc[mini(i + 1, cols)] - pc[maxi(i - 1, 0)]
+				var dv: Vector3 = pd[i] - pu[i]
+				var n := dv.cross(du).normalized()
+				if n.dot(nrow[i]) < 0.0:
+					n = -n
+				nrow[i] = n
+			nrs[j] = nrow
 	for j in rows:
 		var p0: PackedVector3Array = pts[j]
 		var p1: PackedVector3Array = pts[j + 1]
@@ -998,7 +1021,7 @@ func _skirt_tex(base: Color, hoodie: bool) -> ImageTexture:
 
 func _sleeve_tex(base: Color, kind: String) -> ImageTexture:
 	# 128x64 sleeve: "tee" (short, hemmed), "hood_up" (upper, elbow bunching), "hood_lo"
-	# (forearm, ribbed cuff).
+	# (forearm, ribbed cuff), "hood_fore" (forearm without the cuff), "cuff" (ribbed cuff).
 	var img := _new_img(128, 64, base)
 	var hood := kind != "tee"
 	var dk := base.darkened(0.35) if hood else base.darkened(0.7)
@@ -1026,6 +1049,19 @@ func _sleeve_tex(base: Color, kind: String) -> ImageTexture:
 			img.fill_rect(Rect2i(0, 49, 128, 15), base.darkened(0.12))
 			for x in range(0, 128, 3):
 				img.fill_rect(Rect2i(x, 49, 1, 15), base.darkened(0.3))
+		"hood_fore":
+			for k in 6:
+				var x := 4.0 + k * 21.0
+				_fold(img, Vector2(x, 6), Vector2(x + 13, 14), 2.2, dk, lt, 0.5)        # bunching out of the elbow
+			_fold(img, Vector2(60, 16), Vector2(66, 44), 2.4, dk, lt, 0.4)
+			_fold(img, Vector2(20, 20), Vector2(24, 46), 2.2, dk, lt, 0.35)
+			for k in 7:
+				var x := 2.0 + k * 18.0
+				_fold(img, Vector2(x, 58), Vector2(x + 6, 46), 2.0, dk, lt, 0.45)        # blousing over the cuff
+		"cuff":
+			for x in range(0, 128, 3):
+				img.fill_rect(Rect2i(x, 0, 1, 64), base.darkened(0.22))
+			img.fill_rect(Rect2i(0, 56, 128, 8), base.darkened(0.3))
 	_cloth_pass(img, "limb", "fleece" if hood else "cotton", 4.0 if hood else 9.0, 3)
 	return _done(img)
 
@@ -1520,49 +1556,65 @@ func _mpoly(pts_mm: Array) -> PackedVector2Array:
 	return out
 
 
-## Cheap Halloween-store luchador face mask (256x256 over the patch): moulded shading,
-## printed flames, white teardrop eye surrounds with a red rim, black eye holes, nostril
-## holes and a mouth slit; transparent outside the face outline (alpha scissor).
-func _mask_tex(base: Color, trim: Color) -> ImageTexture:
+## Cheap Halloween-store skull mask (256x256 over the moulded patch): a pale bone-white
+## vacuum-formed shell with crudely sprayed black / red features -- big black eye holes with
+## a sloppy red rim, a black nose cavity, a stitched-teeth grin, a forehead crack, red drips,
+## grey cheek hollows and a glossy plastic highlight stripe; transparent outside the face
+## outline (alpha scissor).
+func _mask_tex(base: Color, paint: Color) -> ImageTexture:
 	var img := _new_img(256, 256, base)
-	var hot := Color(0.92, 0.2, 0.1)
 	var blk := Color(0.015, 0.015, 0.02)
+	var hollow := base.darkened(0.55)
 	for y in 256:
 		for x in 256:
 			var dx := (float(x) + 0.5 - 128.0) / 124.0
 			var dy := (float(y) + 0.5 - 124.0) / 126.0
 			if dy > 0.0:
-				dx *= 1.0 + 0.4 * dy
+				dx *= 1.0 + 0.45 * dy
 			var d := sqrt(dx * dx + dy * dy)
 			if d >= 1.0:
 				img.set_pixel(x, y, Color(base.r, base.g, base.b, 0.0))
 				continue
-			var f := 1.14 - 0.32 * d * d - 0.16 * smoothstep(0.9, 1.0, d)
-			img.set_pixel(x, y, Color(base.r * f, base.g * f, base.b * f))
-	for i in 9:
-		var cx := -48.0 + i * 12.0
-		var hh := (20.0 + 16.0 * _hash01(i * 1.7 + 3.0)) * (1.0 - absf(cx) / 90.0)
-		_md(img, cx, 158 + hh * 0.45, 6.5, hh * 0.55, hot, 1.0, 0.3)
-		_md(img, cx, 156 + hh * 0.32, 3.4, hh * 0.38, trim, 1.0, 0.35)
-	for i in 3:
-		for sg in [-1.0, 1.0]:
-			var e: float = sg
-			var cx := e * (40.0 + i * 9.0)
-			_md(img, cx, 34 + i * 6, 5.5, 15, hot, 1.0, 0.3)
-			_md(img, cx, 31 + i * 6, 3.0, 10, trim, 1.0, 0.35)
+			var f := 1.1 - 0.26 * d * d - 0.2 * smoothstep(0.88, 1.0, d)
+			img.set_pixel(x, y, Color(base.r * f, base.g * f * 0.995, base.b * f * 0.97))
+	# sprayed grey hollows: temples, under the cheekbones, round the jaw
 	for sg in [-1.0, 1.0]:
 		var e: float = sg
-		var ex := 31.0 * e
-		_poly(img, _mpoly([Vector2(ex - 22, 132), Vector2(ex, 156), Vector2(ex + 22, 132), Vector2(ex, 96)]), hot, 1.0)
-		_poly(img, _mpoly([Vector2(ex - 18, 132), Vector2(ex, 151), Vector2(ex + 18, 132), Vector2(ex, 102)]), Color(0.96, 0.95, 0.9), 1.0)
-		_md(img, ex, 127, 16, 10.5, blk, 1.0, 0.2)                       # eye hole
-		_md(img, ex - 1.0 * e, 126, 6.5, 3.2, Color(0.55, 0.5, 0.45), 0.55, 0.6)   # the eye in the dark
-		_md(img, ex - 1.0 * e, 126, 2.6, 2.6, blk, 0.95, 0.4)
-		_md(img, 6 * e, 79, 2.3, 1.7, blk, 1.0, 0.3)                      # nostril holes
-	_md(img, 0, 96, 7, 15, base.lightened(0.4), 0.55, 1.0)               # moulded nose sheen
-	_md(img, -18, 176, 16, 6, Color(1, 1, 1), 0.35, 1.0)                 # glossy forehead
-	_md(img, 0, 53, 21, 4.2, blk, 1.0, 0.25)                             # mouth slit
-	_lines(img, PackedVector2Array([Vector2(128, 6), Vector2(128, 250)]), 0.8, base.lightened(0.35), 0.35)   # mould seam
+		_md(img, 52 * e, 150, 13, 22, hollow, 0.4, 1.0)
+		_md(img, 40 * e, 70, 15, 16, hollow, 0.5, 1.0)
+		_md(img, 26 * e, 30, 12, 10, hollow, 0.3, 1.0)
+	# forehead crack (black)
+	_lines(img, _mpoly([Vector2(8, 205), Vector2(14, 190), Vector2(5, 180), Vector2(12, 166), Vector2(6, 156)]), 1.6, blk, 0.95, 0.3)
+	_lines(img, _mpoly([Vector2(14, 190), Vector2(24, 184)]), 1.2, blk, 0.9, 0.3)
+	_lines(img, _mpoly([Vector2(-30, 200), Vector2(-24, 188), Vector2(-32, 176)]), 1.2, blk, 0.8, 0.3)
+	for sg in [-1.0, 1.0]:
+		var e: float = sg
+		var ex := 30.0 * e
+		_md(img, ex, 127, 29, 22, paint, 1.0, 0.35)                     # sloppy red rim
+		_md(img, ex + 3.0 * e, 128, 25, 18, blk, 1.0, 0.12)              # big eye hole
+		_md(img, ex - 2.0 * e, 125, 7.5, 3.6, Color(0.55, 0.5, 0.45), 0.5, 0.6)   # the eye in the dark
+		_md(img, ex - 2.0 * e, 125, 3.0, 3.0, blk, 0.95, 0.4)
+		# red drips running down from the sockets
+		var dx0 := ex + 14.0 * e
+		_lines(img, _mpoly([Vector2(dx0, 108), Vector2(dx0 + 1.0, 88)]), 1.7, paint, 1.0, 0.3)
+		_md(img, dx0 + 1.0, 87, 2.6, 3.6, paint, 1.0, 0.3)
+		_lines(img, _mpoly([Vector2(ex - 4.0 * e, 106), Vector2(ex - 4.0 * e, 98)]), 1.5, paint, 1.0, 0.3)
+		_md(img, ex - 4.0 * e, 97, 2.2, 3.0, paint, 1.0, 0.3)
+		# nose cavity: two black slanted triangles
+		_poly(img, _mpoly([Vector2(2.0 * e, 101), Vector2(15.0 * e, 76), Vector2(2.0 * e, 80)]), blk, 1.0)
+	# stitched-teeth grin: a wide black slit crossed by tooth lines, red gums above
+	_lines(img, _mpoly([Vector2(-34, 60), Vector2(-17, 54), Vector2(0, 53), Vector2(17, 54), Vector2(34, 60)]), 2.0, paint, 0.9, 0.4)
+	_lines(img, _mpoly([Vector2(-32, 55), Vector2(-16, 50), Vector2(0, 49), Vector2(16, 50), Vector2(32, 55)]), 1.8, blk, 1.0, 0.25)
+	for i in 9:
+		var tx := -28.0 + i * 7.0
+		var lift := 4.0 * pow(absf(tx) / 30.0, 2.0)
+		_lines(img, _mpoly([Vector2(tx, 62 + lift), Vector2(tx, 38 + lift)]), 1.1, blk, 1.0, 0.3)
+	_md(img, 0, 49, 9, 2.4, blk, 1.0, 0.3)                              # mouth slit (air hole)
+	# glossy vacuum-formed plastic: a hard white highlight stripe down the forehead and cheek
+	_lines(img, _mpoly([Vector2(-20, 196), Vector2(-27, 170), Vector2(-50, 152)]), 3.2, Color(1, 1, 1), 0.75, 0.6)
+	_lines(img, _mpoly([Vector2(-55, 104), Vector2(-50, 74), Vector2(-40, 54)]), 2.6, Color(1, 1, 1), 0.6, 0.7)
+	_md(img, -4, 92, 3.0, 9.0, Color(1, 1, 1), 0.55, 0.8)               # nose ridge glint
+	_lines(img, PackedVector2Array([Vector2(128, 6), Vector2(128, 250)]), 0.8, base.lightened(0.35), 0.3)   # mould seam
 	_cloth_pass(img, "none", "skin", 0.0, 19)
 	return _done(img)
 
@@ -1576,7 +1628,9 @@ func _mask_tex(base: Color, trim: Color) -> ImageTexture:
 #   top: "tee" | "hoodie"; top_color, top_accent, graphic: "skull_bolt" | "peligro" | "none";
 #   undershirt (bool); bottom_color, bottom_fade (baggy jeans wash and its fades)
 #   shoe_color, shoe_accent; chain, bracelet, tattoos (bool); wristband_color
-#   mask (bool), mask_color, mask_trim; bulk (0.8..1.15: limb thickness; pivots never move)
+#   sleeves: "long" (continuous sleeve + cuff, default for hoodies) | "short" (tee) | "none";
+#   hood (bool, hoodies; default true); mask (bool, the skull costume mask), mask_base, mask_paint;
+#   bulk (0.8..1.15: limb thickness; pivots never move)
 
 var hand_r: Node3D  # right hand attach point (child of elbow_r): held items go here
 var hand_l: Node3D
@@ -1619,10 +1673,12 @@ func _build_body() -> void:
 		"sole": _mat(white, _tex("sole", _sole_tex)),
 		"chain": _mat(Color(0.95, 0.95, 0.97), _tex("chain", _chain_tex), 0.9, 0.25),
 	}
-	if hoodie:
+	if hoodie or look.get("sleeves", "") == "long":
 		m["sleeve_up"] = _mat(white, _tex("hsu" + kc, _sleeve_tex.bind(top_c, "hood_up")))
 		m["sleeve_lo"] = _mat(white, _tex("hsl" + kc, _sleeve_tex.bind(top_c, "hood_lo")))
-	else:
+		m["sleeve_fore"] = _mat(white, _tex("hsf" + kc, _sleeve_tex.bind(top_c, "hood_fore")))
+		m["cuff"] = _mat(white, _tex("hsc" + kc, _sleeve_tex.bind(top_c, "cuff")))
+	if not hoodie:
 		m["sleeve"] = _mat(white, _tex("tsl" + kc, _sleeve_tex.bind(top_c, "tee")))
 	m["shin_l"] = _mat(white, _tex("shin-" + kb, _shin_tex.bind(bot_c, bot_f, -1)))
 	m["shin_r"] = _mat(white, _tex("shin+" + kb, _shin_tex.bind(bot_c, bot_f, 1)))
@@ -1692,7 +1748,21 @@ func _build_body() -> void:
 		var hood_m: Material = m["sleeve_up"]
 		_loft(torso, [Vector4(0.66, 0.1, 0.112, -0.03), Vector4(0.6, 0.142, 0.14, -0.026),
 			Vector4(0.545, 0.19, 0.145, -0.018)], hood_m, false, false, Vector3.ZERO, 16)          # hood round the neck
-		_ball(torso, 0.15, Vector3(0, 0.575, -0.13), hood_m, Vector3(1.05, 0.48, 0.5), 16)         # hood down on the back
+		if look.get("hood", true):
+			var hood := _loft(torso, [Vector4(0.645, 0.07, 0.026, -0.108), Vector4(0.615, 0.125, 0.045, -0.13),
+				Vector4(0.56, 0.148, 0.055, -0.158), Vector4(0.5, 0.14, 0.05, -0.164), Vector4(0.445, 0.11, 0.042, -0.168),
+				Vector4(0.405, 0.06, 0.028, -0.163)], hood_m, true, true, Vector3.ZERO, 16, PackedFloat32Array(), 0.07, 3.3)
+			hood.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON                       # hood down, bunched on the back
+			var rim := PackedVector3Array()
+			var rim_r := PackedFloat32Array()
+			for i in 13:
+				var t := lerpf(-1.25, 1.25, float(i) / 12.0)
+				rim.append(Vector3(sin(t) * 0.135, 0.636 - 0.03 * t * t, -0.072 - 0.106 * cos(t)))
+				rim_r.append(0.017 + 0.004 * sin(float(i) * 1.7))
+			var rst := SurfaceTool.new()
+			rst.begin(Mesh.PRIMITIVE_TRIANGLES)
+			_tube_into(rst, rim, rim_r, 8, 0.0, 2.0)
+			_add_mesh(torso, rst.commit(), Vector3.ZERO, hood_m)                                      # rolled hood opening
 		var lace := _mat(Color(0.92, 0.92, 0.9))
 		var fz: float = _ring_at(shell, 0.5).z + _ring_at(shell, 0.5).w + 0.004
 		for sx in [-0.026, 0.026]:
@@ -1868,22 +1938,41 @@ func _build_curls(hg: Node3D, mat: Material, n: int) -> void:
 	_add_mesh(hg, st.commit(), Vector3.ZERO, mat)
 
 
-## The costume mask: a glossy plastic shell standing off the face (moulded nose), a bit
-## crooked, held on by a thin black elastic strap.
+## The costume mask: a glossy vacuum-formed skull shell standing off the face (moulded brow,
+## cheekbones, nose and chin), a bit crooked, held on by a pale elastic band round the back of
+## the head, stapled to the mask at the temples.
 func _build_costume_mask(hg: Node3D) -> void:
-	var mask_c: Color = look.get("mask_color", Color(0.15, 0.7, 0.3))
-	var trim_c: Color = look.get("mask_trim", Color(1.0, 0.82, 0.1))
-	var mm := _mat(Color.WHITE, _tex("mask" + str(mask_c) + str(trim_c), _mask_tex.bind(mask_c, trim_c)), 0.9, 0.15)
+	var bone: Color = look.get("mask_base", Color(0.93, 0.9, 0.8))
+	var paint: Color = look.get("mask_paint", Color(0.8, 0.06, 0.05))
+	var mm := _mat(Color.WHITE, _tex("mask" + str(bone) + str(paint), _mask_tex.bind(bone, paint)), 1.0, 0.12)
 	mm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 	mm.alpha_scissor_threshold = 0.5
 	var mk := _pivot(hg, Vector3(0.003, -0.004, 0.0))
 	mk.rotation = Vector3(0.03, 0.04, -0.06)                      # slapped on crooked
-	_add_mesh(mk, _patch_mesh(HEAD, -MASK_A, MASK_A, MASK_TOP, MASK_BOT, 0.012, 16, 14, 0.02), Vector3.ZERO, mm)
-	_loft(hg, [Vector4(0.176, 0.086, 0.108, -0.004), Vector4(0.166, 0.086, 0.108, -0.004)], _mat(Color(0.04, 0.04, 0.05)),
-		false, false, Vector3.ZERO, 16)
+	_add_mesh(mk, _patch_mesh(HEAD, -MASK_A, MASK_A, MASK_TOP, MASK_BOT, 0.012, 18, 18, 0.021), Vector3.ZERO, mm)
+	var pts := PackedVector3Array()
+	var radii := PackedFloat32Array()
+	var n := 20
+	for i in n + 1:
+		var t := lerpf(0.98, TAU - 0.98, float(i) / float(n))
+		var y := 0.13 + 0.018 * (1.0 - cos(t)) * 0.5
+		var r := _ring_at(HAIR_CAP, y)
+		pts.append(Vector3(sin(t) * (r.y + 0.005), y, cos(t) * (r.z + 0.005) + r.w))
+		radii.append(0.0034)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	_tube_into(st, pts, radii, 6, 0.0, 1.0)
+	_add_mesh(hg, st.commit(), Vector3.ZERO, _mat(Color(0.74, 0.72, 0.67)))         # elastic band
+	var staple := _mat(Color(0.7, 0.72, 0.75), null, 0.9, 0.3)
+	for sg in [-1.0, 1.0]:
+		var e: float = sg
+		_block(mk, Vector3(0.004, 0.012, 0.007), Vector3(0.088 * e, 0.131, 0.031), staple)
 
 
 func _build_arm(side: int, m: Dictionary, top: String, bulk: float) -> Node3D:
+	var sleeves: String = look.get("sleeves", "long" if top == "hoodie" else "short")
+	if sleeves == "long":
+		return _build_long_sleeve_arm(side, m, bulk)
 	var s := float(side)
 	var k := bulk
 	var upper: Material = m["upper"]
@@ -1902,7 +1991,7 @@ func _build_arm(side: int, m: Dictionary, top: String, bulk: float) -> Node3D:
 		_loft(sh, [Vector4(0.03, 0.074, 0.078, 0.0), Vector4(-0.12, 0.08, 0.082, 0.006),
 			Vector4(-0.26, 0.077, 0.078, 0.006), Vector4(-0.38, 0.072, 0.074, 0.004)], su, false, false, Vector3.ZERO, 14,
 			PackedFloat32Array([-0.115 * s, -0.07 * s, -0.03 * s, 0.0]), 0.04, 5.0 + s)        # baggy upper sleeve
-	else:
+	elif sleeves != "none":
 		var sl: Material = m["sleeve"]
 		_ball(sh, 0.086, Vector3(-0.108 * s, -0.008, 0.0), sl, Vector3(1.0, 0.8, 1.06), 14)      # dropped shoulder
 		_loft(sh, [Vector4(0.02, 0.086, 0.092, 0.0), Vector4(-0.08, 0.097, 0.1, 0.004),
@@ -1938,6 +2027,48 @@ func _build_arm(side: int, m: Dictionary, top: String, bulk: float) -> Node3D:
 		var wb: Material = m["wristband"]
 		_loft(el, [Vector4(-0.19, 0.046 * k, 0.043 * k, 0.0), Vector4(-0.265, 0.041 * k, 0.038 * k, 0.0)], wb, true, true,
 			Vector3.ZERO, 12)
+	var hand := _build_hand(el, side, lerpf(1.0, bulk, 0.5), skin)
+	if side < 0:
+		hand_l = hand
+	else:
+		hand_r = hand
+	return sh
+
+
+## Long-sleeve arm (look "sleeves": "long", the default for hoodies) as one continuous 12-sided sleeve: the upper sleeve loft slants from
+## the shoulder past the elbow pivot into a full elbow cap (a ball on the pivot as wide as the
+## sleeve there), and the forearm sleeve starts inside that cap, so the sleeve stays closed at
+## every bend the poses use; it blouses over a ribbed cuff, then the wrist (wristband) and a
+## real hand. Same rig as _build_arm: shoulder pivot, elbow pivot 0.32 below, hand 0.33 below.
+func _build_long_sleeve_arm(side: int, m: Dictionary, bulk: float) -> Node3D:
+	var s := float(side)
+	var k := bulk
+	var su: Material = m["sleeve_up"]
+	var sf: Material = m["sleeve_fore"]
+	var skin: Material = m["skin"]
+	var sh := _pivot(torso, Vector3(0.42 * s, 0.47, 0))
+	_ball(sh, 0.082, Vector3(-0.106 * s, -0.01, 0.0), su, Vector3(1.0, 0.86, 1.05), 12)        # dropped shoulder
+	_loft(sh, [Vector4(0.03, 0.074, 0.078, 0.0), Vector4(-0.06, 0.08, 0.082, 0.005), Vector4(-0.16, 0.079, 0.08, 0.006),
+		Vector4(-0.25, 0.074, 0.075, 0.004), Vector4(-0.3, 0.069, 0.07, 0.0), Vector4(-0.338, 0.058, 0.059, 0.0)],
+		su, false, true, Vector3.ZERO, 12, PackedFloat32Array([-0.115 * s, -0.088 * s, -0.058 * s, -0.025 * s, -0.006 * s, 0.0]),
+		0.03, 5.0 + s)                                                                           # upper sleeve, into the elbow
+	var el := _pivot(sh, Vector3(0, -0.32, 0))
+	if side < 0:
+		elbow_l = el
+	else:
+		elbow_r = el
+	_ball(el, 0.073, Vector3(0, 0.0, -0.002), su, Vector3(1.0, 1.0, 1.03), 12)                  # elbow cap
+	_loft(el, [Vector4(0.016, 0.058, 0.059, 0.0), Vector4(-0.02, 0.069, 0.07, 0.002), Vector4(-0.1, 0.067, 0.066, 0.004),
+		Vector4(-0.17, 0.06, 0.058, 0.003), Vector4(-0.205, 0.057, 0.055, 0.002), Vector4(-0.218, 0.05, 0.049, 0.0)],
+		sf, true, false, Vector3.ZERO, 12, PackedFloat32Array(), 0.035, 7.0 + s)                # forearm sleeve
+	_loft(el, [Vector4(-0.2, 0.049, 0.047, 0.0), Vector4(-0.212, 0.05, 0.048, 0.0), Vector4(-0.248, 0.046, 0.044, 0.0),
+		Vector4(-0.254, 0.043, 0.041, 0.0)], m["cuff"], false, false, Vector3.ZERO, 12)            # ribbed cuff
+	_loft(el, [Vector4(-0.235, 0.033 * k / 0.86, 0.03 * k / 0.86, 0.0), Vector4(-0.3, 0.028 * k / 0.86, 0.025 * k / 0.86, 0.0)],
+		skin, true, true, Vector3.ZERO, 10)                                                      # wrist
+	if side > 0 and m.has("wristband"):
+		var wb: Material = m["wristband"]
+		_loft(el, [Vector4(-0.244, 0.037, 0.034, 0.0), Vector4(-0.25, 0.038, 0.035, 0.0), Vector4(-0.28, 0.036, 0.033, 0.0),
+			Vector4(-0.285, 0.034, 0.031, 0.0)], wb, false, false, Vector3.ZERO, 12)
 	var hand := _build_hand(el, side, lerpf(1.0, bulk, 0.5), skin)
 	if side < 0:
 		hand_l = hand
@@ -2047,6 +2178,7 @@ func _build_shoe(kn: Node3D, m: Dictionary) -> void:
 # ---------------------------------------------------------------- helpers
 
 func set_state(s: int) -> void:
+	_flow_on_state(s)  # flow & boost hook: tweak bonus, boost off (before the state changes)
 	state = s
 	state_time = 0.0
 	hit_landed = false
@@ -2250,6 +2382,7 @@ func tick(delta: float) -> void:
 	_weapons_tick(delta)  # weapons hook: thrown-item hits, broken items
 	# Punch windows are CPU-only and too short to read, so they get no tell.
 	rev_tell.visible = reversal_window > 0.0 and reversal_kind != "punch"
+	_flow_pre(delta)  # flow & boost hook: flow-window cancels, tweaks (PIN held), CPU flow
 
 	match state:
 		S.IDLE, S.WALK:
@@ -2310,6 +2443,7 @@ func tick(delta: float) -> void:
 			_juggled(delta)  # strike strings: popped up by a launcher
 		S.ROLL:
 			_mv_roll(delta)  # movement hook: dodge roll
+	_flow_post()  # flow & boost hook: +FLOW for a cancel / in-window follow-up
 
 	_separate()
 	_clamp_ring()
@@ -4830,13 +4964,82 @@ func _ai_grace() -> bool:
 	return ai_match_time < CPU_GRACE_TIME
 
 
+# Idle-human pacing: when the human has not touched the controls for CPU_IDLE_AFTER seconds,
+# the CPU still engages (never just stands there), but at a slow cadence: one engagement
+# (a strike, a lock-up, a run-in, a stomp / cover, a dive) every CPU_IDLE_GAP seconds, and
+# it circles or plays to the crowd in between. Tuned so an idle player lasts ~60-90 s.
+const CPU_IDLE_AFTER := 2.5
+const CPU_IDLE_GAP := Vector2(4.0, 6.0)
+var ai_opp_idle := 0.0     # seconds the human opponent has sent no input
+var ai_engage_cd := 0.0    # idle pacing: seconds until the next engagement is allowed
+
+
+func _ai_opp_is_idle() -> bool:
+	if opponent.is_cpu or ai_opp_idle < CPU_IDLE_AFTER or _ai_grace():
+		return false
+	# A pin-worthy knockdown is followed up (cover) as part of the same engagement: the
+	# opponent is down for less than the gap, so pacing it would make an idle player unpinnable.
+	var oh: float = opponent.health
+	return not (_opp_state() == S.DOWN and oh < CPU_PIN_HP)
+
+
+func _ai_track_idle(delta: float) -> void:
+	if opponent.is_cpu:
+		ai_opp_idle = 0.0
+		return
+	var om: Vector2 = opponent.in_move
+	var osp: float = opponent.since_press
+	if om.length() > 0.2 or osp < 0.25 or opponent.in_run or opponent.in_pin:
+		ai_opp_idle = 0.0
+		ai_engage_cd = 0.0  # back to normal play the moment they act
+	else:
+		ai_opp_idle += delta
+	ai_engage_cd = maxf(0.0, ai_engage_cd - delta)
+
+
+## Idle pacing, between engagements: circle at mid range, sometimes taunt. Never stand still.
+func _ai_idle_circle(dist: float, toward: Vector2) -> void:
+	if ai_strafe_time <= 0.0:
+		_ai_start_strafe()
+		ai_strafe_time = randf_range(1.2, 2.2)
+	var perp := Vector2(-toward.y, toward.x) * ai_strafe_dir
+	if dist < 1.9:
+		in_move = (-toward * 0.8 + perp * 0.5).normalized() * 0.8
+	elif dist > 3.2:
+		in_move = (toward * 0.7 + perp * 0.5).normalized() * 0.8
+	else:
+		in_move = perp * 0.7
+	if ai_timer <= 0.0:
+		ai_timer = randf_range(1.2, 2.0)
+		if dist > 2.3 and taunt_cooldown <= 0.0 and randf() < 0.25:
+			in_pin = true  # taunt (far from the opponent, so never a cover)
+
+
 func _ai(delta: float) -> void:
 	ai_match_time += delta
+	_ai_track_idle(delta)
 	var was_free := state == S.IDLE or state == S.WALK
 	_ai_think(delta)
 	# Post-filter the inputs the decision code chose (reversal presses are never touched).
 	if reversal_window > 0.0:
 		return
+	if _ai_opp_is_idle():
+		var cover := in_pin and _opp_state() == S.DOWN and _flat_to_opponent().length() < 2.2
+		var attacking := in_strike or in_grapple or in_run or cover
+		if was_free and attacking:
+			if ai_engage_cd > 0.0:
+				in_strike = false
+				in_grapple = false
+				in_run = false
+				if cover:
+					in_pin = false
+			else:
+				ai_engage_cd = randf_range(CPU_IDLE_GAP.x, CPU_IDLE_GAP.y)
+		elif state == S.PUNCH or state == S.THROWING:
+			in_strike = false  # one move per engagement: no strings / chains on an idle player
+			in_grapple = false
+		elif state == S.CLIMB and ai_engage_cd <= 0.0:
+			ai_engage_cd = randf_range(CPU_IDLE_GAP.x, CPU_IDLE_GAP.y) + 1.5  # the dive is this engagement
 	if _ai_grace():
 		# Opening grace period: strikes only, and slower.
 		in_grapple = false
@@ -4888,6 +5091,9 @@ func _ai_think(delta: float) -> void:
 		return
 
 	var free_now := state == S.IDLE or state == S.WALK
+	if free_now and ai_engage_cd > 0.0 and _ai_opp_is_idle() and _opp_state() != S.PINNED:
+		_ai_idle_circle(dist, toward)  # idle pacing: wait out the gap, but keep moving
+		return
 	if free_now and ai_backoff > 0.0:
 		_ai_back_off(dist, toward, os)  # after a flurry / big move: walk away, maybe taunt
 		return
@@ -5092,6 +5298,10 @@ func _ai_reversal_chance() -> float:
 		c = 0.06 + 0.26 * ai_skill
 	elif reversal_kind == "chain":
 		c = 0.04 + 0.22 * ai_skill
+	if reversal_kind in ["grapple", "strong", "whip"] and not opponent.is_cpu:
+		# The human's own lock-ups: a fair clinch. Capped at 25% at match-1 skill (0.3),
+		# rising to ~40% at the top of the ramp; the success roll comes on top of this.
+		c = minf(c, lerpf(0.25, 0.4, clampf((ai_skill - 0.3) / 0.5, 0.0, 1.0)))
 	return clampf(c, 0.0, 0.95)
 
 
@@ -8618,13 +8828,23 @@ func _mv_start_run() -> void:
 	run_speed = RUN_START_SPEED
 	mv_full_steam = false
 	hf_rope_buf = ""
+	flow_ai_boost = is_cpu and randf() < ai_skill * 0.5  # flow & boost: CPU boosts some runs
 
 
 func _mv_run_speed(delta: float) -> float:
-	run_speed = clampf(run_speed + RUN_ACCEL * delta, RUN_START_SPEED * 0.8, RUN_TOP_SPEED)
+	var boost := _flow_boost(delta)  # flow & boost hook: RUN held + hype = boost sprint
+	var top := RUN_TOP_SPEED * boost
+	if run_speed > top:
+		run_speed = maxf(top, run_speed - BOOST_DECEL * delta)  # boost over: ease back down
+	else:
+		var acc := RUN_ACCEL * (BOOST_ACCEL if boost > 1.0 else 1.0)
+		run_speed = clampf(run_speed + acc * delta, RUN_START_SPEED * 0.8, top)
 	if not mv_full_steam and run_speed >= RUN_TOP_SPEED - 0.01:
 		mv_full_steam = true
 		trick.emit("Full Steam", 100, "movement")
+	if boosting and not _boost_top and run_speed >= top - 0.01:
+		_boost_top = true
+		trick.emit("Afterburner", 150, "movement")
 	return run_speed
 
 
@@ -8700,6 +8920,255 @@ func _pose_mv_roll() -> void:
 	pt_hd = Vector3(0.6 * tk, 0.0, 0.0)
 	r_limb = 30.0
 	r_body = 26.0
+
+
+# ---- flow & boost (G1)
+# The arcade loop: style -> hype -> BOOST -> bigger tricks.
+# BOOST: HOLD RUN while running with hype in the tank = boost sprint: top speed x BOOST_MULT, faster
+#   acceleration, burns BOOST_BURN hype (spirit) per second (free in BRAWL MODE). Needs BOOST_MIN
+#   hype to light. Emits sfx "boost_start" once and "boost" every BOOST_SFX_EVERY s (trail / audio
+#   hooks); hitting boost top speed scores "Afterburner". The 5 s run timeout is held while boosting.
+# CANCEL FLOW: every move that lands (a trick with points, not "movement") opens a FLOW_WINDOW s
+#   flow window (a throw opens it again when it lands). Pressing STRIKE / GRAB / RUN in it cancels
+#   the recovery into the next move (strike->grab, throw->run / stomp / pick-up, dive landing->run
+#   or climb), scoring "+FLOW" (a quick run of cancels scores "+FLOW 2", "+FLOW 3" ... more each
+#   time), which also keeps the style combo alive. Strike strings and grapple chains keep their own
+#   presses (no cancel), but a late, in-window string-to-grab counts as a flow cancel too.
+#   A flow-cancelled run starts near full steam.
+# TWEAK: HOLD PIN during a strike / running attack / throw / dive or air trick = "tweaked": the move
+#   plays at TWEAK_SPEED (the throw victim too) and, if it landed, scores a "Tweak" bonus on top.
+# COMBO COAST (style.gd): flow_moving_fast() holds the combo timer for up to 1.5 s extra.
+# CPU: rolls (by ai_skill) to boost a run, flow-cancel into a stomp / run, and tweak moves.
+# HUD reads: boosting, flow_window, tweaking (and flow_chain, boost_time).
+
+const BOOST_MULT := 1.35         # boost top speed vs RUN_TOP_SPEED
+const BOOST_ACCEL := 2.4         # x RUN_ACCEL while boosting
+const BOOST_DECEL := 5.0         # m/s^2 back down to normal top speed once the boost stops
+const BOOST_BURN := 9.0          # hype per second
+const BOOST_MIN := 6.0           # hype needed to light the boost
+const BOOST_CPU_MIN := 25.0      # CPU keeps some hype for finishers
+const BOOST_SFX_EVERY := 0.35
+const FLOW_WINDOW := 0.25
+const FLOW_POINTS := 120
+const FLOW_CHAIN_POINTS := 60    # per earlier cancel in a quick run of them (up to 5)
+const FLOW_CHAIN_GAP := 2.5      # cancels further apart than this start a new run
+const TWEAK_SPEED := 0.82        # tweaked moves play at this speed
+const TWEAK_MIN := 0.12          # PIN held at least this long in the move
+const TWEAK_BONUS := 0.4         # x the move's points
+const TWEAK_STATES := [S.PUNCH, S.RUN_ATTACK, S.THROWING, S.DIVING]
+const FLOW_FROM := [S.IDLE, S.WALK, S.PUNCH, S.RUN_ATTACK, S.THROWING, S.STOMP, S.DIVING]
+const FLOW_NOT_MOVES := [S.IDLE, S.WALK, S.STUNNED, S.WHIFF, S.DOWN, S.TAUNT, S.PINNING]
+
+var in_run_held := false         # human: RUN held (main.gd)
+var in_pin_held := false         # human: PIN held (main.gd)
+var boosting := false            # HUD / FX: boost sprint on
+var boost_time := 0.0            # seconds into the current boost
+var flow_window := 0.0           # HUD: > 0 while a flow cancel is possible
+var flow_chain := 0              # flow cancels in the current quick run
+var tweaking := false            # HUD: the current move is being tweaked (PIN held)
+var flow_ai_boost := false       # CPU: boost this run
+var _boost_sfx_t := 0.0
+var _boost_top := false
+var _flow_hooked := false
+var _flow_last_at := -10.0
+var _flow_cancelled := false
+var _flow_ai_rolled := false
+var _flow_ai_tweak := false
+var _fl_prev := -1
+var _fl_chain := 0
+var _fl_press := false
+var _fl_throw_open := false
+var _tw_time := 0.0              # PIN held in the current move
+var _tw_real := 0.0              # real seconds in the current state
+var _tw_pts := 0                 # last landed trick (for the Tweak bonus)
+var _tw_kind := "strike"
+var _tw_at := -10.0
+
+
+## style.gd: moving fast keeps the combo timer from running out (combo coasting).
+func flow_moving_fast() -> bool:
+	if boosting or state == S.ROLL:
+		return true
+	if state == S.RUN and not whipped:
+		return run_speed >= RUN_TOP_SPEED - 1.5
+	return state == S.DIVING and not hf_landed
+
+
+## tick, before the state machine: timers, tweak, CPU flow, and the flow cancel itself.
+func _flow_pre(delta: float) -> void:
+	if not _flow_hooked:
+		_flow_hooked = true
+		trick.connect(_flow_on_trick)
+	_tw_real += delta
+	flow_window = maxf(0.0, flow_window - delta)
+	_fl_prev = state
+	_fl_chain = chain_link
+	_flow_cancelled = false
+	if state == S.THROWING and not _fl_throw_open and state_time >= throw_time:
+		_fl_throw_open = true  # the throw just landed: a fresh window to cancel its recovery
+		flow_window = FLOW_WINDOW
+		_flow_ai_rolled = false
+	_flow_tweak_tick(delta)
+	if is_cpu:
+		_flow_ai()
+	_fl_press = in_strike or in_grapple or in_run
+	if flow_window <= 0.0 or not _fl_press:
+		return
+	var btn := "run" if in_run else ("strike" if in_strike else "grab")  # _free_move's priority
+	if _flow_cancel_ok(btn):
+		if state == S.DIVING:
+			position.y = 0.0
+		chain_buf = ""
+		string_step = 0
+		set_state(S.IDLE)  # _free_move now starts the next move from this very press
+		_flow_cancelled = true
+
+
+## tick, after the state machine: a press in the window that started a new move = +FLOW.
+func _flow_post() -> void:
+	var started := _flow_cancelled or (state != _fl_prev and _fl_prev in FLOW_FROM)
+	if not (_fl_press and flow_window > 0.0 and started):
+		return
+	if chain_link != _fl_chain or state in FLOW_NOT_MOVES:
+		return  # grapple chains score themselves
+	if anim_clock - _flow_last_at > FLOW_CHAIN_GAP:
+		flow_chain = 0
+	flow_chain += 1
+	_flow_last_at = anim_clock
+	flow_window = 0.0
+	var pts := FLOW_POINTS + FLOW_CHAIN_POINTS * mini(flow_chain - 1, 5)
+	trick.emit("+FLOW" if flow_chain == 1 else "+FLOW %d" % mini(flow_chain, 6), pts, "movement")
+	sfx.emit("flow", 0.6, _chest())
+	if state == S.RUN:
+		run_speed = maxf(run_speed, RUN_TOP_SPEED - 0.6)  # cancelled into a run: keep the momentum
+
+
+## Can a press of btn ("strike" / "grab" / "run") cancel the current recovery?
+func _flow_cancel_ok(btn: String) -> bool:
+	if opponent == null or _opp_state() == S.JUGGLED:
+		return false  # juggle follow-ups own those presses
+	match state:
+		S.PUNCH:
+			if not STRIKES.has(current_move_key) or not strike_hit:
+				return false
+			var st: Dictionary = STRIKES[current_move_key]
+			if state_time < float(st["hit"]) + 0.03:
+				return false
+			if btn == "run":
+				return true
+			return bool(st.get("ender", false))  # mid-string presses belong to the string
+		S.RUN_ATTACK:
+			return hit_landed and state_time >= 0.3
+		S.THROWING:
+			if state_time < throw_time:
+				return false
+			if btn == "run":
+				return true
+			var nexts: Dictionary = CHAINS.get(_strip_super(current_move_key), {})
+			return not (chain_link < CHAIN_MAX and nexts.has(btn))  # chain links win
+		S.STOMP:
+			return hit_landed and state_time >= 0.3 and btn != "strike"  # no stomp-cancel loops
+		S.DIVING:
+			if not hf_landed:
+				return false
+			return hf_result == "feet" or (hf_result == "hit" and hf_move in ["springboard_forearm", "corner_splash"])
+	return false
+
+
+## trick signal (our own): landed moves open the flow window and remember points for a Tweak.
+func _flow_on_trick(_trick_name_s: String, points: int, kind: String) -> void:
+	if kind == "break":
+		flow_window = 0.0
+		flow_chain = 0
+		_tw_pts = 0
+		return
+	if points <= 0 or kind == "movement" or _trick_name_s == "Tweak":
+		return
+	flow_window = FLOW_WINDOW
+	_flow_ai_rolled = false
+	_tw_pts = points
+	_tw_kind = kind
+	_tw_at = anim_clock
+
+
+## set_state hook (called before the state changes): finish a tweak, reset per-move flow state.
+func _flow_on_state(new_s: int) -> void:
+	if new_s != S.RUN:
+		boosting = false
+	if state in TWEAK_STATES and _tw_time >= TWEAK_MIN and _tw_pts > 0 \
+			and anim_clock - _tw_at <= _tw_real + 0.05:
+		var bonus := clampi(int(float(_tw_pts) * TWEAK_BONUS), 50, 600)
+		var kind := _tw_kind
+		_tw_pts = 0
+		_tw_time = 0.0
+		trick.emit("Tweak", bonus, kind)
+	_tw_time = 0.0
+	_tw_real = 0.0
+	tweaking = false
+	_fl_throw_open = false
+	_flow_ai_tweak = is_cpu and new_s in TWEAK_STATES and randf() < ai_skill * 0.35
+
+
+## Held PIN (CPU: rolled per move) during a tweakable move: slow it a touch.
+func _flow_tweak_tick(delta: float) -> void:
+	var held := _flow_ai_tweak if is_cpu else in_pin_held
+	tweaking = held and state in TWEAK_STATES and not (state == S.DIVING and hf_landed)
+	if not tweaking:
+		return
+	_tw_time += delta
+	var slow := delta * (1.0 - TWEAK_SPEED)
+	state_time -= slow
+	if state == S.THROWING and opponent != null and _opp_state() == S.THROWN:
+		opponent.state_time -= slow  # the victim's flight stays in sync with our throw
+
+
+## _mv_run_speed: boost sprint. Returns the top-speed multiplier.
+func _flow_boost(delta: float) -> float:
+	var want := flow_ai_boost if is_cpu else in_run_held
+	var need := 0.0 if boosting else (BOOST_CPU_MIN if is_cpu else BOOST_MIN)
+	var fuel := brawl_mode or spirit > need
+	var was := boosting
+	boosting = want and fuel and state == S.RUN and not whipped
+	if not boosting:
+		return 1.0
+	if not was:
+		boost_time = 0.0
+		_boost_top = false
+		_boost_sfx_t = BOOST_SFX_EVERY
+		sfx.emit("boost_start", 0.8, _chest())
+	boost_time += delta
+	if not brawl_mode:
+		spirit = maxf(0.0, spirit - BOOST_BURN * delta)
+	_boost_sfx_t -= delta
+	if _boost_sfx_t <= 0.0:
+		_boost_sfx_t = BOOST_SFX_EVERY
+		sfx.emit("boost", 0.5, global_position + Vector3(0, 0.8, 0))
+	state_time = minf(state_time, 4.5)  # the run doesn't time out while boosting
+	return BOOST_MULT
+
+
+## CPU: once per flow window, maybe cancel into a stomp (close) or a run at the downed opponent.
+func _flow_ai() -> void:
+	if flow_window <= 0.0 or _flow_ai_rolled or not (state in FLOW_FROM) or state in [S.IDLE, S.WALK]:
+		return
+	var od := _opp_state() == S.DOWN
+	var dist := _flat_to_opponent().length()
+	var btn := ""
+	if od and dist < 1.7 and _flow_cancel_ok("strike"):
+		btn = "strike"
+	elif od and dist < 5.0 and not _ai_grace() and _flow_cancel_ok("run"):
+		btn = "run"
+	if btn == "":
+		return
+	_flow_ai_rolled = true
+	if randf() >= ai_skill * 0.6:
+		return
+	if btn == "strike":
+		in_strike = true
+	else:
+		in_run = true
+		var d := _flat_to_opponent().normalized()
+		in_move = Vector2(d.x, d.z)
 
 
 # ---- yard collision (prop footprints) ------------------------------------------------------
