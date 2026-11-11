@@ -3785,6 +3785,7 @@ var trick_cam := 0.0              # 0 = broadcast .. 1 = full trick cam
 var trick_cam_focus: Node3D
 var trick_cam_yaw := 0.0          # orbit offset around the flyer (0 = straight from the +z side)
 var trick_cam_dir := 1.0
+var trick_cam_base := 0.0         # side-on base angle for the current pair (radians)
 var trick_cam_pos := Vector3.ZERO
 var trick_cam_look := Vector3.ZERO
 var sig_cam_left := 0.0
@@ -3914,8 +3915,22 @@ func _update_trick_cam(delta: float) -> float:
 	var other: Node3D = p2 if trick_cam_focus == p1 else p1
 	var o: Vector3 = other.global_position
 	var center := f.lerp(o, 0.3)
-	var dist: float = clampf(3.3 + f.distance_to(o) * 0.3, 3.3, 5.2)
-	var off := Vector3(sin(trick_cam_yaw), 0.0, cos(trick_cam_yaw)) * dist
+	var flat := Vector3(o.x - f.x, 0.0, o.z - f.z)
+	var spread_t: float = flat.length()
+	# Shoot the pair side-on (perpendicular to the flyer -> opponent line, from the +z side) so
+	# the opponent never blocks the lens; the swoop orbits around that base angle.
+	if spread_t > 0.3:
+		var perp := Vector3(-flat.z, 0.0, flat.x) / spread_t
+		if perp.z < 0.0:
+			perp = -perp
+		var base_want: float = clampf(atan2(perp.x, perp.z), -0.9, 0.9)
+		if trick_cam_pos == Vector3.ZERO:
+			trick_cam_base = base_want   # fresh swoop: start from the side-on angle
+		else:
+			trick_cam_base = lerp_angle(trick_cam_base, base_want, clampf(delta * 4.0, 0.0, 1.0))
+	var yaw: float = clampf(trick_cam_base + trick_cam_yaw, -1.2, 1.2)
+	var dist: float = clampf(2.8 + spread_t * 0.55, 3.3, 5.6)
+	var off := Vector3(sin(yaw), 0.0, cos(yaw)) * dist
 	# Low and close, under the flyer, looking up at them.
 	var want_pos := Vector3(center.x, 0.0, center.z) + off
 	want_pos.y = clampf(0.55 + f.y * 0.45, 0.5, 2.0)

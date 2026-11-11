@@ -112,7 +112,9 @@ var _ribbon_mat: StandardMaterial3D
 var _clock := 0.0
 var _lines_layer: CanvasLayer
 var _lines_ctl: Control
-var _lines_amount := 0.0          # requested this frame (reset after each update)
+const TRAIL_HOLD := 0.06          # seconds a trail()/speed_lines() request stays alive
+var _lines_amount := 0.0          # requested amount (held for TRAIL_HOLD real seconds)
+var _lines_hold := 0.0
 var _lines_shown := 0.0
 var _lines_seed := PackedFloat32Array()   # per streak: angle, length, phase
 
@@ -607,14 +609,18 @@ func trail(node: Node3D, tint: Color) -> void:
 	var t: Dictionary = _trails.get(id, {})
 	if t.is_empty():
 		t = {"node": node, "tint": tint, "last_ghost": -1.0, "last_pt": -1.0,
-			"pts_l": PackedVector3Array(), "pts_r": PackedVector3Array(), "ages": PackedFloat32Array(), "on": true}
+			"pts_l": PackedVector3Array(), "pts_r": PackedVector3Array(), "ages": PackedFloat32Array(), "until": 0.0}
 		_trails[id] = t
 	t["tint"] = tint
-	t["on"] = true
+	# Callers run on physics ticks; a short hold keeps the trail steady on frames without one.
+	t["until"] = _clock + TRAIL_HOLD
 
 
 func speed_lines(amount: float) -> void:
+	if _lines_hold <= 0.0:
+		_lines_amount = 0.0
 	_lines_amount = maxf(_lines_amount, clampf(amount, 0.0, 1.0))
+	_lines_hold = TRAIL_HOLD
 
 
 ## The node's biggest body meshes (by AABB volume), cached.
@@ -704,8 +710,7 @@ func _update_trails(delta: float) -> void:
 		if not is_instance_valid(node) or not node.is_inside_tree():
 			drop.append(id)
 			continue
-		var on: bool = t["on"]
-		t["on"] = false   # must be renewed by trail() next frame
+		var on: bool = _clock <= float(t["until"])   # renewed by trail() while it should show
 		var tint: Color = t["tint"]
 		var pts_l: PackedVector3Array = t["pts_l"]
 		var pts_r: PackedVector3Array = t["pts_r"]
@@ -787,8 +792,10 @@ func _ribbon_strip(pts: PackedVector3Array, ages: PackedFloat32Array, max_age: f
 
 
 func _update_speed_lines(real_dt: float) -> void:
+	_lines_hold -= real_dt
+	if _lines_hold <= 0.0:
+		_lines_amount = 0.0
 	var want: float = _lines_amount
-	_lines_amount = 0.0
 	_lines_shown = lerpf(_lines_shown, want, clampf(real_dt * (10.0 if want > _lines_shown else 5.0), 0.0, 1.0))
 	if _lines_shown < 0.02 and want <= 0.0:
 		_lines_shown = 0.0
@@ -810,20 +817,23 @@ func _update_speed_lines(real_dt: float) -> void:
 func _draw_speed_lines() -> void:
 	var sz: Vector2 = _lines_ctl.size
 	var c: Vector2 = sz * 0.5
-	var rad: float = sz.length() * 0.5
 	for i in SPEED_LINES:
 		var ang: float = _lines_seed[i * 3]
 		var ln: float = _lines_seed[i * 3 + 1]
 		var ph: float = _lines_seed[i * 3 + 2]
-		var d := Vector2(cos(ang), sin(ang) * 0.8).normalized()
-		var r0: float = rad * (0.5 + 0.5 * ph)
-		var r1: float = r0 + rad * ln
-		var hw: float = lerpf(1.5, 5.0, ph)
+		# Streaks live on the screen's ellipse (inner end 55..90% of the way to the edge), so they
+		# frame the action at every edge and never cover the middle.
+		var e := Vector2(cos(ang) * c.x, sin(ang) * c.y)
+		var k0: float = 0.55 + 0.35 * ph
+		var p0: Vector2 = c + e * k0
+		var p1: Vector2 = c + e * (k0 + ln * 1.6)
+		var d: Vector2 = (p1 - p0).normalized()
+		var hw: float = lerpf(1.5, 6.0, ph)
 		var n := Vector2(-d.y, d.x)
-		var a: float = 0.42 * _lines_shown * sin(ph * PI)
+		var a: float = 0.5 * _lines_shown * sin(ph * PI)
 		var col := Color(1.0, 1.0, 0.95, a)
 		var tip := Color(1.0, 1.0, 0.95, 0.0)
-		var pts := PackedVector2Array([c + d * r0, c + d * r1 + n * hw, c + d * r1 - n * hw])
+		var pts := PackedVector2Array([p0, p1 + n * hw, p1 - n * hw])
 		_lines_ctl.draw_polygon(pts, PackedColorArray([tip, col, col]))
 
 
