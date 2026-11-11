@@ -168,21 +168,24 @@ var _fan_xforms: Array[Transform3D] = []
 var _fan_custom: Array[Color] = []
 
 const BOX_NORMALS: Array[Vector3] = [Vector3.RIGHT, Vector3.LEFT, Vector3.UP, Vector3.DOWN, Vector3.BACK, Vector3.FORWARD]
-# Fan atlas variants (8 cells of 16x32 px).
-const FAN_HOODIE := 0
-const FAN_CAP := 1
-const FAN_CHEER := 2
-const FAN_PHONE := 3
-const FAN_CUP := 4
-const FAN_SIT := 5
-const FAN_SIT_CUP := 6
-const FAN_HAIR := 7
+# Crowd atlas: 8 painted people (64x128 cells) x 2 frames (row 0 = rest pose, row 1 = cheer pose).
+const CROWD_CELL := Vector2i(64, 128)
+const CROWD_ATLAS := Vector2i(512, 256)
+const P_HOODIE := 0
+const P_FILMER := 1
+const P_JACKET := 2
+const P_GIRL := 3
+const P_CHEER := 4
+const P_SIT := 5
+const P_SIT_CUP := 6
+const P_FLANNEL := 7
 
 const CROWD_SHADER := """
 shader_type spatial;
 render_mode unshaded, cull_disabled;
 
 uniform sampler2D tex : source_color, filter_linear_mipmap;
+uniform sampler2D mask : filter_linear_mipmap;   // r = top garment (tinted per friend), g = glowing phone screen
 uniform float hype = 0.0;
 uniform float brightness = 1.0;
 
@@ -194,34 +197,52 @@ float h1(float n) {
 }
 
 void vertex() {
-	// INSTANCE_CUSTOM: x = atlas variant / 8, y = bob scale, z = light level, w = 1 if may switch to cheering.
+	// INSTANCE_CUSTOM: x = person / 8, y = bob scale, z = light level, w = cheer eagerness 0..1.
 	float id = float(INSTANCE_ID);
 	float ph = h1(id) * 6.2831;
-	float spd = mix(2.0, 9.5, hype) * (0.8 + 0.4 * h1(id + 3.1));
-	float amp = mix(0.02, 0.24, hype) * (0.5 + h1(id + 7.7)) * INSTANCE_CUSTOM.y;
-	float top = 1.0 - UV.y;
+	float spd = mix(1.6, 8.0, hype) * (0.8 + 0.4 * h1(id + 3.1));
+	float amp = mix(0.0, 0.14, hype) * (0.5 + h1(id + 7.7)) * INSTANCE_CUSTOM.y;
 	float wave = sin(TIME * spd + ph);
 	VERTEX.y += max(0.0, wave) * amp;
-	VERTEX.x += sin(TIME * 1.3 + ph) * 0.05 * top;
+	VERTEX.x += sin(TIME * 1.1 + ph) * 0.03 * (1.0 - UV.y);
 	shirt = COLOR.rgb;
 	lit = INSTANCE_CUSTOM.z;
-	float variant = floor(INSTANCE_CUSTOM.x * 8.0 + 0.5);
-	if (INSTANCE_CUSTOM.w > 0.5 && hype > 0.45 && wave > 0.6 - hype) {
-		variant = 2.0;
+	// 2-frame cheer cycle: the cheer frame lands on the up-beat once the yard gets loud (more often and faster
+	// with hype); while it's calm, now and then a lone friend throws a fist up.
+	float frame = 0.0;
+	if (wave > 1.05 - hype * 1.5 * INSTANCE_CUSTOM.w) {
+		frame = 1.0;
 	}
-	UV.x = (UV.x + variant) * 0.125;
+	if (sin(TIME * (0.3 + 0.3 * h1(id + 5.3)) + ph * 3.0) > 0.98) {
+		frame = 1.0;
+	}
+	float person = floor(INSTANCE_CUSTOM.x * 8.0 + 0.5);
+	UV = vec2((UV.x + person) * 0.125, (UV.y + frame) * 0.5);
 }
 
 void fragment() {
 	vec4 t = texture(tex, UV);
-	float m = smoothstep(0.8, 0.97, min(t.r, min(t.g, t.b)));
-	float scr = step(0.85, t.g) * step(0.85, t.b) * step(t.r, 0.2);
-	vec3 c = mix(t.rgb, t.rgb * shirt, m) * (lit + hype * 0.25) * brightness;
-	c *= mix(1.08, 0.72, UV.y);  // soft top-lit gradient down each friend
-	c = mix(vec3(dot(c, vec3(0.299, 0.587, 0.114))), c, 0.8);  // ~20% desaturated
-	ALBEDO = mix(c, vec3(0.6, 0.72, 0.8), scr);
+	vec4 mk = texture(mask, UV);
+	vec3 c = mix(t.rgb, t.rgb * shirt * 1.3, mk.r);
+	c *= (lit + hype * 0.12) * brightness;
+	c *= mix(1.05, 0.85, fract(UV.y * 2.0));  // a touch darker toward the feet
+	float g = dot(c, vec3(0.299, 0.587, 0.114));
+	c = mix(vec3(g), c, 0.78) * vec3(1.04, 0.98, 0.9);  // ~20% desaturated, pulled toward the sepia grade
+	ALBEDO = mix(c, vec3(0.5, 0.66, 0.78), mk.g);
 	ALPHA = t.a;
 	ALPHA_SCISSOR_THRESHOLD = 0.5;
+}
+"""
+
+const BEAM_SHADER := """
+shader_type spatial;
+render_mode unshaded, blend_add, depth_draw_never, cull_disabled, shadows_disabled;
+
+void fragment() {
+	// UV.y runs 0 at the lamp to 1 at the far end; fade along the beam and toward the silhouette edges.
+	float along = 1.0 - UV.y;
+	float facing = abs(dot(normalize(NORMAL), normalize(VIEW)));
+	ALBEDO = vec3(1.0, 0.9, 0.7) * 0.07 * along * along * facing;
 }
 """
 
@@ -821,137 +842,402 @@ func _text_w(text: String, sc: float) -> float:
 	return text.length() * 4.0 * sc - sc
 
 
-func _fr(img: Image, x: float, y: float, w: float, h: float, c: Color) -> void:
-	# A crowd-atlas rect in 1x cell coordinates, painted soft at 2x.
-	_soft_rect(img, x * 2.0, y * 2.0, w * 2.0, h * 2.0, c, 1.0, 0.8)
+# ---- crowd atlas painter: soft-shaded, PS2-era painted billboards (no pixel blocks)
+# Everything is painted with anti-aliased capsules / ellipses / rounded torsos, each shaded as if it were a
+# rounded volume lit from the upper left, into float buffers (fast) that become the colour + mask atlases.
+var _cb := PackedFloat32Array()    # colour atlas, rgba
+var _cmk := PackedFloat32Array()   # mask atlas: tint, glow
+var _co := Vector2i.ZERO           # origin of the cell being painted
+var _cclip := false                # when true, only paint over pixels that are already covered
+const CROWD_LIGHT := Vector3(-0.42, -0.5, 0.757)
 
 
-func _fan_head(img: Image, ox: int, y: int, skin: Color, hair: Color) -> void:
-	_soft_dot(img, (ox + 8) * 2.0, (y + 3.5) * 2.0, 6.2, 7.2, skin, 1.0, 1.0)
-	_soft_dot(img, (ox + 8) * 2.0, (y + 0.6) * 2.0, 6.4, 3.6, hair, 1.0, 1.0)
-	_fr(img, ox + 5, y + 1, 1, 2, hair)
-	_fr(img, ox + 10, y + 1, 1, 2, hair)
-	_soft_dot(img, (ox + 6.5) * 2.0, (y + 3.5) * 2.0, 0.9, 0.9, skin.darkened(0.6), 1.0, 0.8)
-	_soft_dot(img, (ox + 9.5) * 2.0, (y + 3.5) * 2.0, 0.9, 0.9, skin.darkened(0.6), 1.0, 0.8)
-	_fr(img, ox + 7, y + 5, 2, 1, skin.darkened(0.3))
+func _cpx(x: int, y: int, col: Color, cov: float, shade: float, tint: float, glow: float) -> void:
+	if x < 0 or y < 0 or x >= CROWD_CELL.x or y >= CROWD_CELL.y:
+		return
+	var p := (y + _co.y) * CROWD_ATLAS.x + x + _co.x
+	var i := p * 4
+	var oa: float = _cb[i + 3]
+	if _cclip:
+		cov *= clampf(oa * 2.0 - 1.0, 0.0, 1.0)
+	var a := cov * col.a
+	if a <= 0.004:
+		return
+	var na := a + oa * (1.0 - a)
+	var wn := a / na
+	var wo := 1.0 - wn
+	_cb[i] = col.r * shade * wn + _cb[i] * wo
+	_cb[i + 1] = col.g * shade * wn + _cb[i + 1] * wo
+	_cb[i + 2] = col.b * shade * wn + _cb[i + 2] * wo
+	_cb[i + 3] = na
+	var j := p * 2
+	_cmk[j] = lerpf(_cmk[j], tint, a)
+	_cmk[j + 1] = lerpf(_cmk[j + 1], glow, a)
 
 
-func _make_crowd_texture() -> ImageTexture:
-	# 256x64 atlas: eight 32x64 painted friends (laid out in 16x32 cells at 2x). Pure-white areas are the shirt/hoodie
-	# (tinted per instance), pure cyan is a glowing phone screen.
-	var img := Image.create_empty(256, 64, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0.08, 0.08, 0.09, 0))
-	var white := Color(1, 1, 1)
-	var screen := Color(0, 1, 1)
-	var skins: Array[Color] = [Color(0.86, 0.68, 0.54), Color(0.52, 0.36, 0.25), Color(0.76, 0.58, 0.45), Color(0.38, 0.26, 0.18),
-		Color(0.8, 0.63, 0.5), Color(0.6, 0.42, 0.31), Color(0.84, 0.66, 0.53), Color(0.45, 0.31, 0.22)]
-	var hairs: Array[Color] = [Color(0.24, 0.16, 0.09), Color(0.06, 0.06, 0.06), Color(0.6, 0.5, 0.25), Color(0.1, 0.07, 0.05),
-		Color(0.36, 0.22, 0.12), Color(0.08, 0.06, 0.05), Color(0.5, 0.3, 0.15), Color(0.1, 0.08, 0.06)]
-	var jeans := Color(0.2, 0.25, 0.38)
-	var dark := Color(0.12, 0.12, 0.13)
-	var cup := Color(0.65, 0.18, 0.16)
-	for v in 8:
-		var ox := v * 16
-		var skin: Color = skins[v]
-		var hair: Color = hairs[v]
-		var pants: Color = jeans if v % 2 == 0 else dark
-		if v == FAN_SIT or v == FAN_SIT_CUP:
-			# Sitting: lower head, short torso, knees toward the viewer, shins down.
-			_fr(img, ox + 7, 17, 2, 1, skin)
-			_fr(img, ox + 4, 18, 8, 6, white)
-			_fr(img, ox + 3, 24, 10, 3, pants)
-			_fr(img, ox + 4, 27, 3, 4, pants)
-			_fr(img, ox + 9, 27, 3, 4, pants)
-			_fr(img, ox + 4, 31, 3, 1, dark)
-			_fr(img, ox + 9, 31, 3, 1, dark)
-			_fr(img, ox + 2, 18, 2, 3, white)
-			_fr(img, ox + 12, 18, 2, 3, white)
-			_fr(img, ox + 2, 21, 2, 3, skin)
-			_fr(img, ox + 12, 21, 2, 3, skin)
-			if v == FAN_SIT:
-				_fr(img, ox + 4, 10, 1, 6, white)
-				_fr(img, ox + 11, 10, 1, 6, white)
-				_fan_head(img, ox, 10, skin, hair)
-				_fr(img, ox + 5, 9, 6, 2, white)  # hood
-			else:
-				_fan_head(img, ox, 10, skin, hair)
-				_fr(img, ox + 12, 19, 2, 3, cup)
-				_fr(img, ox + 4, 8, 8, 2, Color(0.2, 0.24, 0.42))  # beanie
+func _cshade(n: Vector2) -> float:
+	var nz := sqrt(maxf(0.0, 1.0 - n.length_squared()))
+	var d := maxf(0.0, n.x * CROWD_LIGHT.x + n.y * CROWD_LIGHT.y + nz * CROWD_LIGHT.z)
+	return 0.5 + 0.56 * d
+
+
+func _cc(a: Vector2, b: Vector2, ra: float, rb: float, col: Color, tint := 0.0, glow := 0.0) -> void:
+	# Tapered capsule (a limb): shaded like a cylinder with round ends.
+	var r := maxf(ra, rb)
+	var x0 := maxi(0, int(floorf(minf(a.x, b.x) - r - 1.0)))
+	var x1 := mini(CROWD_CELL.x - 1, int(ceilf(maxf(a.x, b.x) + r + 1.0)))
+	var y0 := maxi(0, int(floorf(minf(a.y, b.y) - r - 1.0)))
+	var y1 := mini(CROWD_CELL.y - 1, int(ceilf(maxf(a.y, b.y) + r + 1.0)))
+	var ab := b - a
+	var l2 := maxf(ab.length_squared(), 0.0001)
+	for y in range(y0, y1 + 1):
+		for x in range(x0, x1 + 1):
+			var p := Vector2(x + 0.5, y + 0.5)
+			var t := clampf((p - a).dot(ab) / l2, 0.0, 1.0)
+			var dv := p - (a + ab * t)
+			var rr := lerpf(ra, rb, t)
+			var cov := clampf(rr - dv.length() + 0.5, 0.0, 1.0)
+			if cov > 0.0:
+				_cpx(x, y, col, cov, _cshade(dv / maxf(rr, 0.01)), tint, glow)
+
+
+func _ce(c: Vector2, rx: float, ry: float, col: Color, tint := 0.0, glow := 0.0, ymax := 999.0, flat := false) -> void:
+	# Shaded ellipse (heads, hands, shoes, knees). ymax clips it from below (hair caps, hats).
+	var x0 := maxi(0, int(floorf(c.x - rx - 1.0)))
+	var x1 := mini(CROWD_CELL.x - 1, int(ceilf(c.x + rx + 1.0)))
+	var y0 := maxi(0, int(floorf(c.y - ry - 1.0)))
+	var y1 := mini(CROWD_CELL.y - 1, int(ceilf(minf(c.y + ry, ymax) + 1.0)))
+	var rm := minf(rx, ry)
+	for y in range(y0, y1 + 1):
+		for x in range(x0, x1 + 1):
+			var n := Vector2((x + 0.5 - c.x) / rx, (y + 0.5 - c.y) / ry)
+			var cov := clampf((1.0 - n.length()) * rm + 0.5, 0.0, 1.0) * clampf(ymax - (y + 0.5) + 0.5, 0.0, 1.0)
+			if cov > 0.0:
+				_cpx(x, y, col, cov, 1.0 if flat else _cshade(n * 0.95), tint, glow)
+
+
+func _ctorso(cx: float, top: float, bot: float, sw: float, ww: float, col: Color, tint := 0.0) -> void:
+	# Rounded trapezoid torso: shoulders half-width sw tapering to ww at the hem, round shoulders,
+	# shaded as a horizontal cylinder with a little top light.
+	var rad := 6.0
+	for y in range(maxi(0, int(top) - 1), mini(CROWD_CELL.y - 1, int(ceilf(bot)) + 1) + 1):
+		var py := y + 0.5
+		var t := clampf((py - top) / maxf(bot - top, 1.0), 0.0, 1.0)
+		var hw := lerpf(sw, ww, t)
+		var dt := py - top
+		if dt < rad:
+			var k := rad - dt
+			hw -= rad - sqrt(maxf(0.0, rad * rad - k * k))
+		var vcov := clampf(py - top + 0.5, 0.0, 1.0) * clampf(bot - py + 0.5, 0.0, 1.0)
+		if hw <= 0.0 or vcov <= 0.0:
 			continue
-		# Standing body
-		_fr(img, ox + 7, 10, 2, 1, skin)
-		_fr(img, ox + 4, 11, 8, 10, white)
-		_fr(img, ox + 4, 21, 8, 2, pants)
-		_fr(img, ox + 4, 23, 3, 8, pants)
-		_fr(img, ox + 9, 23, 3, 8, pants)
-		_fr(img, ox + 4, 31, 3, 1, dark)
-		_fr(img, ox + 9, 31, 3, 1, dark)
-		_fan_head(img, ox, 3, skin, hair)
-		var left_down := true
-		var right_down := true
-		match v:
-			FAN_HOODIE:
-				_fr(img, ox + 5, 1, 6, 2, white)
-				_fr(img, ox + 4, 2, 1, 8, white)
-				_fr(img, ox + 11, 2, 1, 8, white)
-				_fr(img, ox + 6, 13, 4, 3, Color(0.88, 0.88, 0.88))  # pocket
-				_fr(img, ox + 7, 11, 1, 3, dark)  # drawstrings
-				_fr(img, ox + 9, 11, 1, 3, dark)
-			FAN_CAP:
-				_fr(img, ox + 4, 1, 8, 2, Color(0.12, 0.12, 0.14))
-				_fr(img, ox + 2, 2, 3, 1, Color(0.12, 0.12, 0.14))  # backwards brim
-				_fr(img, ox + 6, 14, 4, 3, Color(0.6, 0.25, 0.22))  # tee print
-			FAN_CHEER:
-				_fr(img, ox + 2, 1, 2, 9, skin)
-				_fr(img, ox + 12, 1, 2, 9, skin)
-				_fr(img, ox + 2, 10, 2, 2, white)
-				_fr(img, ox + 12, 10, 2, 2, white)
-				_fr(img, ox + 7, 8, 2, 1.5, Color(0.25, 0.08, 0.07))  # yelling
-				left_down = false
-				right_down = false
-			FAN_PHONE:
-				_fr(img, ox + 2, 5, 2, 6, skin)
-				_fr(img, ox + 2, 11, 2, 2, white)
-				_fr(img, ox + 1, 0, 4, 6, dark)
-				_fr(img, ox + 2, 1, 2, 4, screen)
-				left_down = false
-			FAN_CUP:
-				_fr(img, ox + 4, 1, 8, 3, Color(0.55, 0.38, 0.16))  # beanie
-				_fr(img, ox + 12, 11, 2, 3, white)
-				_fr(img, ox + 12, 14, 2, 3, skin)
-				_fr(img, ox + 12, 15, 3, 4, cup)
-				right_down = false
-			_:  # long hair, flannel-ish stripes
-				_fr(img, ox + 4, 2, 1, 9, hair)
-				_fr(img, ox + 11, 2, 1, 9, hair)
-				for yy in range(12, 21, 3):
-					_fr(img, ox + 4, yy, 8, 1, Color(0.8, 0.8, 0.8))
-		if left_down:
-			_fr(img, ox + 2, 11, 2, 3, white)
-			_fr(img, ox + 2, 14, 2, 6, skin)
-		if right_down:
-			_fr(img, ox + 12, 11, 2, 3, white)
-			_fr(img, ox + 12, 14, 2, 6, skin)
-	# Soft painted shading: top-lit fall-off and a darker rim on every figure (kept at 32x64 per friend).
-	var nz := _noise_img(256, 64, 0.2, 2, false)
-	for y in 64:
-		for x in 256:
-			var c := img.get_pixel(x, y)
-			if c.a <= 0.0:
-				continue
-			var edge := 1.0
-			for d: Vector2i in [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1)]:
-				var q := Vector2i(clampi(x + d.x, 0, 255), clampi(y + d.y, 0, 63))
-				if img.get_pixel(q.x, q.y).a < 0.5:
-					edge = 0.8
-			var keep_white := c.r > 0.97 and c.g > 0.97 and c.b > 0.97
-			var keep_screen := c.g > 0.97 and c.b > 0.97 and c.r < 0.03
-			if keep_white or keep_screen:
-				continue
-			var k := edge * (0.92 + nz.get_pixel(x, y).r * 0.16)
-			img.set_pixel(x, y, Color(c.r * k, c.g * k, c.b * k, c.a))
+		for x in range(maxi(0, int(cx - hw) - 1), mini(CROWD_CELL.x - 1, int(cx + hw) + 1) + 1):
+			var dx := x + 0.5 - cx
+			var cov := clampf(hw - absf(dx) + 0.5, 0.0, 1.0) * vcov
+			if cov > 0.0:
+				var ny := lerpf(-0.45, 0.2, t)
+				_cpx(x, y, col, cov, _cshade(Vector2(dx / hw * 0.9, ny)), tint, 0.0)
+
+
+func _crect(x: float, y: float, w: float, h: float, col: Color, glow := 0.0) -> void:
+	for yy in range(maxi(0, int(y) - 1), mini(CROWD_CELL.y - 1, int(y + h) + 1) + 1):
+		for xx in range(maxi(0, int(x) - 1), mini(CROWD_CELL.x - 1, int(x + w) + 1) + 1):
+			var cx := clampf(minf(xx + 1.0, x + w) - maxf(float(xx), x), 0.0, 1.0)
+			var cy := clampf(minf(yy + 1.0, y + h) - maxf(float(yy), y), 0.0, 1.0)
+			if cx * cy > 0.0:
+				_cpx(xx, yy, col, cx * cy, 1.0, 0.0, glow)
+
+
+# Arm poses for the screen-left arm, relative to its shoulder: [elbow, hand]. The right arm mirrors x.
+const ARM_POSES := {
+	"down": [Vector2(-3, 18), Vector2(-2, 36)],
+	"pocket": [Vector2(-3, 17), Vector2(6, 28)],
+	"fist_up": [Vector2(-5, -10), Vector2(-3, -25)],
+	"v_up": [Vector2(-8, -9), Vector2(-13, -23)],
+	"pump": [Vector2(-9, 9), Vector2(-7, -6)],
+	"phone_up": [Vector2(-8, 12), Vector2(-4, -3)],
+	"phone_high": [Vector2(-6, -10), Vector2(-4, -25)],
+	"phone_chest": [Vector2(-1, 18), Vector2(8, 13)],
+	"cup_low": [Vector2(-3, 17), Vector2(1, 30)],
+	"cup_up": [Vector2(-6, -10), Vector2(-4, -25)],
+	"crossed": [Vector2(-1, 16), Vector2(18, 15)],
+	"clap": [Vector2(-6, -10), Vector2(8, -27)],
+	"knees": [Vector2(-3, 16), Vector2(4, 33)],
+}
+
+
+func _paint_arm(sh: Vector2, side: float, pose: String, sleeve: Color, tint: float, long_sleeve: bool, skin: Color, prop: String) -> void:
+	var pz: Array = ARM_POSES[pose]
+	var e0: Vector2 = pz[0]
+	var h0: Vector2 = pz[1]
+	var el := sh + Vector2(e0.x * side, e0.y)
+	var hd := sh + Vector2(h0.x * side, h0.y)
+	# Upper arm is always sleeved (tees have short sleeves to mid upper arm).
+	if long_sleeve:
+		_cc(sh, el, 4.4, 3.7, sleeve, tint)
+		_cc(el, hd.lerp(el, 0.12), 3.7, 3.1, sleeve, tint)
+		_cc(hd.lerp(el, 0.12), hd, 2.4, 2.2, skin)
+	else:
+		_cc(sh, el, 3.6, 3.1, skin)
+		_cc(el, hd, 2.8, 2.3, skin)
+		_cc(sh, sh.lerp(el, 0.5), 4.6, 4.0, sleeve, tint)
+	if prop == "cup":
+		_cc(hd + Vector2(0, -5.5), hd + Vector2(0, 1.5), 2.7, 2.0, Color(0.72, 0.13, 0.11))
+		_ce(hd + Vector2(0, -6.2), 2.7, 0.9, Color(0.9, 0.88, 0.84), 0.0, 0.0, 999.0, true)
+	elif prop == "phone":
+		_crect(hd.x - 2.6, hd.y - 8.5, 5.2, 8.5, Color(0.1, 0.1, 0.11))
+		_crect(hd.x - 1.8, hd.y - 7.7, 3.6, 6.4, Color(0.3, 0.34, 0.38))
+		_crect(hd.x + 0.6, hd.y - 7.4, 0.9, 0.9, Color(0.95, 0.95, 0.9))  # camera lens / flash
+	elif prop == "screen":
+		_crect(hd.x - 3.2, hd.y - 4.4, 6.4, 4.2, Color(0.08, 0.08, 0.09))
+		_crect(hd.x - 2.6, hd.y - 4.0, 5.2, 3.2, Color(0.6, 0.8, 0.95), 1.0)
+	if pose != "pocket":
+		_ce(hd, 2.7, 2.9, skin)
+		_cc(hd + Vector2(-1.4 * side, -1.2), hd + Vector2(-1.4 * side, 1.0), 0.6, 0.6, skin.darkened(0.25))  # knuckle line
+
+
+func _paint_head(hc: Vector2, p: Dictionary, frame: int) -> void:
+	var skin: Color = p["skin"]
+	var hair: Color = p["hair"]
+	var style: String = p["hair_style"]
+	var hat: String = p["hat"]
+	var hat_col: Color = p["hat_col"]
+	_cc(hc + Vector2(0, 5), hc + Vector2(0, 11), 3.3, 3.5, skin.darkened(0.22))  # neck, in the jaw's shadow
+	if style == "long":
+		_ce(hc + Vector2(0, 4.5), 8.2, 12.5, hair.darkened(0.15))
+	_ce(hc + Vector2(-6.2, 0.8), 1.6, 2.4, skin.darkened(0.08))  # ears
+	_ce(hc + Vector2(6.2, 0.8), 1.6, 2.4, skin.darkened(0.08))
+	_ce(hc, 6.1, 7.6, skin)
+	_ce(hc + Vector2(0, 4.4), 4.6, 3.0, skin.darkened(0.06))  # jaw / chin plane
+	# Hair
+	var hcol := hair
+	if style == "buzz":
+		hcol = hair.lerp(skin, 0.45)
+	if style != "bald" and hat == "none":
+		_ce(hc + Vector2(0, -1.6), 6.6, 6.8, hcol, 0.0, 0.0, hc.y - 2.4)
+		_cc(hc + Vector2(-5.9, -2.2), hc + Vector2(-5.6, 1.4), 1.0, 0.8, hcol)  # sideburns
+		_cc(hc + Vector2(5.9, -2.2), hc + Vector2(5.6, 1.4), 1.0, 0.8, hcol)
+		if style == "long":
+			_cc(hc + Vector2(-5.8, -3.0), hc + Vector2(-7.0, 12.0), 2.2, 2.6, hair)
+			_cc(hc + Vector2(5.8, -3.0), hc + Vector2(7.0, 12.0), 2.2, 2.6, hair)
+			_ce(hc + Vector2(-2.0, -3.4), 4.2, 2.6, hair)  # side-swept fringe
+	elif style == "bald":
+		_ce(hc + Vector2(-2.0, -4.2), 2.0, 1.4, skin.lightened(0.18))  # scalp highlight
+	# Face
+	var dark := Color(0.07, 0.05, 0.05, 0.9)
+	var brow := Color(hair.darkened(0.3).r, hair.darkened(0.3).g, hair.darkened(0.3).b, 0.75)
+	_ce(hc + Vector2(-2.4, 0.9), 1.05, 0.85, dark)
+	_ce(hc + Vector2(2.4, 0.9), 1.05, 0.85, dark)
+	_cc(hc + Vector2(-3.7, -0.9), hc + Vector2(-1.2, -1.2), 0.55, 0.5, brow)
+	_cc(hc + Vector2(1.2, -1.2), hc + Vector2(3.7, -0.9), 0.5, 0.55, brow)
+	var nose := skin.darkened(0.3)
+	nose.a = 0.55
+	_ce(hc + Vector2(0.7, 3.1), 1.0, 1.5, nose)
+	var yell: bool = frame == 1 or p.get("yell", false)
+	if yell:
+		_ce(hc + Vector2(0, 5.3), 1.7, 1.5, Color(0.22, 0.06, 0.05))
+	else:
+		var lip := skin.darkened(0.42)
+		lip.a = 0.8
+		_cc(hc + Vector2(-1.7, 5.2), hc + Vector2(1.7, 5.2), 0.55, 0.55, lip)
+	# Hats
+	if hat == "cap":
+		_ce(hc + Vector2(0, -2.0), 6.9, 6.0, hat_col, 0.0, 0.0, hc.y - 2.0)
+		_ce(hc + Vector2(0, -1.6), 7.6, 1.7, hat_col.darkened(0.3))  # brim toward us
+		var shadow := Color(0, 0, 0, 0.3)
+		_ce(hc + Vector2(0, 0.6), 5.4, 1.4, shadow)
+	elif hat == "cap_back":
+		_ce(hc + Vector2(0, -6.8), 4.2, 1.5, hat_col.darkened(0.3))
+		_ce(hc + Vector2(0, -2.0), 6.9, 6.0, hat_col, 0.0, 0.0, hc.y - 2.6)
+		_crect(hc.x - 1.6, hc.y - 4.6, 3.2, 1.6, Color(0.1, 0.1, 0.1, 0.6))  # snapback strap hole
+	elif hat == "beanie":
+		_ce(hc + Vector2(0, -2.4), 7.0, 7.2, hat_col, 0.0, 0.0, hc.y - 1.4)
+		_cc(hc + Vector2(-6.4, -2.2), hc + Vector2(6.4, -2.2), 1.6, 1.6, hat_col.darkened(0.14))
+
+
+func _paint_person(p: Dictionary, frame: int) -> void:
+	var seated: bool = p["seated"]
+	var skin: Color = p["skin"]
+	var top: String = p["top"]
+	var top_col: Color = p["top_col"]
+	var tint: float = 1.0 if p["tint"] else 0.0
+	var pants: Color = p["pants"]
+	var shoes: Color = p["shoes"]
+	var sw: float = p.get("sw", 12.0)
+	var arms: Array = p["arms"]
+	var props: Array = p["props"]
+	var dy := 30.0 if seated else 0.0
+	if frame == 1 and p.get("hop", false):
+		dy -= 3.0
+	var garment := Color(0.8, 0.8, 0.8) if p["tint"] else top_col
+	if top == "jacket" or top == "flannel":
+		garment = top_col   # the jacket keeps its colour; the tee under it takes the tint
+		tint = 0.0
+	# Legs
+	var sole := Color(0.86, 0.84, 0.8)
+	if seated:
+		for s: float in [-1.0, 1.0]:
+			var kx := 32.0 + 7.0 * s
+			_cc(Vector2(kx, 101), Vector2(kx, 119), 4.4, 3.6, pants)
+			_ce(Vector2(kx + 0.6 * s, 122.5), 4.6, 3.0, shoes)
+			_cc(Vector2(kx - 3.8, 124.8), Vector2(kx + 4.6, 124.8), 0.9, 0.9, sole)
+	else:
+		_ce(Vector2(32, 68 + dy), sw - 1.8, 5.2, pants)
+		for s: float in [-1.0, 1.0]:
+			var lx := 32.0 + (sw * 0.47) * s
+			_cc(Vector2(lx, 64 + dy), Vector2(lx + 0.4 * s, 93 + dy), 5.9, 4.9, pants)
+			_cc(Vector2(lx + 0.4 * s, 93 + dy), Vector2(lx + 0.6 * s, 119 + dy), 4.9, 4.1, pants)
+			var fo := Vector2(lx + 1.0 * s, 122.5 + dy)
+			_ce(fo, 4.5, 2.9, shoes)
+			_cc(fo + Vector2(-4.0, 2.2), fo + Vector2(4.0, 2.2), 0.9, 0.9, sole)
+	# Body
+	var tt := 27.0 + dy
+	var tb := (90.0 if seated else 66.0) + (2.0 if top == "hoodie" else 0.0) + (dy if not seated else 0.0)
+	if seated:
+		tb = 91.0
+	if top == "hoodie":
+		_cc(Vector2(25, tt + 0.5), Vector2(39, tt + 0.5), 3.6, 3.6, garment, tint)  # the hood around the neck
+	_ctorso(32.0, tt, tb, sw, sw - 1.6, garment, tint)
+	_cclip = true
+	if top == "hoodie":
+		_ce(Vector2(32, tb - 10), 7.5, 4.6, garment.darkened(0.14), tint)           # kangaroo pocket
+		_cc(Vector2(23, tb - 1.5), Vector2(41, tb - 1.5), 1.7, 1.7, garment.darkened(0.12), tint)  # hem band
+		_cc(Vector2(30, tt + 2), Vector2(29.6, tt + 12), 0.5, 0.5, Color(0.9, 0.9, 0.88))  # drawstrings
+		_cc(Vector2(34, tt + 2), Vector2(34.4, tt + 12), 0.5, 0.5, Color(0.9, 0.9, 0.88))
+	elif top == "tee":
+		_ce(Vector2(32, tt + 1.0), 3.8, 1.8, skin.darkened(0.15))  # neck opening
+		var print_col: Color = p.get("print", Color(0.85, 0.82, 0.75))
+		_ce(Vector2(32, tt + 14), 4.6, 3.6, print_col, 0.0, 0.0, 999.0, true)
+		_cc(Vector2(25, tt + 20), Vector2(28, tt + 31), 0.6, 0.6, Color(0, 0, 0, 0.2))   # cloth folds
+		_cc(Vector2(39, tt + 20), Vector2(36, tt + 31), 0.6, 0.6, Color(0, 0, 0, 0.2))
+	else:  # jacket / flannel open over a tinted tee
+		_ctorso(32.0, tt + 1.0, tb, 3.4, 4.0, Color(0.8, 0.8, 0.8), 1.0)
+		if top == "flannel":
+			for k in 7:
+				var xx := 22.0 + k * 3.4
+				_cc(Vector2(xx, tt), Vector2(xx, tb), 0.7, 0.7, Color(0.1, 0.05, 0.05, 0.45))
+			for k in 8:
+				var yy := tt + 2.0 + k * 5.0
+				_cc(Vector2(20, yy), Vector2(44, yy), 0.9, 0.9, Color(0.1, 0.05, 0.05, 0.4))
+			_ctorso(32.0, tt + 1.0, tb, 3.4, 4.0, Color(0.8, 0.8, 0.8), 1.0)
+		_cc(Vector2(28.2, tt + 1), Vector2(28.0, tb), 0.6, 0.6, top_col.darkened(0.45))   # jacket edges
+		_cc(Vector2(35.8, tt + 1), Vector2(36.0, tb), 0.6, 0.6, top_col.darkened(0.45))
+		_cc(Vector2(26, tt), Vector2(29.5, tt + 7), 1.3, 0.8, top_col.lightened(0.1))      # collar
+		_cc(Vector2(38, tt), Vector2(34.5, tt + 7), 1.3, 0.8, top_col.lightened(0.1))
+	_cclip = false
+	if seated:
+		# Thighs coming toward us, knees up
+		for s: float in [-1.0, 1.0]:
+			var kx := 32.0 + 7.0 * s
+			_cc(Vector2(32.0 + 5.0 * s, 89), Vector2(kx, 98), 6.0, 5.4, pants)
+			_ce(Vector2(kx, 99), 5.2, 4.0, pants.lightened(0.06))
+	_paint_head(Vector2(32, 16 + dy), p, frame)
+	# Arms (drawn last: in front of the body)
+	var long_sleeve := top != "tee"
+	var sy := 31.0 + dy
+	var pose_l: String = arms[frame * 2]
+	var pose_r: String = arms[frame * 2 + 1]
+	var prop_l: String = props[frame * 2]
+	var prop_r: String = props[frame * 2 + 1]
+	_paint_arm(Vector2(32.0 - sw + 1.6, sy), 1.0, pose_l, garment, tint, long_sleeve, skin, prop_l)
+	_paint_arm(Vector2(32.0 + sw - 1.6, sy), -1.0, pose_r, garment, tint, long_sleeve, skin, prop_r)
+
+
+func _crowd_people() -> Array:
+	var none := ["none", "none", "none", "none"]
+	return [
+		{"seated": false, "skin": Color(0.72, 0.52, 0.38), "hair": Color(0.07, 0.06, 0.05), "hair_style": "short",
+			"hat": "none", "hat_col": Color.BLACK, "top": "hoodie", "top_col": Color.WHITE, "tint": true,
+			"pants": Color(0.25, 0.32, 0.45), "shoes": Color(0.86, 0.85, 0.82),
+			"arms": ["pocket", "pocket", "fist_up", "pocket"], "props": none},
+		{"seated": false, "skin": Color(0.36, 0.24, 0.17), "hair": Color(0.05, 0.04, 0.04), "hair_style": "short",
+			"hat": "cap", "hat_col": Color(0.16, 0.2, 0.36), "top": "tee", "top_col": Color.WHITE, "tint": true,
+			"print": Color(0.82, 0.62, 0.2), "pants": Color(0.15, 0.15, 0.16), "shoes": Color(0.22, 0.22, 0.24),
+			"arms": ["down", "phone_up", "v_up", "phone_high"], "props": ["none", "phone", "none", "phone"]},
+		{"seated": false, "skin": Color(0.86, 0.68, 0.56), "hair": Color(0.32, 0.2, 0.11), "hair_style": "short",
+			"hat": "none", "hat_col": Color.BLACK, "top": "jacket", "top_col": Color(0.3, 0.2, 0.14), "tint": true,
+			"pants": Color(0.55, 0.48, 0.35), "shoes": Color(0.3, 0.2, 0.14),
+			"arms": ["down", "cup_low", "pump", "cup_up"], "props": ["none", "cup", "none", "cup"]},
+		{"seated": false, "skin": Color(0.66, 0.46, 0.33), "hair": Color(0.15, 0.09, 0.06), "hair_style": "long",
+			"hat": "none", "hat_col": Color.BLACK, "top": "tee", "top_col": Color.WHITE, "tint": true, "sw": 10.6,
+			"print": Color(0.2, 0.2, 0.22), "pants": Color(0.45, 0.55, 0.68), "shoes": Color(0.88, 0.86, 0.84),
+			"arms": ["crossed", "crossed", "clap", "clap"], "props": none},
+		{"seated": false, "skin": Color(0.28, 0.18, 0.12), "hair": Color(0.04, 0.03, 0.03), "hair_style": "buzz",
+			"hat": "none", "hat_col": Color.BLACK, "top": "tee", "top_col": Color.WHITE, "tint": true, "sw": 13.6,
+			"print": Color(0.75, 0.2, 0.15), "pants": Color(0.42, 0.42, 0.44), "shoes": Color(0.6, 0.13, 0.1),
+			"yell": true, "hop": true, "arms": ["pump", "pump", "v_up", "v_up"], "props": none},
+		{"seated": true, "skin": Color(0.8, 0.6, 0.46), "hair": Color(0.45, 0.3, 0.15), "hair_style": "short",
+			"hat": "beanie", "hat_col": Color(0.3, 0.32, 0.36), "top": "hoodie", "top_col": Color.WHITE, "tint": true,
+			"pants": Color(0.18, 0.22, 0.32), "shoes": Color(0.75, 0.72, 0.66),
+			"arms": ["knees", "knees", "fist_up", "knees"], "props": none},
+		{"seated": true, "skin": Color(0.42, 0.28, 0.2), "hair": Color(0.05, 0.04, 0.04), "hair_style": "short",
+			"hat": "cap_back", "hat_col": Color(0.6, 0.15, 0.12), "top": "tee", "top_col": Color.WHITE, "tint": true,
+			"print": Color(0.85, 0.85, 0.8), "pants": Color(0.2, 0.2, 0.22), "shoes": Color(0.88, 0.86, 0.84),
+			"arms": ["knees", "knees", "fist_up", "cup_up"], "props": ["none", "cup", "none", "cup"]},
+		{"seated": false, "skin": Color(0.9, 0.74, 0.62), "hair": Color(0.62, 0.5, 0.28), "hair_style": "short",
+			"hat": "none", "hat_col": Color.BLACK, "top": "flannel", "top_col": Color(0.55, 0.14, 0.12), "tint": true,
+			"pants": Color(0.3, 0.36, 0.5), "shoes": Color(0.3, 0.28, 0.26),
+			"arms": ["down", "phone_chest", "fist_up", "phone_up"], "props": ["none", "screen", "none", "phone"]},
+	]
+
+
+func _make_crowd_textures() -> Array:
+	# Returns [colour atlas, mask atlas].
+	var n := CROWD_ATLAS.x * CROWD_ATLAS.y
+	_cb = PackedFloat32Array()
+	_cb.resize(n * 4)
+	_cb.fill(0.0)
+	_cmk = PackedFloat32Array()
+	_cmk.resize(n * 2)
+	_cmk.fill(0.0)
+	var people := _crowd_people()
+	for v in people.size():
+		for frame in 2:
+			_co = Vector2i(v * CROWD_CELL.x, frame * CROWD_CELL.y)
+			_paint_person(people[v], frame)
+	_co = Vector2i.ZERO
+	# Soft dark rim on every silhouette + a faint painterly grain, then pack to bytes.
+	var col := PackedByteArray()
+	col.resize(n * 4)
+	var msk := PackedByteArray()
+	msk.resize(n * 4)
+	var w := CROWD_ATLAS.x
+	for y in CROWD_ATLAS.y:
+		for x in w:
+			var p := y * w + x
+			var i := p * 4
+			var a: float = _cb[i + 3]
+			var k := 1.0
+			if a > 0.5:
+				var edge := 0
+				if x > 0 and _cb[i - 1] < 0.5:
+					edge += 1
+				if x < w - 1 and _cb[i + 7] < 0.5:
+					edge += 1
+				if y > 0 and _cb[i - w * 4 + 3] < 0.5:
+					edge += 1
+				if y < CROWD_ATLAS.y - 1 and _cb[i + w * 4 + 3] < 0.5:
+					edge += 1
+				k = (0.72 if edge > 0 else 1.0) * (0.95 + 0.1 * fposmod(sin(x * 12.9898 + y * 78.233) * 43758.5453, 1.0))
+				col[i] = int(clampf(_cb[i] * k, 0.0, 1.0) * 255.0)
+				col[i + 1] = int(clampf(_cb[i + 1] * k, 0.0, 1.0) * 255.0)
+				col[i + 2] = int(clampf(_cb[i + 2] * k, 0.0, 1.0) * 255.0)
+			else:
+				col[i] = 40
+				col[i + 1] = 34
+				col[i + 2] = 30
+			col[i + 3] = int(clampf(a, 0.0, 1.0) * 255.0)
+			msk[i] = int(clampf(_cmk[p * 2], 0.0, 1.0) * 255.0)
+			msk[i + 1] = int(clampf(_cmk[p * 2 + 1], 0.0, 1.0) * 255.0)
+			msk[i + 2] = 0
+			msk[i + 3] = 255
+	_cb = PackedFloat32Array()
+	_cmk = PackedFloat32Array()
+	var img := Image.create_from_data(CROWD_ATLAS.x, CROWD_ATLAS.y, false, Image.FORMAT_RGBA8, col)
 	img.generate_mipmaps()
-	return ImageTexture.create_from_image(img)
+	var mimg := Image.create_from_data(CROWD_ATLAS.x, CROWD_ATLAS.y, false, Image.FORMAT_RGBA8, msk)
+	mimg.generate_mipmaps()
+	return [ImageTexture.create_from_image(img), ImageTexture.create_from_image(mimg)]
 
 
 func _make_flash_texture() -> ImageTexture:
@@ -1044,14 +1330,32 @@ func _build_environment() -> void:
 
 	# The porch / patio lamp pools by the sliding door live in _build_yard_lights().
 
-	# Faint warm glow from the string lights hanging over the yard.
-	for p: Vector3 in [Vector3(0, 4.4, -7.0), Vector3(0, 4.4, -1.0)]:
-		var o := OmniLight3D.new()
-		o.position = p
-		o.omni_range = 7.0
-		o.light_energy = 0.45
-		o.light_color = Color(1.0, 0.78, 0.5)
-		add_child(o)
+	# Faint warm glow from the string lights hanging over the yard (one omni; it used to be two).
+	var sl := OmniLight3D.new()
+	sl.position = Vector3(0, 4.6, -4.0)
+	sl.omni_range = 9.0
+	sl.light_energy = 0.5
+	sl.light_color = Color(1.0, 0.78, 0.5)
+	add_child(sl)
+
+	# Second stage: a warm clamp flood on the right fence's string-light pole, aimed down at the grass half
+	# (front-right), so both halves of the yard have a lit pool, not just the patio.
+	var gp := Vector3(7.7, 4.6, 0.6)
+	var gaim := Vector3(2.2, 0.0, 2.3)
+	var gf := SpotLight3D.new()
+	gf.transform = Transform3D(Basis.looking_at(gaim - gp), gp)
+	gf.spot_angle = 38.0
+	gf.spot_angle_attenuation = 1.2
+	gf.spot_range = 14.0
+	gf.spot_attenuation = 0.5
+	gf.light_energy = 3.4
+	gf.light_specular = 0.6
+	gf.light_color = Color(1.0, 0.86, 0.64)
+	add_child(gf)
+	var ghead := _box(Vector3(0.4, 0.3, 0.26), Vector3.ZERO, Color(0.16, 0.16, 0.17))
+	ghead.transform = gf.transform
+	var glens := _box(Vector3(0.32, 0.22, 0.04), Vector3.ZERO, Color(1.0, 0.9, 0.7), true)
+	glens.transform = gf.transform * Transform3D(Basis(), Vector3(0, 0, -0.14))
 
 	camera = Camera3D.new()
 	camera.fov = 48
@@ -1813,16 +2117,42 @@ func _build_car() -> void:
 		for sz: float in [-1.35, 1.35]:
 			_scyl("flat", 0.33, 0.33, 0.24, xf * Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx * 1.38, 0.33, sz)), Color(0.03, 0.03, 0.03), 10)
 			_scyl("metal", 0.17, 0.17, 0.26, xf * Transform3D(Basis(Vector3.BACK, PI * 0.5), Vector3(sx * 1.38, 0.33, sz)), Color(0.5, 0.5, 0.52), 8)
-	var hp := xf * Vector3(0, 0.8, -2.3)
+	# Headlight beam raking low across the grass half of the yard (one spot for both lamps).
+	var hp := xf * Vector3(0, 0.75, -2.3)
+	var aim := Vector3(-4.5, 0.0, 1.4)
 	var head := SpotLight3D.new()
-	head.transform = Transform3D(Basis.looking_at(Vector3(-2.0, 0.0, 0.6) - hp), hp)
-	head.spot_angle = 30.0
-	head.spot_angle_attenuation = 1.1
-	head.spot_range = 13.0
-	head.spot_attenuation = 0.6
+	head.transform = Transform3D(Basis.looking_at(aim - hp), hp)
+	head.spot_angle = 25.0
+	head.spot_angle_attenuation = 0.9
+	head.spot_range = 16.0
+	head.spot_attenuation = 0.45
 	head.light_energy = 3.0
-	head.light_color = Color(1.0, 0.95, 0.8)
+	head.light_specular = 0.6
+	head.light_color = Color(1.0, 0.95, 0.82)
 	add_child(head)
+	# A faint additive cone so the beam itself reads in the night air.
+	var cone := CylinderMesh.new()
+	var beam_len := 9.0
+	cone.top_radius = 0.18
+	cone.bottom_radius = tan(deg_to_rad(18.0)) * beam_len
+	cone.height = beam_len
+	cone.radial_segments = 16
+	cone.rings = 1
+	cone.cap_top = false
+	cone.cap_bottom = false
+	var csh := Shader.new()
+	csh.code = BEAM_SHADER
+	var cmat := ShaderMaterial.new()
+	cmat.shader = csh
+	var beam := MeshInstance3D.new()
+	beam.mesh = cone
+	beam.material_override = cmat
+	beam.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var bdir := (aim - hp).normalized()
+	# The cylinder runs along +Y with its narrow end on top: point -Y down the beam.
+	var bb := Basis(Quaternion(Vector3.DOWN, bdir))
+	beam.transform = Transform3D(bb, hp + bdir * beam_len * 0.5)
+	add_child(beam)
 	# body 4.4 x 1.8 along x (bumpers to x 4.6), wheels out to z +-1.02
 	_add_perch("car hood", "car", Vector3(5.4, 0.95, 2.65), Vector3(4.15, 0.0, 2.65),
 		_footprint(Vector2(pos.x, pos.z), Vector2(2.3, 1.0), "THE CAR DOOR", "Car Door Crash", 250, "metal_hit"))
@@ -1901,9 +2231,10 @@ func _build_string_lights() -> void:
 
 # ---- the friends watching
 
-func _add_fan(p: Vector3, variant: int, lit := 0.5, bob := 1.0) -> void:
-	# p = feet position. The quad's +Z (its front) faces the broadcast camera side.
-	var s := randf_range(0.94, 1.06)
+func _add_fan(p: Vector3, person: int, lit := 0.5, bob := 1.0) -> void:
+	# p = feet position (for a seated friend: where the dangling feet end, ~0.53 below the seat).
+	# The quad's +Z (its front) faces the broadcast camera side.
+	var s := randf_range(0.95, 1.05)
 	var c := p + Vector3(0, 0.85 * s, 0)
 	var focus := Vector3(0, c.y, 9.0)
 	var away := c - focus
@@ -1911,55 +2242,62 @@ func _add_fan(p: Vector3, variant: int, lit := 0.5, bob := 1.0) -> void:
 	var tr := Transform3D(Basis(), c).looking_at(c + away, Vector3.UP)
 	tr.basis = tr.basis.scaled(Vector3(s, s, s))
 	_fan_xforms.append(tr)
-	var sitting := variant == FAN_SIT or variant == FAN_SIT_CUP
-	var cheer := 0.0 if sitting or randf() < 0.4 else 1.0
-	_fan_custom.append(Color(variant / 8.0, bob * (0.5 if sitting else 1.0), lit, cheer))
-	if variant == FAN_PHONE or randf() < 0.25:
-		crowd_spots.append(c + Vector3(0, 0.55 * s, 0))
+	var sitting := person == P_SIT or person == P_SIT_CUP
+	_fan_custom.append(Color(person / 8.0, bob * (0.4 if sitting else 1.0), lit, randf_range(0.55, 1.0)))
+	if person == P_FILMER or person == P_FLANNEL or randf() < 0.2:
+		crowd_spots.append(c + Vector3(0, (0.1 if sitting else 0.55) * s, 0))
 
 
-func _stand_variant() -> int:
-	var standing: Array[int] = [FAN_HOODIE, FAN_CAP, FAN_CHEER, FAN_PHONE, FAN_PHONE, FAN_CUP, FAN_CUP, FAN_HAIR]
+func _stand_person() -> int:
+	var standing: Array[int] = [P_HOODIE, P_FILMER, P_JACKET, P_GIRL, P_CHEER, P_FLANNEL, P_FILMER, P_HOODIE]
 	return standing[randi() % standing.size()]
 
 
 func _build_crowd() -> void:
-	# ~16 friends hanging around the yard: one MultiMesh of camera-facing painted quads.
+	# ~30 friends hanging around the yard: one MultiMesh of camera-facing painted billboards (64x128 per person).
 	_fan_xforms.clear()
 	_fan_custom.clear()
 	crowd_spots = PackedVector3Array()
-	# Nobody stands in the fighting area (x -7..7, z -5..5): friends crowd the back of the patio,
-	# the porch and its roof, peek over the side fences and hang out by the car.
-	# A smaller, sparser crowd (~40% of the old one) so it never competes with the fight.
-	for px: float in [-6.4, -5.0, -2.0, -1.2]:   # back of the patio; the sliding door stays visible
-		_add_fan(Vector3(px + randf_range(-0.15, 0.15), 0.015, randf_range(-5.8, -6.4)), _stand_variant(), 0.6)
-	_add_fan(Vector3(-5.58, 0.015, -6.35), FAN_SIT_CUP, 0.6)  # in a lawn chair
-	# Porch: two railing leaners and a couch sitter; two sitting on the step ends (scale reference)
-	for rx: float in [3.3, 5.0]:
-		_add_fan(Vector3(rx, 1.0, -6.05), _stand_variant(), 0.65)
-	_add_fan(Vector3(4.6, 1.0, HOUSE_Z + 0.95), FAN_SIT, 0.55)
-	_add_fan(Vector3(1.0, 0.5, -5.2), FAN_SIT_CUP, 0.6)
-	_add_fan(Vector3(2.2, 0.5, -5.2), FAN_SIT, 0.6)
-	# Up on the porch roof
-	_add_fan(Vector3(1.9, 3.58, -6.4), FAN_PHONE, 0.5, 1.4)
-	_add_fan(Vector3(4.6, 3.58, -6.4), FAN_SIT, 0.5, 1.4)
-	# Peeking over the side fences (standing on buckets)
-	for z: float in [-6.0, -2.6]:
-		_add_fan(Vector3(-FENCE_X - 0.45, 0.6, z + randf_range(-0.2, 0.2)), _stand_variant(), 0.42)
-	for z: float in [-4.6, -0.6]:
-		_add_fan(Vector3(FENCE_X + 0.45, 0.6, z + randf_range(-0.2, 0.2)), _stand_variant(), 0.42)
-	# By the car on the driveway
-	_add_fan(Vector3(9.4, 0.015, 0.7), FAN_PHONE, 0.5)
+	# Nobody stands in the fighting area (x -7..7, z -5..5) or on a perch top. Seated friends: feet 0.53 below the seat.
+	# Back of the patio (two in the lawn chairs); the sliding door (x -4.7..-2.1) mostly stays clear.
+	_add_fan(Vector3(-6.4, 0.015, -6.15), P_SIT, 0.6)
+	_add_fan(Vector3(-1.6, 0.015, -6.55), P_SIT_CUP, 0.6)
+	for spot: Vector3 in [Vector3(-6.95, 0, -5.75), Vector3(-5.1, 0, -6.0), Vector3(-5.8, 0, -7.25), Vector3(-2.15, 0, -5.95),
+			Vector3(-1.0, 0, -5.85), Vector3(-0.35, 0, -6.7), Vector3(-4.4, 0, -7.7)]:
+		_add_fan(spot + Vector3(randf_range(-0.1, 0.1), 0.015, randf_range(-0.1, 0.1)), _stand_person(), 0.6)
+	# Porch deck (top 1.0) behind the railing; one on the couch (seat ~1.45)
+	for spot: Vector3 in [Vector3(3.3, 1.0, -6.05), Vector3(5.0, 1.0, -6.1), Vector3(4.1, 1.0, -6.75), Vector3(0.5, 1.0, -6.3)]:
+		_add_fan(spot, _stand_person(), 0.62)
+	_add_fan(Vector3(4.3, 0.93, -7.6), P_SIT, 0.5)
+	# Sitting on the porch steps (second step, 0.5), at the ends so the climb up the middle stays free
+	_add_fan(Vector3(0.98, 0.0, -5.22), P_SIT_CUP, 0.6)
+	_add_fan(Vector3(2.22, 0.0, -5.22), P_SIT, 0.6)
+	# Up on the porch roof (3.58): one standing, one sitting on the front edge
+	_add_fan(Vector3(1.9, 3.58, -6.4), P_FILMER, 0.5, 1.4)
+	_add_fan(Vector3(4.6, 3.05, -5.35), P_SIT, 0.5, 1.2)
+	# Peeking over the side fences (standing on buckets); the shed blocks the left fence around z -1..1.8
+	for z: float in [-4.8, -3.0, 3.0, 4.6]:
+		_add_fan(Vector3(-FENCE_X - 0.45, 0.6, z + randf_range(-0.2, 0.2)), _stand_person(), 0.45)
+	for z: float in [-4.4, -1.2]:
+		_add_fan(Vector3(FENCE_X + 0.45, 0.6, z + randf_range(-0.2, 0.2)), _stand_person(), 0.45)
+	# The car (the hood is a perch): one on the trunk (0.95), one on the back edge of the roof (1.48)
+	_add_fan(Vector3(8.75, 0.42, 2.25), P_SIT_CUP, 0.55)
+	_add_fan(Vector3(8.05, 0.95, 3.05), P_SIT, 0.55)
+	# Standing around the driveway outside the gate
+	for spot: Vector3 in [Vector3(9.4, 0, 0.7), Vector3(10.2, 0, 1.7), Vector3(9.7, 0, 4.2), Vector3(8.2, 0, 5.0)]:
+		_add_fan(spot + Vector3(0, 0.015, 0), _stand_person(), 0.55)
 
 	var quad := QuadMesh.new()
 	quad.size = Vector2(0.85, 1.7)
 	var sh := Shader.new()
 	sh.code = CROWD_SHADER
+	var texs := _make_crowd_textures()
 	crowd_mat = ShaderMaterial.new()
 	crowd_mat.shader = sh
-	crowd_mat.set_shader_parameter("tex", _make_crowd_texture())
+	crowd_mat.set_shader_parameter("tex", texs[0])
+	crowd_mat.set_shader_parameter("mask", texs[1])
 	crowd_mat.set_shader_parameter("hype", 0.0)
-	crowd_mat.set_shader_parameter("brightness", 0.62)  # lit ~0.55 -> ~0.35: they never outshine the fighters
+	crowd_mat.set_shader_parameter("brightness", 0.6)  # ~25% under the fighters: they never outshine the fight
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
@@ -1967,9 +2305,10 @@ func _build_crowd() -> void:
 	mm.use_custom_data = true
 	mm.mesh = quad
 	mm.instance_count = _fan_xforms.size()
-	var palette: Array[Color] = [Color(0.7, 0.24, 0.22), Color(0.26, 0.36, 0.66), Color(0.75, 0.66, 0.3), Color(0.78, 0.78, 0.75),
-		Color(0.28, 0.52, 0.32), Color(0.45, 0.3, 0.6), Color(0.22, 0.22, 0.24), Color(0.72, 0.45, 0.2), Color(0.45, 0.45, 0.48),
-		Color(0.33, 0.25, 0.19), Color(0.16, 0.26, 0.2)]
+	# Street-clothes tints for the hoodie / tee (muted: heather grey, navy, maroon, olive, black, mustard, white...)
+	var palette: Array[Color] = [Color(0.62, 0.22, 0.2), Color(0.24, 0.32, 0.55), Color(0.7, 0.6, 0.3), Color(0.78, 0.78, 0.75),
+		Color(0.3, 0.42, 0.28), Color(0.4, 0.3, 0.5), Color(0.2, 0.2, 0.22), Color(0.66, 0.42, 0.2), Color(0.5, 0.5, 0.52),
+		Color(0.34, 0.26, 0.2), Color(0.18, 0.28, 0.24), Color(0.85, 0.83, 0.78)]
 	for i in _fan_xforms.size():
 		mm.set_instance_transform(i, _fan_xforms[i])
 		mm.set_instance_color(i, palette[randi() % palette.size()])
