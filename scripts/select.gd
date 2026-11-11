@@ -36,7 +36,7 @@ var t := 0.0
 var start_ms := 0
 var frames := 0
 var headless := false
-var input_lock := 0.0
+var lock_until_ms := 0      # wall clock: confirm/back ignored until then (also eats duplicate key events)
 var stick_armed := true
 var sel := 0                  # highlighted card (Roster.count() = RANDOM)
 var p1_idx := 0
@@ -179,6 +179,7 @@ func _ready() -> void:
 	if p2_idx == p1_idx:
 		p2_idx = (p1_idx + 1) % Roster.count()
 	sel = p1_idx
+	_lock(0.5)   # the title's confirm press must not also pick a fighter
 	font_b = FontVariation.new()
 	font_b.base_font = ThemeDB.fallback_font
 	font_b.variation_embolden = 1.1
@@ -201,7 +202,6 @@ func _process(delta: float) -> void:
 	var prev_t := t
 	t = float(Time.get_ticks_msec() - start_ms) / 1000.0
 	var dt := clampf(t - prev_t, 0.0, 0.1)
-	input_lock = maxf(0.0, input_lock - delta)
 
 	# Headless (CI smoke test): exercise the screen (models get built), then pick two of the
 	# new fighters and go on to the match so main.gd's roster path is exercised too.
@@ -210,6 +210,7 @@ func _process(delta: float) -> void:
 		if game != null:
 			game.set("p1_id", "booker")
 			game.set("p2_id", "starla")
+		print("select (headless): %d models built, on to the match" % models.size())
 		get_tree().change_scene_to_file(MATCH_SCENE)
 		return
 
@@ -286,7 +287,7 @@ func _input(event: InputEvent) -> void:
 		var code := k.physical_keycode
 		if k.echo:
 			dir = _key_dir(code)
-			if dir != 0 and input_lock <= 0.0:
+			if dir != 0 and not _locked():
 				_move_sel(dir)
 				get_viewport().set_input_as_handled()
 			return
@@ -319,10 +320,11 @@ func _input(event: InputEvent) -> void:
 				dir = 1 if jm.axis_value > 0.0 else -1
 	else:
 		return   # mouse / touch: the cards and buttons handle those
-	if input_lock > 0.0:
+	if _locked():
 		return
 	if dir != 0:
 		_move_sel(dir)
+		_lock(0.1)
 		get_viewport().set_input_as_handled()
 	elif confirm:
 		get_viewport().set_input_as_handled()
@@ -330,6 +332,14 @@ func _input(event: InputEvent) -> void:
 	elif back:
 		get_viewport().set_input_as_handled()
 		_back()
+
+
+func _lock(secs: float) -> void:
+	lock_until_ms = Time.get_ticks_msec() + int(secs * 1000.0)
+
+
+func _locked() -> bool:
+	return Time.get_ticks_msec() < lock_until_ms or frames < 3
 
 
 func _key_dir(code: int) -> int:
@@ -362,7 +372,7 @@ func _set_sel(i: int) -> void:
 
 
 func _on_card(i: int) -> void:
-	if headless or input_lock > 0.0 or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU):
+	if headless or _locked() or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU):
 		return
 	if i == sel:
 		_confirm()
@@ -371,13 +381,13 @@ func _on_card(i: int) -> void:
 
 
 func _on_confirm_btn() -> void:
-	if headless or input_lock > 0.0 or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU):
+	if headless or _locked() or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU):
 		return
 	_confirm()
 
 
 func _on_back_btn() -> void:
-	if headless or input_lock > 0.0 or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU):
+	if headless or _locked() or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU):
 		return
 	_back()
 
@@ -392,7 +402,7 @@ func _confirm() -> void:
 		if game != null:
 			game.set("p1_id", str(Roster.ROSTER[p1_idx]["id"]))
 		phase = Phase.PICK_CPU
-		input_lock = 0.2
+		_lock(0.35)
 		shake = maxf(shake, 0.5)
 		_snd("big_thud", -6.0)
 		_snd("cheer_small", -12.0)
@@ -424,7 +434,7 @@ func _confirm() -> void:
 func _back() -> void:
 	if phase == Phase.PICK_CPU:
 		phase = Phase.PICK_P1
-		input_lock = 0.15
+		_lock(0.35)
 		sel = p1_idx
 		_snd("whoosh", -8.0)
 		_show_model(sel)
