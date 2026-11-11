@@ -354,7 +354,7 @@ func _process(delta: float) -> void:
 		if frames == 20 and phase == Phase.HUB:
 			print("story (headless): %d chapters, starting chapter %d" % [chapters.size(), cur + 1])
 			_start_chapter(cur)
-		elif dlg != null and dlg.visible and frames % 4 == 0:
+		elif dlg != null and dlg.visible and frames % 2 == 0:
 			_dlg_advance(true)
 
 
@@ -769,7 +769,7 @@ func _show_title_card() -> void:
 	skip.reset_size()
 	skip.position = Vector2(vp.x - skip.size.x - 40, vp.y - 54)
 	var tw4 := create_tween()
-	tw4.tween_interval(2.4)
+	tw4.tween_interval(0.05 if headless else 2.4)
 	tw4.tween_callback(func():
 		if phase == Phase.CARD:
 			_card_done())
