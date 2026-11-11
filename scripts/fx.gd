@@ -614,6 +614,7 @@ func trail(node: Node3D, tint: Color) -> void:
 	t["tint"] = tint
 	# Callers run on physics ticks; a short hold keeps the trail steady on frames without one.
 	t["until"] = _clock + TRAIL_HOLD
+	t["req"] = true   # also counts on slow frames longer than the hold
 
 
 func speed_lines(amount: float) -> void:
@@ -710,7 +711,9 @@ func _update_trails(delta: float) -> void:
 		if not is_instance_valid(node) or not node.is_inside_tree():
 			drop.append(id)
 			continue
-		var on: bool = _clock <= float(t["until"])   # renewed by trail() while it should show
+		# renewed by trail() while it should show
+		var on: bool = bool(t.get("req", false)) or _clock <= float(t["until"])
+		t["req"] = false
 		var tint: Color = t["tint"]
 		var pts_l: PackedVector3Array = t["pts_l"]
 		var pts_r: PackedVector3Array = t["pts_r"]
@@ -792,10 +795,11 @@ func _ribbon_strip(pts: PackedVector3Array, ages: PackedFloat32Array, max_age: f
 
 
 func _update_speed_lines(real_dt: float) -> void:
+	# Read the request first: on slow frames real_dt can exceed the hold itself.
+	var want: float = _lines_amount
 	_lines_hold -= real_dt
 	if _lines_hold <= 0.0:
 		_lines_amount = 0.0
-	var want: float = _lines_amount
 	_lines_shown = lerpf(_lines_shown, want, clampf(real_dt * (10.0 if want > _lines_shown else 5.0), 0.0, 1.0))
 	if _lines_shown < 0.02 and want <= 0.0:
 		_lines_shown = 0.0
