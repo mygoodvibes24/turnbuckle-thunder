@@ -13,6 +13,7 @@ var pose := 1
 var group := 0
 var st := 0.3
 var view := 0
+var focus := -1
 var label: Label
 
 
@@ -83,6 +84,7 @@ func _input(ev: InputEvent) -> void:
 			KEY_C: st = 0.7
 			KEY_V: st = 1.6
 			KEY_E: view = (view + 1) % 4
+			KEY_N: focus = (focus + 2) % 9 - 1
 
 
 func _process(_dt: float) -> void:
@@ -125,8 +127,22 @@ func _process(_dt: float) -> void:
 			p.set("state", Wrestler.S.TIEUP_DEF)
 			p.set("state_time", st)
 			p.call("_update_pose", 0.05)
+	if focus >= 0:
+		group = int(focus / 4)
+		var f: Node3D = fighters[focus]
+		var c := f.position + (Vector3(0.45, 0, 0) if pose == 3 else Vector3.ZERO)
+		if pose == 5:
+			cam.position = c + Vector3(0.9, 2.2, 1.6)
+			cam.look_at(c + Vector3(0, 0.2, 0))
+		elif view == 2:
+			cam.position = c + Vector3(-0.6, 1.6, -2.3)
+			cam.look_at(c + Vector3(0, 1.2, 0))
+		else:
+			cam.position = c + Vector3(1.0, 1.6, 2.3)
+			cam.look_at(c + Vector3(0, 1.15, 0))
+		return
 	var span := spacing * 4.0
-	var d := span * 1.35 + 1.0
+	var d := span * 0.95 + 1.0
 	match view:
 		0:
 			cam.position = Vector3(0, 1.3, d)
