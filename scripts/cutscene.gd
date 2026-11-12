@@ -966,8 +966,12 @@ func _update_camera(dt: float) -> void:
 				var f := _face_of(subj)
 				var fwd: Vector3 = subj.global_basis.z
 				fwd.y = 0.0
-				var dir := (fwd.normalized() + Vector3(0, 0, 1.0)).normalized()
-				pos = f + dir * 1.35 + Vector3(0, 0.02, 0)
+				var dir := fwd.normalized() + Vector3(0, 0, 1.0)
+				if dir.length() < 0.6:
+					# facing away from the camera (knocking on a door): shoot from the side
+					dir = Vector3(signf(subj.global_position.x + 0.01) * 1.0, 0.0, 0.45)
+				dir = dir.normalized()
+				pos = f + dir * 1.45 + Vector3(0, 0.02, 0)
 				tgt = f - Vector3(0, 0.06, 0)
 				fov = 34.0
 		"over_shoulder":
@@ -980,14 +984,17 @@ func _update_camera(dt: float) -> void:
 				var side2 := Vector3(back.z, 0.0, -back.x)
 				if side2.z < 0.0:
 					side2 = -side2
-				pos = lh + back * 0.85 + side2 * 0.5 + Vector3(0, 0.08, 0)
+				pos = lh + back * 1.15 + side2 * 0.62 + Vector3(0, 0.14, 0)
 				tgt = f2 - Vector3(0, 0.1, 0)
 				fov = 38.0
 		"low_hero":
 			if subj != null:
 				var fwd2: Vector3 = subj.global_basis.z
 				fwd2.y = 0.0
-				var dir2 := (fwd2.normalized() + Vector3(0, 0, 1.3)).normalized()
+				var dir2 := fwd2.normalized() + Vector3(0, 0, 1.3)
+				if dir2.length() < 0.6:
+					dir2 = Vector3(1.0, 0.0, 0.5)
+				dir2 = dir2.normalized()
 				pos = subj.global_position + dir2 * 2.3 + Vector3(0, 0.42, 0)
 				tgt = subj.global_position + Vector3(0, 1.4, 0)
 				fov = 46.0
@@ -1027,9 +1034,9 @@ func _car_camera(s: String, subj: Node3D, oth: Node3D, anc: Dictionary) -> void:
 				var sx := signf(subj.global_position.x)
 				if s == "over_shoulder":
 					sx = -sx
-				pos = Vector3(f.x * 0.4 - sx * 0.25, f.y + (-0.25 if s == "low_hero" else 0.0), 1.2)
-				tgt = f - Vector3(0, 0.05, 0)
-				fov = 38.0
+				pos = Vector3(f.x * 0.4 - sx * 0.3, f.y + (-0.25 if s == "low_hero" else 0.02), 1.5)
+				tgt = f - Vector3(0, 0.1, 0)
+				fov = 40.0
 		"insert":
 			var ip: Vector3 = anc.get("insert", Vector3(-0.2, 0.95, 0.65))
 			pos = ip + Vector3(0.25, 0.25, -0.5)
@@ -1164,7 +1171,7 @@ func _animate_set(dt: float) -> void:
 	if an.has("tv_mat"):
 		var m: StandardMaterial3D = an["tv_mat"]
 		var fl := 0.8 + 0.25 * sin(clock * 13.0) * sin(clock * 3.7) + 0.15 * sin(clock * 29.0)
-		m.emission_energy_multiplier = 1.6 * fl
+		m.emission_energy_multiplier = 0.6 * fl
 		if an.has("tv_light"):
 			var tl: OmniLight3D = an["tv_light"]
 			tl.light_energy = 0.9 * fl
@@ -2038,7 +2045,7 @@ func _set_bedroom() -> void:
 	# dresser + CRT TV (right)
 	_box(Vector3(1.2, 0.8, 0.5), Vector3(2.5, 0.4, back + 0.6), _mat(Color(0.4, 0.27, 0.17)))
 	_box(Vector3(0.72, 0.56, 0.5), Vector3(2.4, 1.08, back + 0.62), _mat(Color(0.12, 0.12, 0.13), 0.5))
-	var scr := _emis(Color(0.45, 0.7, 1.0), 1.6)
+	var scr := _emis(Color(0.3, 0.5, 0.8), 0.6)
 	var s := _quad(Vector2(0.56, 0.42), Vector3(2.4, 1.09, back + 0.875), scr)
 	s.rotation.y = 0.0
 	_box(Vector3(0.32, 0.06, 0.24), Vector3(2.95, 0.83, back + 0.62), _mat(Color(0.2, 0.2, 0.22)))
@@ -2226,7 +2233,7 @@ func _set_store_lot() -> void:
 	_quad(Vector2(5.0, 4.4), Vector3(-5.0, 2.2, back), brick)
 	_quad(Vector2(3.6, 4.4), Vector3(5.8, 2.2, back), brick)
 	_quad(Vector2(16.0, 1.4), Vector3(0, 3.7, back + 0.001), brick)
-	var interior := _lit(Color(0.85, 0.95, 1.0), 1.3, "fixed")
+	var interior := _lit(Color(0.75, 0.85, 0.9), 0.45, "fixed")
 	_quad(Vector2(5.4, 3.0), Vector3(0.0, 1.5, back - 0.6), interior)
 	for i in 4:   # shelves silhouettes
 		_box(Vector3(1.2, 1.5, 0.3), Vector3(-1.9 + i * 1.3, 0.75, back - 0.4), _mat(Color(0.2, 0.22, 0.25)))
@@ -2396,14 +2403,17 @@ func _set_rooftop() -> void:
 	# skyline
 	var city := _ctex("city", _city_img)
 	var city_m := StandardMaterial3D.new()
-	city_m.albedo_color = Color(0.05, 0.05, 0.07)
+	city_m.albedo_color = Color(0.06, 0.065, 0.09)
 	city_m.emission_enabled = true
 	city_m.emission_texture = city
 	city_m.emission = Color(1, 1, 1)
-	city_m.emission_energy_multiplier = 1.4
+	city_m.emission_energy_multiplier = 0.7
 	city_m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-	city_m.uv1_scale = Vector3(2, 2, 1)
-	(_build_info["emis"] as Array).append([city_m, 1.4, "night"])
+	city_m.uv1_scale = Vector3(3, 5, 1)
+	city_m.uv1_triplanar = true
+	city_m.uv1_world_triplanar = true
+	city_m.uv1_scale = Vector3(0.06, 0.06, 0.06)
+	(_build_info["emis"] as Array).append([city_m, 0.7, "night"])
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 77
 	for i in 18:
@@ -2638,7 +2648,6 @@ func _relayout() -> void:
 		return
 	_update_view_size()
 	var vs := get_viewport().get_visible_rect().size
-	ui.size = vs
 	var s := clampf(minf(vs.x / 1280.0, vs.y / 720.0), 0.75, 1.5)
 	ui_scale = s
 	var m := 16.0 * s + 8.0
