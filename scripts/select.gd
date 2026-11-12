@@ -6,7 +6,8 @@ extends Node3D
 ## in the backyard at night, rendered through the same grade/bloom post pass, with the
 ## highlighted fighter's 3D model on a slow turntable. Over it: portrait cards (+ RANDOM),
 ## name / genre / bio, POWER-AIR-FLOW-GRIT bars, BACK and a big CONFIRM.
-## Step 1: PLAYER 1 picks. Step 2: the CPU OPPONENT (or RANDOM). Then a VS splash and the match.
+## Step 1: PLAYER 1 picks. Step 2: the CPU OPPONENT (or RANDOM). Step 3: the STAGE (a level from
+## scripts/levels/catalog.gd, or RANDOM; Game.level_id). Then a VS splash and the match.
 ## The picks go to the "Game" autoload (scripts/game_state.gd), so REMATCH keeps them.
 ## Keyboard (arrows/WASD, Enter/Space/J confirm, Esc/K back), gamepad (d-pad/stick, A/B) and
 ## touch (tap a card to highlight it, tap it again or CONFIRM to pick).
@@ -17,10 +18,11 @@ const Wrestler := preload("res://scripts/wrestler.gd")
 const Roster := preload("res://scripts/roster.gd")
 const Audio := preload("res://scripts/audio.gd")
 const Music := preload("res://scripts/music.gd")
+const Catalog := preload("res://scripts/levels/catalog.gd")
 const MATCH_SCENE := "res://main.tscn"
 const TITLE_SCENE := "res://title.tscn"
 
-enum Phase { PICK_P1, PICK_CPU, READY, LEAVING }
+enum Phase { PICK_P1, PICK_CPU, PICK_STAGE, READY, LEAVING }
 
 const GOLD := Color(1.0, 0.82, 0.12)
 const RED := Color(0.86, 0.12, 0.08)
@@ -203,13 +205,16 @@ func _process(delta: float) -> void:
 	t = float(Time.get_ticks_msec() - start_ms) / 1000.0
 	var dt := clampf(t - prev_t, 0.0, 0.1)
 
-	# Headless (CI smoke test): exercise the screen (models get built), then pick two of the
-	# new fighters and go on to the match so main.gd's roster path is exercised too.
+	# Headless (CI smoke test): exercise the screen (models get built) and the stage step, then
+	# pick two of the new fighters and go on to the match so main.gd's roster path is exercised too.
+	if headless and frames == 60 and phase != Phase.LEAVING:
+		_enter_stage()
 	if headless and frames == 90 and phase != Phase.LEAVING:
 		phase = Phase.LEAVING
 		if game != null:
 			game.set("p1_id", "booker")
 			game.set("p2_id", "starla")
+			game.set("level_id", "backyard")
 		print("select (headless): %d models built, on to the match" % models.size())
 		get_tree().change_scene_to_file(MATCH_SCENE)
 		return
@@ -358,6 +363,9 @@ func _snd(n: String, db := 0.0, var_amt := 0.05) -> void:
 
 
 func _move_sel(dir: int) -> void:
+	if phase == Phase.PICK_STAGE:
+		_set_stage(posmod(stage_sel + dir, stages.size() + 1))
+		return
 	_set_sel(posmod(sel + dir, Roster.count() + 1))
 
 
@@ -381,18 +389,21 @@ func _on_card(i: int) -> void:
 
 
 func _on_confirm_btn() -> void:
-	if headless or _locked() or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU):
+	if headless or _locked() or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU or phase == Phase.PICK_STAGE):
 		return
 	_confirm()
 
 
 func _on_back_btn() -> void:
-	if headless or _locked() or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU):
+	if headless or _locked() or not (phase == Phase.PICK_P1 or phase == Phase.PICK_CPU or phase == Phase.PICK_STAGE):
 		return
 	_back()
 
 
 func _confirm() -> void:
+	if phase == Phase.PICK_STAGE:
+		_confirm_stage()
+		return
 	var n := Roster.count()
 	var pick := sel
 	if phase == Phase.PICK_P1:
@@ -426,13 +437,23 @@ func _confirm() -> void:
 			game.set("p2_id", str(Roster.ROSTER[p2_idx]["id"]))
 		sel = p2_idx
 		_show_model(sel)
-		_refresh_info(false)
 		_refresh_cards()
-		_go_ready()
+		_snd("big_thud", -8.0)
+		_enter_stage()   # step 3: where the fight happens
 
 
 func _back() -> void:
-	if phase == Phase.PICK_CPU:
+	if phase == Phase.PICK_STAGE:
+		phase = Phase.PICK_CPU
+		_lock(0.35)
+		_leave_stage()
+		sel = p2_idx
+		_snd("whoosh", -8.0)
+		_show_model(sel)
+		_refresh_info(false)
+		_refresh_cards()
+		_relayout()
+	elif phase == Phase.PICK_CPU:
 		phase = Phase.PICK_P1
 		_lock(0.35)
 		sel = p1_idx
@@ -1419,6 +1440,12 @@ func _refresh_info(instant: bool) -> void:
 		head_label.text = "SELECT YOUR BRAWLER"
 		step_label.text = "PLAYER 1"
 		step_box.add_theme_stylebox_override("panel", _box_style(RED, Color(0.02, 0.02, 0.02), 6))
+	elif phase == Phase.PICK_STAGE:
+		var a: Dictionary = Roster.ROSTER[p1_idx]
+		var b: Dictionary = Roster.ROSTER[p2_idx]
+		head_label.text = "PICK THE SPOT"
+		step_label.text = "STAGE      %s  VS  %s" % [a["short_name"], b["short_name"]]
+		step_box.add_theme_stylebox_override("panel", _box_style(GOLD.darkened(0.25), Color(0.02, 0.02, 0.02), 6))
 	else:
 		var p1e: Dictionary = Roster.ROSTER[p1_idx]
 		head_label.text = "CHOOSE YOUR OPPONENT"
@@ -1531,8 +1558,11 @@ func _relayout() -> void:
 	card_row.scale = Vector2(k, k)
 	card_row.position = Vector2(ml + 4.0, vp.y - mb - CARD_H * k)
 
+	_relayout_stage(vp)
 	hint_label.reset_size()
 	hint_label.position = Vector2(ml, card_row.position.y - 40.0)
+	if phase == Phase.PICK_STAGE and stage_row != null:
+		hint_label.position = Vector2(ml, stage_row.position.y - 40.0)
 
 	info_box.reset_size()
 	info_box.position = Vector2(ml, mt + 100.0)
@@ -1552,3 +1582,385 @@ func _relayout() -> void:
 	loading_label.reset_size()
 	loading_label.position = Vector2(vp.x - mr - loading_label.size.x, vp.y - mb - loading_label.size.y)
 	_layout_cards()
+
+
+# ---------------------------------------------------------------- STAGE SELECT
+# Step 3 (after the CPU pick): where the fight happens. A card per level in
+# scripts/levels/catalog.gd (+ RANDOM); a level whose script is not there yet shows COMING SOON
+# and cannot be picked. The pick goes to Game.level_id (main.gd builds that level).
+
+const STAGE_W := 156.0
+const STAGE_H := 122.0
+const STAGE_GAP := 10.0
+const TIME_COLS := {"day": Color(0.98, 0.78, 0.25), "dusk": Color(0.98, 0.5, 0.22), "night": Color(0.35, 0.5, 1.0)}
+
+var stages: Array = []            # {"id", "name", "time", "desc", "color", "ok", "thumb"}
+var stage_sel := 0                # highlighted stage card (stages.size() = RANDOM)
+var stage_ui: Control
+var stage_dim: ColorRect
+var stage_row: Control
+var stage_cards: Array[Button] = []
+var stage_panel: VBoxContainer
+var stage_pic: TextureRect
+var stage_pic_frame: PanelContainer
+var stage_soon: Label
+var stage_name: Label
+var stage_time_box: PanelContainer
+var stage_time: Label
+var stage_desc: Label
+var random_thumb: ImageTexture
+
+
+## The stage list: catalog entries, overridden by each existing level script's own fields.
+func _load_stages() -> void:
+	stages.clear()
+	for e: Dictionary in Catalog.LEVELS:
+		var st := {"id": str(e["id"]), "name": str(e["name"]), "time": str(e["time"]),
+			"desc": str(e["desc"]), "color": e["color"], "ok": Catalog.available(str(e["id"]))}
+		if st["ok"]:
+			var scr = load(Catalog.script_path(str(e["id"])))
+			var lv = scr.new() if scr != null else null
+			if lv is Node:
+				for k: String in ["display_name", "description", "time_of_day", "preview_color"]:
+					var v: Variant = lv.get(k)
+					if v == null or (v is String and v == ""):
+						continue
+					match k:
+						"display_name":
+							if str(v) != "LEVEL":
+								st["name"] = str(v)
+						"description":
+							st["desc"] = str(v)
+						"time_of_day":
+							st["time"] = str(v)
+						"preview_color":
+							st["color"] = v
+				(lv as Node).free()
+			else:
+				st["ok"] = scr != null
+		st["thumb"] = _stage_thumb(st)
+		stages.append(st)
+	random_thumb = _stage_thumb({"id": "random", "time": "dusk", "color": Color(0.3, 0.3, 0.32)})
+	var cur := "backyard"
+	if game != null and "level_id" in game:
+		cur = str(game.get("level_id"))
+	stage_sel = 0
+	for i in stages.size():
+		if stages[i]["id"] == cur and stages[i]["ok"]:
+			stage_sel = i
+
+
+## A tiny painted postcard of the level: sky by time of day, a skyline / house silhouette row,
+## the ground in the level's preview colour (no render needed).
+func _stage_thumb(st: Dictionary) -> ImageTexture:
+	var w := 192
+	var h := 108
+	var img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
+	var tod := str(st.get("time", "night"))
+	var ground: Color = st.get("color", Color(0.3, 0.4, 0.2))
+	var top := Color(0.03, 0.04, 0.1)
+	var hor := Color(0.16, 0.1, 0.22)
+	if tod == "day":
+		top = Color(0.36, 0.58, 0.86)
+		hor = Color(0.86, 0.86, 0.8)
+	elif tod == "dusk":
+		top = Color(0.28, 0.17, 0.36)
+		hor = Color(0.98, 0.56, 0.26)
+	var horizon := int(h * 0.6)
+	for y in horizon:
+		img.fill_rect(Rect2i(0, y, w, 1), top.lerp(hor, pow(float(y) / horizon, 1.6)))
+	var rng := RandomNumberGenerator.new()
+	rng.seed = hash(str(st.get("id", "")))
+	if tod == "night":
+		for k in 26:
+			img.set_pixel(rng.randi_range(0, w - 1), rng.randi_range(0, horizon - 20), Color(0.9, 0.9, 1.0).darkened(rng.randf_range(0.0, 0.6)))
+	# Silhouettes along the horizon: tall blocks for the city levels, roofs for the house ones.
+	var sil := hor.lerp(Color(0.02, 0.02, 0.03), 0.82 if tod != "day" else 0.55)
+	var city := str(st.get("id", "")) in ["rooftop", "store_lot", "random"]
+	var x := -rng.randi_range(0, 12)
+	while x < w:
+		var bw := rng.randi_range(14, 34) if city else rng.randi_range(26, 46)
+		var bh := rng.randi_range(18, 52) if city else rng.randi_range(12, 26)
+		img.fill_rect(Rect2i(x, horizon - bh, bw, bh), sil)
+		if not city:   # gable roof
+			for r in bw / 2:
+				img.fill_rect(Rect2i(x + r, horizon - bh - (bw / 2 - r) / 2, bw - 2 * r, 1), sil)
+		if tod != "day":
+			for k in rng.randi_range(1, 5):
+				var wx := x + rng.randi_range(3, maxi(4, bw - 6))
+				var wy := horizon - bh + rng.randi_range(4, maxi(5, bh - 6))
+				img.fill_rect(Rect2i(wx, wy, 3, 3), Color(1.0, 0.8, 0.4) if rng.randf() < 0.8 else Color(0.5, 0.65, 1.0))
+		x += bw + rng.randi_range(0, 6)
+	# Ground: the level's colour, lit in a warm pool toward the middle, darker at the edges.
+	var lit := 1.0 if tod == "day" else 0.75
+	for y in range(horizon, h):
+		var f := float(y - horizon) / float(h - horizon)
+		for xx in w:
+			var dx := absf(float(xx) / w - 0.5) * 2.0
+			var pool := clampf(1.0 - dx * dx * 0.9, 0.0, 1.0) * (0.55 + 0.45 * f)
+			var c := ground.darkened(0.45).lerp(ground.lightened(0.12), pool * lit)
+			var n := rng.randf_range(-0.035, 0.035)
+			img.set_pixel(xx, y, Color(c.r + n, c.g + n, c.b + n))
+	return ImageTexture.create_from_image(img)
+
+
+func _build_stage_ui() -> void:
+	stage_ui = Control.new()
+	stage_ui.set_anchors_preset(Control.PRESET_FULL_RECT)
+	stage_ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_ui.visible = false
+	ui.add_child(stage_ui)
+	ui.move_child(stage_ui, 0)   # under the header, buttons, VS band and fade
+	stage_dim = ColorRect.new()
+	stage_dim.color = Color(0.02, 0.015, 0.03, 0.62)
+	stage_dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	stage_dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_ui.add_child(stage_dim)
+
+	stage_panel = VBoxContainer.new()
+	stage_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_panel.add_theme_constant_override("separation", 6)
+	stage_ui.add_child(stage_panel)
+	stage_name = _label("", font_i, 52, Color(0.97, 0.95, 0.9), 12)
+	stage_panel.add_child(stage_name)
+	stage_time_box = PanelContainer.new()
+	stage_time_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_time_box.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	stage_panel.add_child(stage_time_box)
+	stage_time = _label("", font_i, 22, Color(0.04, 0.03, 0.03), 0)
+	stage_time.add_theme_constant_override("shadow_offset_x", 0)
+	stage_time.add_theme_constant_override("shadow_offset_y", 0)
+	stage_time_box.add_child(stage_time)
+	stage_pic_frame = PanelContainer.new()
+	stage_pic_frame.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_pic_frame.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	var fsb := StyleBoxFlat.new()
+	fsb.bg_color = Color(0.02, 0.02, 0.03)
+	fsb.border_color = GOLD
+	fsb.set_border_width_all(4)
+	fsb.shadow_color = Color(0, 0, 0, 0.6)
+	fsb.shadow_size = 8
+	fsb.shadow_offset = Vector2(6, 6)
+	fsb.set_content_margin_all(4)
+	stage_pic_frame.add_theme_stylebox_override("panel", fsb)
+	stage_panel.add_child(stage_pic_frame)
+	stage_pic = TextureRect.new()
+	stage_pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_pic.custom_minimum_size = Vector2(384, 216)
+	stage_pic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	stage_pic.stretch_mode = TextureRect.STRETCH_SCALE
+	stage_pic.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	stage_pic_frame.add_child(stage_pic)
+	stage_soon = _label("COMING SOON", font_i, 40, GOLD, 10)
+	stage_soon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	stage_soon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	stage_soon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	stage_soon.rotation = -0.12
+	stage_pic.add_child(stage_soon)
+	stage_desc = _label("", font_b, 20, Color(0.92, 0.91, 0.88), 5)
+	stage_desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	stage_desc.custom_minimum_size = Vector2(520, 56)
+	stage_panel.add_child(stage_desc)
+
+	stage_row = Control.new()
+	stage_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stage_ui.add_child(stage_row)
+	stage_cards.clear()
+	for i in stages.size() + 1:
+		_build_stage_card(i)
+
+
+func _build_stage_card(i: int) -> void:
+	var b := Button.new()
+	b.focus_mode = Control.FOCUS_NONE
+	b.size = Vector2(STAGE_W, STAGE_H)
+	b.pivot_offset = Vector2(STAGE_W, STAGE_H) * 0.5
+	b.pressed.connect(_on_stage_card.bind(i))
+	stage_row.add_child(b)
+	stage_cards.append(b)
+	var is_random := i >= stages.size()
+	var st: Dictionary = {} if is_random else stages[i]
+	var pic := TextureRect.new()
+	pic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pic.position = Vector2(5, 5)
+	pic.size = Vector2(STAGE_W - 10, STAGE_H - 36)
+	pic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	pic.stretch_mode = TextureRect.STRETCH_SCALE
+	pic.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+	pic.texture = random_thumb if is_random else st["thumb"]
+	b.add_child(pic)
+	if is_random:
+		var q := _label("?", font_i, 60, GOLD, 10)
+		q.position = Vector2(0, 4)
+		q.size = Vector2(STAGE_W, STAGE_H - 40)
+		q.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		q.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		b.add_child(q)
+	elif not st["ok"]:
+		pic.modulate = Color(0.45, 0.45, 0.5)
+		var soon := _label("COMING\nSOON", font_i, 18, GOLD, 5)
+		soon.position = Vector2(0, 6)
+		soon.size = Vector2(STAGE_W, STAGE_H - 44)
+		soon.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		soon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		soon.rotation = -0.1
+		b.add_child(soon)
+	var strip := ColorRect.new()
+	strip.color = Color(0.02, 0.02, 0.03, 0.92)
+	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	strip.position = Vector2(5, STAGE_H - 32)
+	strip.size = Vector2(STAGE_W - 10, 27)
+	b.add_child(strip)
+	var title := "RANDOM" if is_random else str(st["name"])
+	var nl := _label(title, font_i, 14 if title.length() > 14 else 16, Color(0.97, 0.95, 0.9), 3)
+	nl.position = Vector2(4, STAGE_H - 32)
+	nl.size = Vector2(STAGE_W - 8, 26)
+	nl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	nl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	nl.clip_text = true
+	nl.add_theme_constant_override("shadow_offset_x", 1)
+	nl.add_theme_constant_override("shadow_offset_y", 1)
+	b.add_child(nl)
+
+
+func _stage_ok(i: int) -> bool:
+	return i >= stages.size() or bool(stages[i]["ok"])
+
+
+func _enter_stage() -> void:
+	phase = Phase.PICK_STAGE
+	_lock(0.35)
+	if stages.is_empty():
+		_load_stages()
+	if stage_ui == null:
+		_build_stage_ui()
+	stage_ui.visible = true
+	info_box.visible = false
+	card_row.visible = false
+	_refresh_info(false)
+	_refresh_stage(true)
+	_relayout()
+
+
+func _leave_stage() -> void:
+	if stage_ui != null:
+		stage_ui.visible = false
+	info_box.visible = true
+	card_row.visible = true
+
+
+func _on_stage_card(i: int) -> void:
+	if headless or _locked() or phase != Phase.PICK_STAGE:
+		return
+	if i == stage_sel:
+		_confirm()
+	else:
+		_set_stage(i)
+
+
+func _set_stage(i: int) -> void:
+	if i == stage_sel:
+		return
+	stage_sel = i
+	_snd("trick", -12.0, 0.0)
+	_refresh_stage(false)
+
+
+func _confirm_stage() -> void:
+	var pick := stage_sel
+	if pick >= stages.size():
+		var ok: Array[int] = []
+		for i in stages.size():
+			if stages[i]["ok"]:
+				ok.append(i)
+		pick = ok[randi() % ok.size()] if not ok.is_empty() else -1
+	elif not stages[pick]["ok"]:
+		shake = maxf(shake, 0.35)   # COMING SOON: shake and stay
+		_snd("whoosh", -8.0)
+		return
+	var id := "backyard" if pick < 0 else str(stages[pick]["id"])
+	if game != null:
+		game.set("level_id", id)
+	if pick >= 0 and pick != stage_sel:
+		stage_sel = pick       # RANDOM: show what it landed on
+		_refresh_stage(false)
+	_snd("big_thud", -6.0)
+	_leave_stage()
+	_refresh_cards()
+	_go_ready()
+	step_label.text = "STAGE:  " + ("THE BACKYARD" if pick < 0 else str(stages[pick]["name"]))
+	_relayout()
+
+
+func _refresh_stage(instant: bool) -> void:
+	if stage_ui == null:
+		return
+	var is_random := stage_sel >= stages.size()
+	var st: Dictionary = {} if is_random else stages[stage_sel]
+	if is_random:
+		stage_name.text = "RANDOM"
+		stage_time.text = "  ANYWHERE  "
+		stage_time_box.add_theme_stylebox_override("panel", _box_style(GOLD, Color(0.02, 0.02, 0.02), 6, 0.25))
+		stage_desc.text = "Can't decide? Let the block pick the spot."
+		stage_pic.texture = random_thumb
+		stage_soon.visible = false
+		stage_pic.modulate = Color(1, 1, 1)
+	else:
+		var tod := str(st["time"])
+		stage_name.text = str(st["name"])
+		stage_time.text = "  " + tod.to_upper() + "  "
+		var tc: Color = TIME_COLS.get(tod, GOLD)
+		stage_time_box.add_theme_stylebox_override("panel", _box_style(tc, Color(0.02, 0.02, 0.02), 6, 0.25))
+		stage_desc.text = str(st["desc"])
+		stage_pic.texture = st["thumb"]
+		stage_soon.visible = not st["ok"]
+		stage_pic.modulate = Color(1, 1, 1) if st["ok"] else Color(0.5, 0.5, 0.55)
+	if not instant:
+		stage_name.scale = Vector2(1.12, 1.12)
+		stage_name.pivot_offset = Vector2(0, 30)
+		var tw := create_tween()
+		tw.tween_property(stage_name, "scale", Vector2.ONE, 0.14)
+	for i in stage_cards.size():
+		var b := stage_cards[i]
+		var on := i == stage_sel
+		var col: Color = GOLD if i >= stages.size() else stages[i]["color"]
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.03, 0.03, 0.04, 0.92)
+		sb.border_color = GOLD if on else col.lightened(0.1)
+		sb.set_border_width_all(5 if on else 2)
+		sb.shadow_color = Color(0, 0, 0, 0.55)
+		sb.shadow_size = 6 if on else 2
+		sb.shadow_offset = Vector2(4, 4)
+		_style_button(b, sb)
+		b.modulate = Color(1, 1, 1) if (on or _stage_ok(i)) else Color(0.7, 0.7, 0.75)
+	_layout_stage_cards()
+
+
+func _layout_stage_cards() -> void:
+	for i in stage_cards.size():
+		var b := stage_cards[i]
+		var on := i == stage_sel
+		b.position = Vector2(i * (STAGE_W + STAGE_GAP), -12.0 if on else 0.0)
+		b.scale = Vector2(1.08, 1.08) if on else Vector2.ONE
+		b.z_index = 1 if on else 0
+
+
+func _relayout_stage(vp: Vector2) -> void:
+	if stage_ui == null:
+		return
+	var ml := margin.x
+	var mt := margin.y
+	var mb := margin.w
+	var row_w := stage_cards.size() * (STAGE_W + STAGE_GAP) - STAGE_GAP
+	var free_w := confirm_btn.position.x - 24.0 - ml
+	var k := clampf(free_w / row_w, 0.5, 1.2)
+	stage_row.scale = Vector2(k, k)
+	stage_row.position = Vector2(ml + 4.0, vp.y - mb - STAGE_H * k)
+	# Preview: as big as fits between the header and the card row.
+	var room := stage_row.position.y - 30.0 - (mt + 100.0) - 150.0
+	var ph := clampf(room, 110.0, 300.0)
+	stage_pic.custom_minimum_size = Vector2(ph * 16.0 / 9.0, ph)
+	stage_desc.custom_minimum_size = Vector2(minf(620.0, vp.x - ml - 340.0), 0)
+	stage_panel.reset_size()
+	stage_panel.position = Vector2(ml, mt + 92.0)
+	_layout_stage_cards()

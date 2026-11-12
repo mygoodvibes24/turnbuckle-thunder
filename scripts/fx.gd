@@ -312,7 +312,7 @@ func debris(pos: Vector3, strength: float, color: Color) -> void:
 func ground_hit(pos: Vector3, strength: float, surface: String) -> void:
 	var s: float = clampf(strength, 0.1, 1.5)
 	var p := Vector3(pos.x, MAT_Y + 0.02, pos.z)
-	if surface == "concrete":
+	if surface != "grass":   # concrete / asphalt / tile / gravel / wood (levels): grey dust and grit
 		dust(p, maxf(s, 0.6), DUST_CONCRETE)
 		var n: int = clampi(int(3.0 + 5.0 * s), 3, 9)
 		for k in n:

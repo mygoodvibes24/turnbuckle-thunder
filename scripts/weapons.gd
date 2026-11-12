@@ -13,7 +13,7 @@ extends Node3D
 ## where = world position) so main.gd can throw splinters / debris.
 signal broke(kind: String, where: Vector3)
 
-const YARD_BOUNDS := Rect2(-7.0, -5.0, 14.0, 10.0)  # fighting area x, z, w, d (main.gd yard_bounds)
+const YARD_BOUNDS := Rect2(-7.0, -5.0, 14.0, 10.0)  # fallback fighting area x, z, w, d (main.gd yard_bounds = the level's)
 const ITEM_MARGIN := 0.25      # floor items stay this far inside the yard bounds
 const TABLE_MARGIN := 0.95     # a set-up table (1.8 m long) stays fully inside the yard
 const TABLE_HEIGHT := 0.79     # top surface of a standing table (local y)
@@ -299,8 +299,9 @@ func _flat_dist(a: Vector3, b: Vector3) -> float:
 func _clamp_floor(p: Vector3, margin: float) -> Vector3:
 	# Onto the ground, inside the yard's fighting area (minus margin), and not inside a yard prop's
 	# footprint (main.gd perches[].footprint / obstacles): pushed out the shortest way.
-	var q := Vector2(clampf(p.x, YARD_BOUNDS.position.x + margin, YARD_BOUNDS.end.x - margin),
-		clampf(p.z, YARD_BOUNDS.position.y + margin, YARD_BOUNDS.end.y - margin))
+	var yb := _bounds()
+	var q := Vector2(clampf(p.x, yb.position.x + margin, yb.end.x - margin),
+		clampf(p.z, yb.position.y + margin, yb.end.y - margin))
 	var r := minf(margin, 0.5)
 	for fp: Dictionary in _footprints():
 		var c: Vector2 = fp["center"]
@@ -318,7 +319,7 @@ func _clamp_floor(p: Vector3, margin: float) -> Vector3:
 		var best := Vector2.ZERO
 		for o: Vector2 in [Vector2(ex - d.x, 0.0), Vector2(-ex - d.x, 0.0), Vector2(0.0, ez - d.y), Vector2(0.0, -ez - d.y)]:
 			var t: Vector2 = q + o
-			var inside := YARD_BOUNDS.grow(-margin * 0.5).has_point(t)
+			var inside := yb.grow(-margin * 0.5).has_point(t)
 			if inside and (best == Vector2.ZERO or o.length() < best.length()):
 				best = o
 		q += best
@@ -329,11 +330,27 @@ var _fps_cache: Array = []
 var _fps_ready := false
 
 
+## main.gd (ring_root's parent), or null when the items run without a match.
+func _main_node() -> Node:
+	var rr := get_parent()
+	return rr.get_parent() if rr != null else null
+
+
+## The active level's fighting area (main.gd yard_bounds), else the backyard's.
+func _bounds() -> Rect2:
+	var mn := _main_node()
+	if mn != null and "yard_bounds" in mn:
+		var r: Rect2 = mn.get("yard_bounds")
+		if r.size.x > 1.0 and r.size.y > 1.0:
+			return r
+	return YARD_BOUNDS
+
+
 func _footprints() -> Array:
 	# main.gd (ring_root's parent) owns the footprints; none before it has built the yard.
 	if _fps_ready:
 		return _fps_cache
-	var main_node = get_parent().get_parent() if get_parent() != null else null
+	var main_node = _main_node()
 	if main_node == null or not ("perches" in main_node) or (main_node.perches as Array).is_empty():
 		return _fps_cache
 	_fps_ready = true
@@ -425,8 +442,42 @@ func _break_item(it: Item) -> void:
 # ---------------------------------------------------------------- spawning
 
 func _spawn_all() -> void:
-	# Around the yard (yard_contract.md): two chairs near the patio, the trash can by the right
-	# fence, the 2x4 by the shed, the folded table leaning on the right fence.
+	# The level's item_spawns (main.gd copies them from scripts/levels/<id>.gd):
+	# [{"kind": "chair" | "trash_can" | "plank" | "table", "pos": Vector3, "yaw": float}]; a table
+	# leans folded (its top facing yaw) unless "standing": true. No list: the backyard's set.
+	var mn := _main_node()
+	var spawns: Array = []
+	if mn != null and "item_spawns" in mn:
+		spawns = mn.get("item_spawns")
+	if spawns.is_empty():
+		_spawn_default()
+		return
+	for sp in spawns:
+		if not (sp is Dictionary):
+			continue
+		var d: Dictionary = sp
+		var kind := str(d.get("kind", ""))
+		var pos: Vector3 = d.get("pos", Vector3.ZERO)
+		pos.y = 0.0
+		var yaw := float(d.get("yaw", 0.0))
+		match kind:
+			"chair":
+				_place_floor(_make_chair(), pos, yaw)
+			"trash_can":
+				_place_floor(_make_trash_can(), pos, yaw)
+			"plank":
+				_place_floor(_make_plank(), pos, yaw)
+			"table":
+				if bool(d.get("standing", false)):
+					set_up_table(_make_table(), pos, yaw)
+				else:
+					_lean_table(_make_table(), pos, Vector3(sin(yaw), 0.0, cos(yaw)))
+			_:
+				push_warning("weapons: unknown item kind '%s'" % kind)
+
+
+## The original backyard set (main.gd without a level list).
+func _spawn_default() -> void:
 	_place_floor(_make_chair(), Vector3(-0.7, 0.0, -3.6), PI * 0.3)  # well clear of the fight-start spots
 	_place_floor(_make_chair(), Vector3(-3.3, 0.0, -1.7), -PI * 0.2)
 	_place_floor(_make_trash_can(), Vector3(6.75, 0.0, -0.6), 0.0)

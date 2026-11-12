@@ -804,6 +804,11 @@ func _launch_match(i: int) -> void:
 		game.set("p1_id", "tank")
 		game.set("p2_id", _opp_id(i))
 		game.set("story_cpu_skill", float(m.get("cpu_skill", 0.3)))
+		# The chapter's fight location (a level id); a level not built yet = the backyard.
+		var loc := str(m.get("location", "backyard"))
+		if not ResourceLoader.exists("res://scripts/levels/" + loc + ".gd"):
+			loc = "backyard"
+		game.set("level_id", loc)
 		game.set("story_objective", str(m.get("objective", "Win the match")))
 		game.set("story_bonus", _bonus_of(i).duplicate())
 		game.set("story_result", {})

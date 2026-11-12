@@ -8,6 +8,10 @@ const Roster := preload("res://scripts/roster.gd")
 
 var p1_id := "tank"
 var p2_id := "peligro"   # the CPU opponent
+# Where the match is fought: scripts/levels/<level_id>.gd (levels_contract.md). The select
+# screen's STAGE step (versus) or the story chapter's match "location" sets it; main.gd falls
+# back to the backyard when that level's script does not exist (yet).
+var level_id := "backyard"
 
 # ---- STORY MODE (scripts/story.gd writes these before a story match; main.gd reads them).
 # story_active is false for QUICK BRAWL, so main.gd behaves exactly as before.

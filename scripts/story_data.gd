@@ -262,7 +262,7 @@ const CHAPTERS := [
 				],
 			},
 		],
-		"match": {"opponent": "razz", "cpu_skill": 0.37, "location": "backyard",
+		"match": {"opponent": "razz", "cpu_skill": 0.37, "location": "porch",
 			"objective": "Win the yard back from the Gutter Choir",
 			"bonus": {"text": "Break a table (Mom's old folding one... she said it's fine)", "type": "table_break", "count": 1, "cash": 40}},
 		"win": [
@@ -323,7 +323,7 @@ const CHAPTERS := [
 				],
 			},
 		],
-		"match": {"opponent": "starla", "cpu_skill": 0.44, "location": "backyard",
+		"match": {"opponent": "starla", "cpu_skill": 0.44, "location": "rooftop",
 			"objective": "Win the music-video fight. Make it look GOOD.",
 			"bonus": {"text": "Land 2 air tricks (Starla bet you can't fly)", "type": "air_tricks", "count": 2, "cash": 50}},
 		"win": [
@@ -388,7 +388,7 @@ const CHAPTERS := [
 				],
 			},
 		],
-		"match": {"opponent": "dusty", "cpu_skill": 0.5, "location": "backyard",
+		"match": {"opponent": "dusty", "cpu_skill": 0.5, "location": "store_lot",
 			"objective": "Win Rudy's Tuesday main event",
 			"bonus": {"text": "Dive off a high perch (Rudy pays extra for altitude, extra for altitude)", "type": "perch_dive", "count": 1, "cash": 60}},
 		"win": [
@@ -452,7 +452,7 @@ const CHAPTERS := [
 				],
 			},
 		],
-		"match": {"opponent": "halo", "cpu_skill": 0.57, "location": "backyard",
+		"match": {"opponent": "halo", "cpu_skill": 0.57, "location": "rooftop",
 			"objective": "Win the Vale Elite showcase",
 			"bonus": {"text": "Score 4,000 style points (Vale wants 'content')", "type": "style_score", "count": 4000, "cash": 80}},
 		"win": [
@@ -525,7 +525,7 @@ const CHAPTERS := [
 				],
 			},
 		],
-		"match": {"opponent": "booker", "cpu_skill": 0.64, "location": "backyard",
+		"match": {"opponent": "booker", "cpu_skill": 0.64, "location": "kitchen",
 			"objective": "Win for real. No dives. No deals.",
 			"bonus": {"text": "Hit your FRIDGE DROP twice. Your moves, your way.", "type": "signature", "count": 2, "cash": 75}},
 		"win": [
@@ -686,7 +686,7 @@ const CHAPTERS := [
 				],
 			},
 		],
-		"match": {"opponent": "halo", "cpu_skill": 0.8, "location": "backyard",
+		"match": {"opponent": "halo", "cpu_skill": 0.8, "location": "street",
 			"objective": "Main event: win your freedom in front of the whole block",
 			"bonus": {"text": "Score 6,000 style points. Give the block a SHOW.", "type": "style_score", "count": 6000, "cash": 250}},
 		"win": [
