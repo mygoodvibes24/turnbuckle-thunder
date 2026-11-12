@@ -331,7 +331,7 @@ func _cs_emote() -> float:
 			pt_hd.x += 0.1 * bite
 			return 1.0
 		"phone":
-			_reach(false, head.global_position + global_basis.x * 0.11 + Vector3(0, 0.05, 0), on)
+			_reach(false, head.global_position + global_basis.x * 0.1 + global_basis.z * 0.06 + Vector3(0, 0.02, 0), on)
 			pt_hd = Vector3(0.05, 0.12, -0.18 * on)
 			pt_al = Vector3(-0.55, 0.0, 0.25)
 			pt_el_l = Vector3(-1.9, 0.0, 0.0)
