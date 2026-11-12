@@ -74,7 +74,6 @@ func setup(p_main: Node3D, p_p1: Node3D, p_p2: Node3D) -> void:
 	if p1.has_signal("signature_started"):
 		p1.connect("signature_started", func(_nm): _on_signature())
 	_build_ui(objective)
-	print("story match: cpu skill %.2f, objective \"%s\", bonus %s" % [skill, objective, bonus_type])
 	# Test hook for the browser screenshot scripts: ?story_autowin in the page URL wins the
 	# match (with the bonus) after a few seconds, so the CONTINUE / payout flow can be checked.
 	if OS.has_feature("web"):

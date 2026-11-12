@@ -562,6 +562,9 @@ func _show_hub() -> void:
 	bg_time = "night"
 	if res_panel != null:
 		res_panel.visible = false
+	_fade_in()
+	if music != null and load_step > 3:
+		music.call("start")
 	list_box.visible = false
 	list_title.visible = false
 	menu_box.visible = true
@@ -707,8 +710,12 @@ func _start_chapter(i: int) -> void:
 	if chapters.is_empty():
 		return
 	cur = clampi(i, 0, chapters.size() - 1)
-	phase = Phase.CARD
 	_snd("punch", -2.0)
+	if not headless and ResourceLoader.exists(CUTSCENE_SCENE):
+		# The cutscene engine shows the chapter card itself, then plays the intro.
+		_play_scenes(_scenes_of(cur, "intro"), func(): _launch_match(cur), true)
+		return
+	phase = Phase.CARD
 	_snd("big_thud", -6.0)
 	_show_title_card()
 
@@ -884,6 +891,9 @@ func _show_result(won: bool, lines: Array, _res: Dictionary) -> void:
 	card.visible = false
 	if res_panel != null:
 		res_panel.queue_free()
+	_fade_in()
+	if music != null:
+		music.call("start")
 	res_panel = PanelContainer.new()
 	res_panel.add_theme_stylebox_override("panel", _panel_box(GOLD if won else RED))
 	var v := VBoxContainer.new()
@@ -977,61 +987,66 @@ func _sum_lines(lines: Array) -> float:
 
 # ---------------------------------------------------------------- cutscenes
 
-## Plays a SCENE list (story_schema.md): res://cutscene.tscn when it exists, else the placeholder.
-func _play_scenes(scenes: Array, done: Callable) -> void:
+## Plays a SCENE list (story_schema.md) with the cutscene engine (res://cutscene.tscn), or the
+## built-in placeholder player when it cannot be loaded (and when headless, to keep CI quick).
+## card = also show the engine's chapter card first (play() waits for it).
+func _play_scenes(scenes: Array, done: Callable, card := false) -> void:
 	after_scenes = done
+	if phase != Phase.RESULT:
+		phase = Phase.CUTSCENE
+	var cs := _new_cutscene()
+	if cs != null:
+		ui.visible = false
+		view_rect.visible = false
+		bg.visible = false
+		if music != null:
+			music.call("fade_out", 0.4)
+		add_child(cs)
+		cs.connect("finished", func(_skipped: bool): _on_cutscene_finished(cs), CONNECT_ONE_SHOT)
+		if card and cs.has_method("show_title_card"):
+			var ch := _ch(cur)
+			cs.call("show_title_card", str(ch.get("title", "CHAPTER %d" % (cur + 1))), str(ch.get("name", "")), str(ch.get("teaser", "")))
+		cs.call("play", scenes, cast)
+		return
 	if scenes.is_empty():
 		_scenes_finished()
 		return
-	phase = Phase.CUTSCENE if phase != Phase.RESULT else Phase.RESULT
-	if not headless and ResourceLoader.exists(CUTSCENE_SCENE):
-		var ps := load(CUTSCENE_SCENE) as PackedScene
-		if ps != null:
-			var cs: Node = ps.instantiate()
-			if cs.has_signal("finished") and _cutscene_play_method(cs) != "":
-				ui.visible = false
-				view_rect.visible = false
-				bg.visible = false
-				add_child(cs)
-				cs.connect("finished", func(): _on_cutscene_finished(cs), CONNECT_ONE_SHOT)
-				_cutscene_play(cs, scenes)
-				return
-			cs.free()
 	_dlg_start(scenes)
 
 
-func _cutscene_play_method(cs: Node) -> String:
-	for m in ["play", "play_scenes", "start"]:
-		if cs.has_method(m):
-			return m
-	return ""
-
-
-func _cutscene_play(cs: Node, scenes: Array) -> void:
-	var m := _cutscene_play_method(cs)
-	var argc := 1
-	var second := ""
-	for d: Dictionary in cs.get_method_list():
-		if str(d.get("name", "")) == m:
-			var args: Array = d.get("args", [])
-			argc = args.size()
-			if argc >= 2:
-				var a1: Dictionary = args[1]
-				second = str(a1.get("name", ""))
-	if argc == 0:
-		cs.set("scenes", scenes)
-		cs.call(m)
-	elif argc >= 2 and second.contains("cast"):
-		cs.call(m, scenes, cast)
-	else:
-		cs.call(m, scenes)
+func _new_cutscene() -> Node:
+	if headless or not ResourceLoader.exists(CUTSCENE_SCENE):
+		return null
+	var ps := load(CUTSCENE_SCENE) as PackedScene
+	if ps == null:
+		return null
+	var cs: Node = ps.instantiate()
+	if cs == null:
+		return null
+	if not cs.has_method("play") or not cs.has_signal("finished"):
+		cs.free()
+		return null
+	return cs
 
 
 func _on_cutscene_finished(cs: Node) -> void:
+	# The engine ends on black and stays alive: free it, keep the screen black behind it and
+	# let whatever comes next (match load / result panel) take over from there.
+	fade_rect.visible = true
+	fade_rect.color.a = 1.0
 	if is_instance_valid(cs):
 		cs.queue_free()
 	bg.visible = true
 	_scenes_finished()
+
+
+func _fade_in() -> void:
+	if fade_rect.visible and phase != Phase.LEAVING:
+		var tw := create_tween()
+		tw.tween_property(fade_rect, "color:a", 0.0, 0.35)
+		tw.tween_callback(func():
+			if phase != Phase.LEAVING:
+				fade_rect.visible = false)
 
 
 func _scenes_finished() -> void:

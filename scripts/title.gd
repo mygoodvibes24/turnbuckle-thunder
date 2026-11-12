@@ -217,7 +217,7 @@ func _process(delta: float) -> void:
 	# auto-advances into the match), so all three keep getting exercised by "Check for script errors".
 	if headless and frames == 150 and phase != Phase.LEAVING:
 		phase = Phase.LEAVING
-		get_tree().change_scene_to_file(STORY_SCENE)  # TEMP CI probe
+		get_tree().change_scene_to_file(SELECT_SCENE)
 		return
 
 	_staged_load()
