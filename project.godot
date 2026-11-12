@@ -5,7 +5,7 @@ config_version=5
 
 config/name="City 2 City Wrestling"
 config/description="Prototype 3D grappling wrestling game built for Xogot / Godot 4."
-run/main_scene="res://title.tscn"
+run/main_scene="res://dbg.tscn"
 config/features=PackedStringArray("4.4", "Mobile")
 config/icon="res://icon.svg"
 
