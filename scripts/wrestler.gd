@@ -1811,6 +1811,54 @@ var hand_r: Node3D  # right hand attach point (child of elbow_r): held items go 
 var hand_l: Node3D
 var finger_curl := 1.6        # fingers: 1.6 = fist ... 0.3 = open hand (see _apply_hands)
 var _hand_parts: Array = []   # per hand: [side, finger knuckle pivot, finger tip pivot, thumb pivot]
+var _shoulder_w := 0.2        # outer torso shell half-width at shoulder height (torso space)
+var _sh_bridges: Array = []   # per arm: [shoulder pivot, torso anchor, ball offset in pivot space, tube, radius]
+
+
+## Shoulder bridge: the rig's shoulder pivots sit wide (x 0.42) and the visible shoulder ball
+## hangs `inset` inboard of them, so any raise / spread of the arm would swing that ball away
+## from the chest. A cap of the same material is fixed on the torso edge (overlapping the shell)
+## and an open tube, re-aimed every frame (_update_shoulders), joins it to the arm's ball, so
+## the arm stays attached in every pose. bl = the arm's shoulder-ball centre in pivot space.
+func _shoulder_bridge(sh: Node3D, side: int, bl: Vector3, r: float, mat: Material, squash := Vector3(1.0, 0.9, 1.05)) -> void:
+	var b0 := sh.position + bl
+	var ax := minf(absf(b0.x), _shoulder_w + 0.12 * r)
+	var a := Vector3(ax * float(side), b0.y - 0.004, b0.z)
+	_ball(torso, r, a, mat, squash, 12)                                                         # cap on the torso edge
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 1.0
+	cyl.bottom_radius = 1.0
+	cyl.height = 1.0
+	cyl.radial_segments = 12
+	cyl.rings = 1
+	cyl.cap_top = false
+	cyl.cap_bottom = false
+	var tube := _add_mesh(torso, cyl, a, mat)
+	_sh_bridges.append([sh, a, bl, tube, r * 0.9])
+	_update_shoulders()
+
+
+## Re-aims the shoulder bridge tubes from the torso caps to the arms' shoulder balls.
+func _update_shoulders() -> void:
+	for e in _sh_bridges:
+		var sh: Node3D = e[0]
+		var a: Vector3 = e[1]
+		var bl: Vector3 = e[2]
+		var tube: MeshInstance3D = e[3]
+		var rr: float = e[4]
+		var d := sh.position + sh.basis * bl - a
+		var ln := d.length()
+		if ln < 0.004:
+			tube.visible = false
+			continue
+		tube.visible = true
+		var y := d / ln
+		var x := Vector3(0, 0, 1).cross(y)
+		if x.length_squared() < 0.01:
+			x = Vector3(1, 0, 0).cross(y)
+		x = x.normalized()
+		var z := x.cross(y)
+		tube.transform = Transform3D(Basis(x * rr, y * ln, z * rr), a + d * 0.5)
 
 
 func _build_body() -> void:
@@ -2009,6 +2057,8 @@ func _build_body() -> void:
 	_build_hat(hg)
 
 	# Arms: shoulder -> elbow -> hand
+	_shoulder_w = _ring_at(shell, 0.46).y
+	_sh_bridges.clear()
 	if ex_top:
 		arm_l = _build_arm_ex(-1, m, top, bulk, female)
 		arm_r = _build_arm_ex(1, m, top, bulk, female)
@@ -2223,6 +2273,8 @@ func _build_arm(side: int, m: Dictionary, top: String, bulk: float) -> Node3D:
 	var sh := _pivot(torso, Vector3(0.42 * s, 0.47, 0))
 	# slim upper arm slanting from a natural shoulder (inboard of the pivot) to the elbow
 	_ball(sh, 0.056 * k, Vector3(-0.112 * s, -0.014, 0.0), upper, Vector3(1.0, 1.05, 1.08), 12)    # deltoid
+	if sleeves == "none":
+		_shoulder_bridge(sh, side, Vector3(-0.112 * s, -0.014, 0.0), 0.056 * k, upper, Vector3(1.0, 1.05, 1.08))
 	_loft(sh, [Vector4(0.03, 0.052 * k, 0.055 * k, 0.0), Vector4(-0.06, 0.053 * k, 0.056 * k, 0.004),
 		Vector4(-0.16, 0.048 * k, 0.051 * k, 0.006), Vector4(-0.26, 0.043 * k, 0.046 * k, 0.003),
 		Vector4(-0.345, 0.04 * k, 0.042 * k, 0.0)], upper, true, true, Vector3.ZERO, 12,
@@ -2230,12 +2282,14 @@ func _build_arm(side: int, m: Dictionary, top: String, bulk: float) -> Node3D:
 	if top == "hoodie":
 		var su: Material = m["sleeve_up"]
 		_ball(sh, 0.082, Vector3(-0.106 * s, -0.01, 0.0), su, Vector3(1.0, 0.86, 1.05), 14)     # shoulder
+		_shoulder_bridge(sh, side, Vector3(-0.106 * s, -0.01, 0.0), 0.082, su, Vector3(1.0, 0.86, 1.05))
 		_loft(sh, [Vector4(0.03, 0.074, 0.078, 0.0), Vector4(-0.12, 0.08, 0.082, 0.006),
 			Vector4(-0.26, 0.077, 0.078, 0.006), Vector4(-0.38, 0.072, 0.074, 0.004)], su, false, false, Vector3.ZERO, 14,
 			PackedFloat32Array([-0.115 * s, -0.07 * s, -0.03 * s, 0.0]), 0.04, 5.0 + s)        # baggy upper sleeve
 	elif sleeves != "none":
 		var sl: Material = m["sleeve"]
 		_ball(sh, 0.086, Vector3(-0.108 * s, -0.008, 0.0), sl, Vector3(1.0, 0.8, 1.06), 14)      # dropped shoulder
+		_shoulder_bridge(sh, side, Vector3(-0.108 * s, -0.008, 0.0), 0.086, sl, Vector3(1.0, 0.8, 1.06))
 		_loft(sh, [Vector4(0.02, 0.086, 0.092, 0.0), Vector4(-0.08, 0.097, 0.1, 0.004),
 			Vector4(-0.19, 0.103, 0.106, 0.008)], sl, false, false, Vector3.ZERO, 14,
 			PackedFloat32Array([-0.112 * s, -0.086 * s, -0.056 * s]), 0.05, 3.0 + s)            # wide short sleeve
@@ -2290,6 +2344,7 @@ func _build_long_sleeve_arm(side: int, m: Dictionary, bulk: float) -> Node3D:
 	var skin: Material = m["skin"]
 	var sh := _pivot(torso, Vector3(0.42 * s, 0.47, 0))
 	_ball(sh, 0.082, Vector3(-0.106 * s, -0.01, 0.0), su, Vector3(1.0, 0.86, 1.05), 12)        # dropped shoulder
+	_shoulder_bridge(sh, side, Vector3(-0.106 * s, -0.01, 0.0), 0.082, su, Vector3(1.0, 0.86, 1.05))
 	_loft(sh, [Vector4(0.03, 0.074, 0.078, 0.0), Vector4(-0.06, 0.08, 0.082, 0.005), Vector4(-0.16, 0.079, 0.08, 0.006),
 		Vector4(-0.25, 0.074, 0.075, 0.004), Vector4(-0.3, 0.069, 0.07, 0.0), Vector4(-0.338, 0.058, 0.059, 0.0)],
 		su, false, true, Vector3.ZERO, 12, PackedFloat32Array([-0.115 * s, -0.088 * s, -0.058 * s, -0.025 * s, -0.006 * s, 0.0]),
@@ -3044,6 +3099,7 @@ func _build_arm_ex(side: int, m: Dictionary, top: String, bulk: float, female: b
 		_loft(sh, ua, upper, true, true, Vector3.ZERO, 12, _arm_xo(ua, inset, s))
 		var sl: Material = m["sl_short"]
 		_ball(sh, 0.068, Vector3(-inset * s, -0.006, 0.0), sl, Vector3(1.0, 0.85, 1.05), 14)
+		_shoulder_bridge(sh, side, Vector3(-inset * s, -0.006, 0.0), 0.068, sl, Vector3(1.0, 0.85, 1.05))
 		var sr := [Vector4(0.02, 0.068, 0.072, 0.0), Vector4(-0.07, 0.07, 0.073, 0.004), Vector4(-0.15, 0.066, 0.068, 0.006)]
 		_loft(sh, sr, sl, false, false, Vector3.ZERO, 14, _arm_xo(sr, inset, s), 0.03, 3.0 + s)              # fitted sleeve
 		_ball(el, 0.041 * k, Vector3(0, 0.0, -0.004), upper, Vector3.ONE, 10)
@@ -3067,6 +3123,8 @@ func _build_arm_ex(side: int, m: Dictionary, top: String, bulk: float, female: b
 		var sf: Material = m["sl_fore"]
 		var shb := 1.12 if top == "stage_top" else 1.0                                                     # padded glam shoulders
 		_ball(sh, 0.082 * r * shb, Vector3(-inset * s, -0.01 + 0.012 * (shb - 1.0), 0.0), su, Vector3(1.0, 0.86, 1.05), 12)
+		_shoulder_bridge(sh, side, Vector3(-inset * s, -0.01 + 0.012 * (shb - 1.0), 0.0), 0.082 * r * shb, su,
+			Vector3(1.0, 0.86, 1.05))
 		var up: Array = _bulked(SLEEVE_UP, r, r)
 		if puffer:
 			up = _resample(up, 0.03, -0.338, 21, 0.0, 0.14, 4.0)
@@ -9067,6 +9125,7 @@ func _apply_pose(delta: float) -> void:
 		pose_root.rotation = Vector3(lerpf(rr.x, pt_root_rot.x, kr),
 			lerp_angle(rr.y, pt_root_rot.y, kr), lerpf(rr.z, pt_root_rot.z, kr))
 		pose_root.position = pose_root.position.lerp(pt_root_pos, kr)
+	_update_shoulders()
 
 
 
