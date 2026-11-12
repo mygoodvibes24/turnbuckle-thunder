@@ -13,7 +13,7 @@ extends "res://scripts/levels/level_base.gd"
 
 const WALL_X := 6.4          # inner faces of the side walls
 const WALL_Z := -5.0         # inner face of the back wall
-const WALL_H := 3.0
+const WALL_H := 3.4
 const SPLIT_X := -0.3        # kitchen tile | living-room wood
 const FRONT_Z := 5.6         # front lip of the set floor
 const FRIDGE := Vector3(-5.9, 0.0, -4.62)   # fridge centre (floor), 0.84 x 1.8 x 0.74
@@ -120,8 +120,8 @@ func _tex_tile() -> ImageTexture:
 	var mot: Image = m._noise_img(n, n, 0.03, 3)
 	var grit: Image = m._noise_img(n, n, 0.45, 1)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
-	var cream := Color(0.8, 0.76, 0.64)
-	var red := Color(0.56, 0.3, 0.22)
+	var cream := Color(0.74, 0.7, 0.6)
+	var red := Color(0.5, 0.3, 0.24)
 	for y in n:
 		for x in n:
 			var t := 64
@@ -174,7 +174,7 @@ func _tex_oak() -> ImageTexture:
 			var f := fine.get_pixel((x / 5) % n, y).r
 			var ph := (y + w * 26.0) * 0.9
 			var grain := 0.5 + 0.5 * sin(ph) + (f - 0.5) * 0.5
-			var c := Color(0.64, 0.44, 0.25).darkened(grain * 0.16 - 0.04 + tones[row])
+			var c := Color(0.56, 0.41, 0.28).darkened(grain * 0.16 - 0.04 + tones[row])
 			c = c.lerp(Color(0.48, 0.3, 0.16), smoothstep(0.62, 0.85, w) * 0.4)
 			if ly == 0 or ly == 31:
 				c = c.darkened(0.45)
@@ -307,8 +307,8 @@ func _side_wall(key: String, sx: float, z0: float, z1: float, y0: float, y1: flo
 
 
 func _build_walls() -> void:
-	var kpaint := Color(1.0, 0.98, 0.86)     # kitchen: pale buttery wallpaper
-	var lpaper := Color(0.92, 0.86, 0.78)    # living room: the rose wallpaper
+	var kpaint := Color(0.86, 0.84, 0.74)     # kitchen: pale buttery wallpaper
+	var lpaper := Color(0.8, 0.74, 0.68)    # living room: the rose wallpaper
 	var trim := Color(0.95, 0.9, 0.82)
 	# Back wall: kitchen window x -3.2..-2.0 (y 1.45..2.2), stair opening x 3.9..5.1 (y 0..2.25).
 	_wall("k_paper", -WALL_X - 0.16, -3.2, 0.0, WALL_H, kpaint)
@@ -669,7 +669,7 @@ func _build_stairs() -> void:
 	m._bx("k_oak", Vector3(x1 - x0, 0.02, -back + WALL_Z), Vector3((x0 + x1) * 0.5, 0.0, (WALL_Z + back) * 0.5), Color(0.8, 0.7, 0.6))
 	for sx: float in [x0 - 0.06, x1 + 0.06]:
 		m._bx("k_paper", Vector3(0.12, WALL_H, -back + WALL_Z), Vector3(sx, WALL_H * 0.5, (WALL_Z + back) * 0.5), Color(0.78, 0.72, 0.64))
-	m._bx("k_paper", Vector3(x1 - x0 + 0.24, WALL_H + 1.5, 0.12), Vector3((x0 + x1) * 0.5, (WALL_H + 1.5) * 0.5, back - 0.06), Color(0.72, 0.66, 0.58))
+	m._bx("k_paper", Vector3(x1 - x0 + 0.24, WALL_H, 0.12), Vector3((x0 + x1) * 0.5, WALL_H * 0.5, back - 0.06), Color(0.72, 0.66, 0.58))
 	for k in 10:
 		var top := 0.19 * (k + 1)
 		var zf := WALL_Z - 0.55 - 0.3 * k
@@ -747,7 +747,7 @@ func _build_lights() -> void:
 	key.spot_angle_attenuation = 1.1
 	key.spot_range = 20.0
 	key.spot_attenuation = 0.4
-	key.light_energy = 2.6
+	key.light_energy = 2.0
 	key.light_specular = 0.5
 	key.light_color = Color(1.0, 0.95, 0.86)
 	add_child(key)
@@ -760,14 +760,14 @@ func _build_lights() -> void:
 	sun.spot_angle_attenuation = 0.6
 	sun.spot_range = 16.0
 	sun.spot_attenuation = 0.3
-	sun.light_energy = 5.0
+	sun.light_energy = 4.0
 	sun.light_specular = 0.4
 	sun.light_color = Color(1.0, 0.86, 0.62)
 	add_child(sun)
 	# Practicals: kitchen ceiling fixture (off-screen above), window fill over the sink, the
 	# floor lamp, the TV's blue flicker, the stair hall.
-	var omnis: Array = [[Vector3(-3.3, 2.9, -0.6), 7.5, 1.0, Color(1.0, 0.9, 0.72)],
-		[Vector3(-2.6, 1.9, -4.2), 4.0, 0.8, Color(0.85, 0.92, 1.0)],
+	var omnis: Array = [[Vector3(-3.3, 2.9, -0.6), 7.5, 0.7, Color(1.0, 0.9, 0.72)],
+		[Vector3(-2.6, 1.9, -4.0), 3.5, 0.4, Color(0.85, 0.92, 1.0)],
 		[Vector3(5.9, 1.55, -4.3), 4.5, 1.0, Color(1.0, 0.76, 0.46)],
 		[Vector3(1.6, 0.9, -4.0), 3.0, 0.5, Color(0.55, 0.7, 1.0)],
 		[Vector3(4.5, 2.4, -6.4), 4.0, 0.7, Color(1.0, 0.82, 0.58)]]
@@ -814,15 +814,15 @@ func setup_environment(env: Environment) -> void:
 	env.background_color = Color(0.07, 0.06, 0.05)   # the dark studio above the set walls
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
 	env.ambient_light_color = Color(0.68, 0.62, 0.54)
-	env.ambient_light_energy = 0.55
+	env.ambient_light_energy = 0.36
 	env.fog_enabled = false
-	env.tonemap_exposure = 1.1
+	env.tonemap_exposure = 1.0
 	# main's "moon" becomes soft daylight coming in from the living-room window side (+x).
 	var sun: DirectionalLight3D = m.moon
 	if sun != null:
 		sun.transform = Transform3D(Basis.looking_at(Vector3(-0.7, -0.55, -0.3)), Vector3(0, 10, 0))
 		sun.light_color = Color(1.0, 0.9, 0.76)
-		sun.light_energy = 0.4
+		sun.light_energy = 0.25
 		sun.light_specular = 0.3
 	var post: ShaderMaterial = m.post_mat
 	if post != null:
