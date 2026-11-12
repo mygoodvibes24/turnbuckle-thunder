@@ -1957,8 +1957,9 @@ func _relayout_stage(vp: Vector2) -> void:
 	stage_row.scale = Vector2(k, k)
 	stage_row.position = Vector2(ml + 4.0, vp.y - mb - STAGE_H * k)
 	# Preview: as big as fits between the header and the card row.
-	var room := stage_row.position.y - 30.0 - (mt + 100.0) - 150.0
-	var ph := clampf(room, 110.0, 300.0)
+	# name (~64) + time tag (~34) + description (2 lines ~56) + gaps / frame (~40) above the hint row
+	var room := stage_row.position.y - 44.0 - (mt + 92.0) - 200.0
+	var ph := clampf(room, 90.0, 250.0)
 	stage_pic.custom_minimum_size = Vector2(ph * 16.0 / 9.0, ph)
 	stage_desc.custom_minimum_size = Vector2(minf(620.0, vp.x - ml - 340.0), 0)
 	stage_panel.reset_size()
