@@ -563,6 +563,7 @@ func _show_hub() -> void:
 	if res_panel != null:
 		res_panel.visible = false
 	_fade_in()
+	name_l.visible = true
 	if music != null and load_step > 3:
 		music.call("start")
 	list_box.visible = false
@@ -889,6 +890,8 @@ func _show_result(won: bool, lines: Array, _res: Dictionary) -> void:
 	list_box.visible = false
 	list_title.visible = false
 	card.visible = false
+	name_l.visible = false
+	name_r.visible = false
 	if res_panel != null:
 		res_panel.queue_free()
 	_fade_in()
@@ -1840,7 +1843,7 @@ func _relayout() -> void:
 	var tag_y := card.position.y - 40.0
 	name_l.position = Vector2(view_rect.position.x + vw * 0.22 - name_l.size.x * 0.5, tag_y)
 	name_r.position = Vector2(view_rect.position.x + vw * 0.78 - name_r.size.x * 0.5, tag_y)
-	name_r.visible = name_r.text != "???"
+	name_r.visible = name_r.text != "???" and name_l.visible
 
 	hint.reset_size()
 	hint.position = Vector2(mx + 10.0, vp.y - my - hint.size.y + 8.0)

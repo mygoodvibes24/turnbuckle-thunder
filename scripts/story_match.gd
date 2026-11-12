@@ -74,12 +74,6 @@ func setup(p_main: Node3D, p_p1: Node3D, p_p2: Node3D) -> void:
 	if p1.has_signal("signature_started"):
 		p1.connect("signature_started", func(_nm): _on_signature())
 	_build_ui(objective)
-	# Test hook for the browser screenshot scripts: ?story_autowin in the page URL wins the
-	# match (with the bonus) after a few seconds, so the CONTINUE / payout flow can be checked.
-	if OS.has_feature("web"):
-		var q: Variant = JavaScriptBridge.eval("window.location.search", true)
-		if str(q).contains("story_autowin"):
-			get_tree().create_timer(9.0).timeout.connect(_test_autowin)
 	# The objective call follows the "FIGHT!" call.
 	get_tree().create_timer(1.7).timeout.connect(func():
 		if not ended and main.has_method("_announce"):
@@ -158,15 +152,6 @@ func _physics_process(_delta: float) -> void:
 			else:
 				_update_tracker(false)
 	prev_state = st
-
-
-func _test_autowin() -> void:
-	if ended:
-		return
-	_progress(bonus_need)
-	p1.call("set_state", Wrestler.S.WIN)
-	p2.call("set_state", Wrestler.S.LOSE)
-	main.call("_on_win", p1)
 
 
 # ---------------------------------------------------------------- match end
