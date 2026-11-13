@@ -260,7 +260,7 @@ func _build_lights() -> void:
 	key.spot_angle_attenuation = 0.6
 	key.spot_range = 50.0
 	key.spot_attenuation = 0.0
-	key.light_energy = 1.25
+	key.light_energy = 1.0
 	key.light_specular = 0.5
 	key.light_color = Color(1.0, 0.9, 0.74)
 	key.shadow_enabled = false
@@ -304,9 +304,13 @@ func setup_environment(env: Environment) -> void:
 		var sun: DirectionalLight3D = m.moon
 		sun.transform = Transform3D(Basis.looking_at(SUN_TRAVEL), Vector3(0, 10, 0))
 		sun.light_color = Color(1.0, 0.9, 0.74)
-		sun.light_energy = 1.15
+		sun.light_energy = 1.05
 		sun.light_specular = 0.6
 		sun.shadow_enabled = false
+	# Daylight: the billboard crowd is unshaded and tuned dark for the night yard; lift it here.
+	if m != null and m.crowd_mat != null:
+		var cm: ShaderMaterial = m.crowd_mat
+		cm.set_shader_parameter("brightness", 1.05)
 	if m != null and m.post_mat != null:
 		var pm: ShaderMaterial = m.post_mat
 		pm.set_shader_parameter("sepia", 0.2)
