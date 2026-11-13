@@ -12,6 +12,9 @@ extends RefCounted
 ##                 which is where wrestler.gd reads it
 ##   signature_set wrestler.gd SIG_SETS key (also inside look); signature = finisher display name
 ##   look          the Dictionary passed to wrestler.gd setup()
+##   story         (optional) true for the story-mode characters (Mom, Pickles, Hollis, Rudy, Vale,
+##                 Lawn Dart). scripts/story_data.gd CAST points at them with roster_id, so cutscenes
+##                 and Versus share ONE look; each sits in its own "---- LOOK: <id>" block.
 ##
 ## look keys. wrestler.gd reads everything with look.get(key, default), so unknown keys are
 ## safely ignored. Base model: gear (signature colour), skin, face "tank"|"kid", hair, hair_color,
@@ -35,6 +38,12 @@ extends RefCounted
 ##   belt_color, bandana_color, metal ("gold" | "silver"),
 ##   accessories: Array of "headset", "hoops", "buckle", "rope_chain", "layered_chains",
 ##   "glasses", "bandana", "studded_belt", "face_tattoos"
+## Story-cast keys (wrestler.gd "# --- story-cast outfits" has the full list): top "scrubs" | "polo" |
+##   "hawaiian" | "suit_jacket" (shirt_color); bottom "scrub_pants" | "slacks" | "suit_pants" |
+##   "cargo_shorts" (sock_color, sock_stripe); shoes "clogs" | "dress_shoes" | "walkers"; hat "sun_hat" |
+##   "cap_back"; hair "bun" (hair_tie) | "slick" | "balding"; face "older" | "mom" | "grin" | "smug";
+##   graphic "rec"; accessories "badge", "fanny_pack", "headphones", "mic", "phone_stick", "watch",
+##   "garden_gloves", "gold_chain", "champ_buckle", "belt", "sunglasses", "shades_up", "readers", "readers_up"
 ## Characters are original archetypes inspired by music genres (no real people, bands or logos).
 
 const STATS := ["POWER", "AIR", "FLOW", "GRIT"]
@@ -200,6 +209,159 @@ const ROSTER := [
 			"hat": "none", "chain_style": "layered", "chain_color": Color(1.0, 0.8, 0.3),
 			"accessories": ["face_tattoos"], "metal": "gold", "bulk": 0.88,
 		},
+	},
+	{
+		# STORY CHARACTER. Bernadette Magruder: ER nursing assistant, teal scrubs, white clogs. Balanced, never stays down.
+		"id": "mom",
+		"display_name": "MAMA MAGRUDER",
+		"short_name": "MAMA",
+		"genre": "HOUSE RULES",
+		"bio": "County ER, sixteen-hour doubles, zero patience. Uses your full government name, then your ribs.",
+		"stats": {"POWER": 6, "AIR": 4, "FLOW": 6, "GRIT": 9},
+		"anim_style": "diva",
+		"signature_set": "tank",
+		"signature": "DOUBLE SHIFT",
+		"story": true,
+		# ---- LOOK: mom (shared with the story cutscenes via story_data.gd CAST roster_id) ----
+		"look": {
+			"signature_set": "tank", "anim_style": "diva", "body": "female", "bulk": 0.95,
+			"gear": Color(0.2, 0.62, 0.62), "skin": Color(0.4, 0.27, 0.19), "face": "mom",
+			"hair": "bun", "hair_color": Color(0.1, 0.07, 0.06), "hair_tie": Color(0.86, 0.32, 0.46),
+			"top": "scrubs", "top_color": Color(0.16, 0.55, 0.56), "top_accent": Color(0.9, 0.92, 0.94),
+			"bottom": "scrub_pants", "bottom_color": Color(0.15, 0.51, 0.53), "bottom_fade": Color(0.24, 0.6, 0.62),
+			"shoes": "clogs", "shoe_color": Color(0.95, 0.95, 0.93), "shoe_accent": Color(0.84, 0.85, 0.87),
+			"accessories": ["badge", "readers_up", "watch"], "lanyard_color": Color(0.12, 0.26, 0.58),
+			"watch_color": Color(0.88, 0.89, 0.92), "glasses_color": Color(0.55, 0.2, 0.3),
+		},
+		# ---- END LOOK: mom ----
+	},
+	{
+		# STORY CHARACTER. Darnell "Pickles" Pickett: cameraman of the BROOMCAM. Scrappy high-flyer.
+		"id": "pickles",
+		"display_name": "PICKLES PICKETT",
+		"short_name": "PICKLES",
+		"genre": "CAMERA CREW",
+		"bio": "Best friend since second grade. Dives off anything if the angle's good. THAT'S THUMBNAIL.",
+		"stats": {"POWER": 3, "AIR": 9, "FLOW": 8, "GRIT": 5},
+		"anim_style": "hyper",
+		"signature_set": "peligro",
+		"signature": "THUMBNAIL DROP",
+		"story": true,
+		# ---- LOOK: pickles (shared with the story cutscenes via story_data.gd CAST roster_id) ----
+		"look": {
+			"signature_set": "peligro", "anim_style": "hyper", "bulk": 0.84,
+			"gear": Color(0.45, 0.78, 0.2), "skin": Color(0.56, 0.38, 0.26), "face": "grin",
+			"hair": "curls", "hair_color": Color(0.06, 0.045, 0.04),
+			"top": "tee", "top_color": Color(0.3, 0.56, 0.16), "top_accent": Color(0.98, 0.88, 0.22), "graphic": "rec",
+			"bottom": "cargo_shorts", "bottom_color": Color(0.52, 0.47, 0.34), "bottom_fade": Color(0.66, 0.6, 0.48),
+			"sock_color": Color(0.95, 0.95, 0.93), "sock_stripe": Color(0.3, 0.56, 0.16),
+			"shoes": "hightops", "shoe_color": Color(0.85, 0.2, 0.18), "shoe_accent": Color(0.95, 0.95, 0.95),
+			"hat": "cap_back", "hat_color": Color(0.98, 0.84, 0.2), "hat_band": Color(0.3, 0.56, 0.16),
+			"accessories": ["phone_stick"],
+		},
+		# ---- END LOOK: pickles ----
+	},
+	{
+		# STORY CHARACTER. Mr. Hollis, the grumpy neighbor: secretly HURRICANE HOLLIS. Veteran power + grit.
+		"id": "hollis",
+		"display_name": "HURRICANE HOLLIS",
+		"short_name": "HOLLIS",
+		"genre": "OLD SCHOOL LEGEND",
+		"bio": "Six-time regional champ, forty years retired. Has been in more noise than you'll ever make.",
+		"stats": {"POWER": 9, "AIR": 2, "FLOW": 4, "GRIT": 10},
+		"anim_style": "oldschool",
+		"signature_set": "tank",
+		"signature": "HYDRANGEA HAMMER",
+		"story": true,
+		# ---- LOOK: hollis (shared with the story cutscenes via story_data.gd CAST roster_id) ----
+		"look": {
+			"signature_set": "tank", "anim_style": "oldschool", "bulk": 1.05, "tattoos": true,
+			"gear": Color(0.55, 0.3, 0.75), "skin": Color(0.33, 0.22, 0.16), "face": "older",
+			"hair": "balding", "hair_color": Color(0.86, 0.85, 0.82),
+			"top": "polo", "top_color": Color(0.5, 0.4, 0.66), "top_accent": Color(0.95, 0.8, 0.35),
+			"bottom": "slacks", "bottom_color": Color(0.62, 0.55, 0.42), "bottom_fade": Color(0.7, 0.64, 0.52),
+			"shoes": "walkers", "shoe_color": Color(0.93, 0.92, 0.88), "shoe_accent": Color(0.74, 0.73, 0.7),
+			"hat": "sun_hat", "hat_color": Color(0.86, 0.74, 0.5), "hat_band": Color(0.4, 0.22, 0.55),
+			"accessories": ["garden_gloves", "champ_buckle"], "glove_color": Color(0.42, 0.58, 0.3),
+			"buckle_color": Color(1.0, 0.8, 0.32), "belt_color": Color(0.2, 0.12, 0.07),
+		},
+		# ---- END LOOK: hollis ----
+	},
+	{
+		# STORY CHARACTER. Rudy Two-Times: scrappy store-lot promoter who says everything twice. Brawler.
+		"id": "rudy",
+		"display_name": "RUDY TWO-TIMES",
+		"short_name": "RUDY",
+		"genre": "PROMOTER",
+		"bio": "Runs the fights behind the store lot. Hits you twice. Hits you twice.",
+		"stats": {"POWER": 7, "AIR": 4, "FLOW": 6, "GRIT": 8},
+		"anim_style": "swagger",
+		"signature_set": "tank",
+		"signature": "TWO-TIMES TOMBSTONE TOMBSTONE",
+		"story": true,
+		# ---- LOOK: rudy (shared with the story cutscenes via story_data.gd CAST roster_id) ----
+		"look": {
+			"signature_set": "tank", "anim_style": "swagger", "bulk": 0.95,
+			"gear": Color(0.1, 0.7, 0.7), "skin": Color(0.78, 0.58, 0.44), "face": "oldschool",
+			"hair": "slick", "hair_color": Color(0.12, 0.08, 0.06),
+			"top": "hawaiian", "top_color": Color(0.07, 0.52, 0.56), "top_accent": Color(0.9, 0.26, 0.6),
+			"bottom": "slacks", "bottom_color": Color(0.86, 0.82, 0.72), "bottom_fade": Color(0.92, 0.88, 0.8),
+			"shoes": "dress_shoes", "shoe_color": Color(0.93, 0.91, 0.87), "shoe_accent": Color(0.6, 0.15, 0.55),
+			"accessories": ["gold_chain", "shades_up", "fanny_pack"], "chain_color": Color(1.0, 0.8, 0.26),
+			"pack_color": Color(0.1, 0.1, 0.12),
+		},
+		# ---- END LOOK: rudy ----
+	},
+	{
+		# STORY CHARACTER. Preston Vale: slick villain promoter. All flow, glass jaw, cheats with style.
+		"id": "vale",
+		"display_name": "PRESTON VALE",
+		"short_name": "VALE",
+		"genre": "THE MONEY",
+		"bio": "Influencer-promoter of VALE ELITE. Never reads the fine print because he wrote it.",
+		"stats": {"POWER": 5, "AIR": 6, "FLOW": 10, "GRIT": 4},
+		"anim_style": "newschool",
+		"signature_set": "peligro",
+		"signature": "PAGE NINE",
+		"story": true,
+		# ---- LOOK: vale (shared with the story cutscenes via story_data.gd CAST roster_id) ----
+		"look": {
+			"signature_set": "peligro", "anim_style": "newschool", "bulk": 0.88,
+			"gear": Color(0.85, 0.75, 0.45), "skin": Color(0.86, 0.68, 0.56), "face": "smug",
+			"hair": "slick", "hair_color": Color(0.72, 0.56, 0.3),
+			"top": "suit_jacket", "top_color": Color(0.9, 0.86, 0.76), "top_accent": Color(0.86, 0.68, 0.24),
+			"shirt_color": Color(0.08, 0.08, 0.09),
+			"bottom": "suit_pants", "bottom_color": Color(0.88, 0.84, 0.74), "bottom_fade": Color(0.92, 0.88, 0.8),
+			"shoes": "dress_shoes", "shoe_color": Color(0.1, 0.07, 0.06), "shoe_accent": Color(0.85, 0.75, 0.45),
+			"accessories": ["watch"], "watch_color": Color(1.0, 0.8, 0.32),
+		},
+		# ---- END LOOK: vale ----
+	},
+	{
+		# STORY CHARACTER. MC Lawn Dart: the backyard's hype MC (mc.gd) in person. Quick and flashy.
+		"id": "lawndart",
+		"display_name": "MC LAWN DART",
+		"short_name": "LAWN DART",
+		"genre": "HYPE MAN",
+		"bio": "The voice of LAWN DART LIVE. Wrestles exactly like he talks: loud, fast and nonstop.",
+		"stats": {"POWER": 6, "AIR": 7, "FLOW": 7, "GRIT": 5},
+		"anim_style": "hyper",
+		"signature_set": "peligro",
+		"signature": "SOMEBODY CALL HIS MAMA",
+		"story": true,
+		# ---- LOOK: lawndart (shared with the story cutscenes via story_data.gd CAST roster_id) ----
+		"look": {
+			"signature_set": "peligro", "anim_style": "hyper", "bulk": 1.0,
+			"gear": Color(1.0, 0.84, 0.2), "skin": Color(0.48, 0.32, 0.22), "face": "tank",
+			"hair": "locs", "hair_color": Color(0.06, 0.045, 0.04),
+			"top": "tracksuit", "top_color": Color(1.0, 0.8, 0.16), "top_accent": Color(0.06, 0.06, 0.07),
+			"bottom": "track_pants", "bottom_color": Color(0.06, 0.06, 0.07), "bottom_fade": Color(0.2, 0.2, 0.22),
+			"bottom_accent": Color(1.0, 0.8, 0.16),
+			"shoes": "hightops", "shoe_color": Color(1.0, 0.84, 0.2), "shoe_accent": Color(0.06, 0.06, 0.07),
+			"accessories": ["headphones", "mic", "sunglasses", "gold_chain"], "chain_color": Color(1.0, 0.84, 0.2),
+			"headphone_color": Color(0.07, 0.07, 0.08), "headphone_accent": Color(1.0, 0.84, 0.2),
+		},
+		# ---- END LOOK: lawndart ----
 	},
 ]
 

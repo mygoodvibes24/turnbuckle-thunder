@@ -30,8 +30,10 @@ const RED := Color(0.86, 0.12, 0.08)
 const CPU_BLUE := Color(0.2, 0.55, 1.0)
 const STAT_COLS := [Color(0.95, 0.22, 0.12), Color(0.2, 0.8, 1.0), Color(1.0, 0.8, 0.15), Color(1.0, 0.5, 0.12)]
 const CARD_W := 96.0
-const CARD_H := 132.0
+const CARD_H := 116.0
 const CARD_GAP := 8.0
+const ROW_GAP := 10.0         # between the two card rows
+const STORY_COL := Color(0.72, 0.4, 1.0)   # the STORY badge on story-mode characters
 const PLAT_H := 0.24          # platform top: the fighter stands on it
 
 var phase: int = Phase.PICK_P1
@@ -46,6 +48,11 @@ var sel := 0                  # highlighted card (roster.size() = RANDOM, +1 = C
 # when one exists. Without one, a CREATE A WRESTLER card (after RANDOM) opens res://caw.tscn.
 var roster: Array = []
 var show_create := false
+# The card grid: slots[i] = (column, row) of card i. Row 0: the original fighters (+ the created
+# wrestler / CREATE); row 1: the story-mode characters + RANDOM. grid_cols = the wider row.
+var slots: Array[Vector2i] = []
+var grid_cols := 1
+var grid_rows := 1
 var p1_idx := 0
 var p2_idx := 1
 var shown_idx := -1           # whose model is on the turntable (-1: none)
@@ -186,6 +193,7 @@ func _ready() -> void:
 		if ce is Dictionary and (ce as Dictionary).has("look") and (ce as Dictionary).has("stats"):
 			roster.append(ce)
 	show_create = roster.size() == Roster.ROSTER.size() and ResourceLoader.exists(CAW_SCENE)
+	_build_slots()
 	if game != null:
 		p1_idx = maxi(0, _idx_of(str(game.get("p1_id"))))
 		p2_idx = maxi(0, _idx_of(str(game.get("p2_id"))))
@@ -224,6 +232,76 @@ func _is_create(i: int) -> bool:
 	return show_create and i == roster.size() + 1
 
 
+func _is_story(i: int) -> bool:
+	return i < roster.size() and bool((roster[i] as Dictionary).get("story", false))
+
+
+## Lays the cards out on a 2-row grid (see `slots`). Without story characters the cards are
+## split evenly over two rows instead.
+func _build_slots() -> void:
+	var n := roster.size()
+	var row0: Array[int] = []
+	var row1: Array[int] = []
+	for i in n:
+		if _is_story(i):
+			row1.append(i)
+		else:
+			row0.append(i)
+	if show_create:
+		row0.append(n + 1)
+	row1.append(n)   # RANDOM
+	if row1.size() == 1:
+		var all: Array[int] = []
+		all.append_array(row0)
+		all.append(n)
+		var half := ceili(all.size() / 2.0)
+		row0.clear()
+		row1.clear()
+		for j in all.size():
+			if j < half:
+				row0.append(all[j])
+			else:
+				row1.append(all[j])
+	slots.resize(_card_count())
+	for c in row0.size():
+		slots[row0[c]] = Vector2i(c, 0)
+	for c in row1.size():
+		slots[row1[c]] = Vector2i(c, 1)
+	grid_cols = maxi(1, maxi(row0.size(), row1.size()))
+	grid_rows = 2 if not row1.is_empty() else 1
+
+
+func _card_at(col: int, row: int) -> int:
+	for i in slots.size():
+		if slots[i] == Vector2i(col, row):
+			return i
+	return -1
+
+
+## Grid navigation: dir -1/+1 = left/right (wrapping onto the other row), -2/+2 = up/down
+## (same column, or the row's last card when it is shorter).
+func _grid_step(i: int, dir: int) -> int:
+	var cur: Vector2i = slots[i]
+	if absi(dir) == 2:
+		var r := posmod(cur.y + signi(dir), grid_rows)
+		var c := cur.x
+		while c >= 0:
+			var j := _card_at(c, r)
+			if j >= 0:
+				return j
+			c -= 1
+		return i
+	# reading order: along the row, then onto the next / previous row
+	var order: Array[int] = []
+	for r in grid_rows:
+		for c in grid_cols:
+			var j := _card_at(c, r)
+			if j >= 0:
+				order.append(j)
+	var k := order.find(i)
+	return order[posmod(k + dir, order.size())]
+
+
 # ---------------------------------------------------------------- per frame
 
 func _process(delta: float) -> void:
@@ -239,8 +317,8 @@ func _process(delta: float) -> void:
 	if headless and frames == 90 and phase != Phase.LEAVING:
 		phase = Phase.LEAVING
 		if game != null:
-			game.set("p1_id", "booker")
-			game.set("p2_id", "starla")
+			game.set("p1_id", "mom")      # story characters: their roster looks reach main.gd
+			game.set("p2_id", "hollis")
 			game.set("level_id", "backyard")
 		print("select (headless): %d models built, on to the match" % models.size())
 		get_tree().change_scene_to_file(MATCH_SCENE)
@@ -338,18 +416,23 @@ func _input(event: InputEvent) -> void:
 				confirm = true
 			JOY_BUTTON_B, JOY_BUTTON_BACK:
 				back = true
-			JOY_BUTTON_DPAD_LEFT, JOY_BUTTON_DPAD_UP:
+			JOY_BUTTON_DPAD_LEFT:
 				dir = -1
-			JOY_BUTTON_DPAD_RIGHT, JOY_BUTTON_DPAD_DOWN:
+			JOY_BUTTON_DPAD_RIGHT:
 				dir = 1
+			JOY_BUTTON_DPAD_UP:
+				dir = -2
+			JOY_BUTTON_DPAD_DOWN:
+				dir = 2
 	elif event is InputEventJoypadMotion:
 		var jm := event as InputEventJoypadMotion
-		if jm.axis == JOY_AXIS_LEFT_X:
+		if jm.axis == JOY_AXIS_LEFT_X or jm.axis == JOY_AXIS_LEFT_Y:
+			var step := 1 if jm.axis == JOY_AXIS_LEFT_X else 2
 			if absf(jm.axis_value) < 0.3:
 				stick_armed = true
 			elif absf(jm.axis_value) > 0.6 and stick_armed:
 				stick_armed = false
-				dir = 1 if jm.axis_value > 0.0 else -1
+				dir = step if jm.axis_value > 0.0 else -step
 	else:
 		return   # mouse / touch: the cards and buttons handle those
 	if _locked():
@@ -374,11 +457,16 @@ func _locked() -> bool:
 	return Time.get_ticks_msec() < lock_until_ms or frames < 3
 
 
+## -1/+1 left/right, -2/+2 up/down (rows of the card grid; the stage row treats them as -1/+1).
 func _key_dir(code: int) -> int:
-	if code in [KEY_LEFT, KEY_A, KEY_UP, KEY_W]:
+	if code in [KEY_LEFT, KEY_A]:
 		return -1
-	if code in [KEY_RIGHT, KEY_D, KEY_DOWN, KEY_S]:
+	if code in [KEY_RIGHT, KEY_D]:
 		return 1
+	if code in [KEY_UP, KEY_W]:
+		return -2
+	if code in [KEY_DOWN, KEY_S]:
+		return 2
 	return 0
 
 
@@ -391,9 +479,9 @@ func _snd(n: String, db := 0.0, var_amt := 0.05) -> void:
 
 func _move_sel(dir: int) -> void:
 	if phase == Phase.PICK_STAGE:
-		_set_stage(posmod(stage_sel + dir, stages.size() + 1))
+		_set_stage(posmod(stage_sel + signi(dir), stages.size() + 1))
 		return
-	_set_sel(posmod(sel + dir, _card_count()))
+	_set_sel(_grid_step(sel, dir))
 
 
 func _set_sel(i: int) -> void:
@@ -1150,7 +1238,7 @@ func _build_ui() -> void:
 	info_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	info_box.add_theme_constant_override("separation", 4)
 	ui.add_child(info_box)
-	name_label = _label("", font_i, 56, Color(0.97, 0.95, 0.9), 12)
+	name_label = _label("", font_i, 48, Color(0.97, 0.95, 0.9), 11)
 	info_box.add_child(name_label)
 	genre_box = PanelContainer.new()
 	genre_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1160,31 +1248,31 @@ func _build_ui() -> void:
 	genre_label.add_theme_constant_override("shadow_offset_x", 0)
 	genre_label.add_theme_constant_override("shadow_offset_y", 0)
 	genre_box.add_child(genre_label)
-	bio_label = _label("", font_b, 20, Color(0.92, 0.91, 0.88), 5)
+	bio_label = _label("", font_b, 19, Color(0.92, 0.91, 0.88), 5)
 	bio_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	bio_label.custom_minimum_size = Vector2(520, 56)
+	bio_label.custom_minimum_size = Vector2(520, 50)
 	info_box.add_child(bio_label)
 	var gap := Control.new()
-	gap.custom_minimum_size = Vector2(0, 6)
+	gap.custom_minimum_size = Vector2(0, 2)
 	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	info_box.add_child(gap)
 	for si in Roster.STATS.size():
 		var row := HBoxContainer.new()
 		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_theme_constant_override("separation", 4)
-		var nl := _label(str(Roster.STATS[si]), font_i, 22, GOLD, 5)
+		var nl := _label(str(Roster.STATS[si]), font_i, 19, GOLD, 5)
 		nl.custom_minimum_size = Vector2(96, 0)
 		row.add_child(nl)
 		var segs: Array = []
 		for k in 10:
 			var seg := ColorRect.new()
-			seg.custom_minimum_size = Vector2(24, 18)
+			seg.custom_minimum_size = Vector2(24, 15)
 			seg.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			seg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			row.add_child(seg)
 			segs.append(seg)
 		stat_segs.append(segs)
-		var vl := _label("0", font_i, 22, Color(1, 1, 1), 5)
+		var vl := _label("0", font_i, 19, Color(1, 1, 1), 5)
 		vl.custom_minimum_size = Vector2(40, 0)
 		vl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		row.add_child(vl)
@@ -1223,7 +1311,7 @@ func _build_ui() -> void:
 	back_btn.pressed.connect(_on_back_btn)
 	ui.add_child(back_btn)
 
-	hint_label = _label("< >  CHOOSE     ENTER / J  CONFIRM     ESC / K  BACK", font_b, 16, Color(0.75, 0.75, 0.78), 4)
+	hint_label = _label("ARROWS  CHOOSE     ENTER / J  CONFIRM     ESC / K  BACK", font_b, 16, Color(0.75, 0.75, 0.78), 4)
 	ui.add_child(hint_label)
 
 	vs_band = Control.new()
@@ -1279,7 +1367,7 @@ func _build_card(i: int) -> void:
 	pic.position = Vector2(5, 5)
 	pic.size = Vector2(CARD_W - 10, CARD_H - 38)
 	pic.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	pic.stretch_mode = TextureRect.STRETCH_SCALE
+	pic.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_COVERED
 	pic.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	pic.texture = _portrait(i)
 	b.add_child(pic)
@@ -1306,6 +1394,18 @@ func _build_card(i: int) -> void:
 		ini.add_theme_stylebox_override("normal", isb)
 		ini.position = Vector2(8, 8)
 		b.add_child(ini)
+	if _is_story(i):
+		var badge := _label("STORY", font_i, 11, Color(1, 1, 1), 3)
+		var bsb := StyleBoxFlat.new()
+		bsb.bg_color = STORY_COL.darkened(0.25)
+		bsb.border_color = Color(0.02, 0.02, 0.03)
+		bsb.set_border_width_all(1)
+		bsb.skew = Vector2(0.2, 0)
+		bsb.content_margin_left = 5
+		bsb.content_margin_right = 5
+		badge.add_theme_stylebox_override("normal", bsb)
+		badge.position = Vector2(8, CARD_H - 54)
+		b.add_child(badge)
 	var strip := ColorRect.new()
 	strip.color = Color(0.02, 0.02, 0.03, 0.92)
 	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1553,8 +1653,9 @@ func _layout_cards() -> void:
 	for i in cards.size():
 		var b := cards[i]
 		var on := i == sel
-		b.position = Vector2(i * (CARD_W + CARD_GAP), -12.0 if on else 0.0)
-		b.scale = Vector2(1.08, 1.08) if on else Vector2.ONE
+		var sl: Vector2i = slots[i] if i < slots.size() else Vector2i(i, 0)
+		b.position = Vector2(sl.x * (CARD_W + CARD_GAP), sl.y * (CARD_H + ROW_GAP))
+		b.scale = Vector2(1.07, 1.07) if on else Vector2.ONE   # no lift: the top row sits under the info panel
 		b.z_index = 1 if on else 0
 
 
@@ -1619,20 +1720,25 @@ func _relayout() -> void:
 	confirm_btn.position = Vector2(vp.x - mr - confirm_btn.size.x, vp.y - mb - confirm_btn.size.y)
 	confirm_btn.pivot_offset = confirm_btn.size * 0.5
 
-	var row_w := _card_count() * (CARD_W + CARD_GAP) - CARD_GAP
+	info_box.reset_size()
+	info_box.position = Vector2(ml, mt + 94.0)
+
+	# The card grid: as big as fits between the info panel and the bottom edge, and left of
+	# CONFIRM (cards stay >= ~90 px wide on a 720-high canvas; phones only get wider).
+	var grid_w := grid_cols * (CARD_W + CARD_GAP) - CARD_GAP
+	var grid_h := grid_rows * (CARD_H + ROW_GAP) - ROW_GAP
 	var free_w := confirm_btn.position.x - 24.0 - ml
-	var k := clampf(free_w / row_w, 0.6, 1.25)
+	var free_h := (vp.y - mb) - (info_box.position.y + info_box.size.y + 16.0)
+	var k := clampf(minf(free_w / grid_w, free_h / grid_h), 0.6, 1.25)
 	card_row.scale = Vector2(k, k)
-	card_row.position = Vector2(ml + 4.0, vp.y - mb - CARD_H * k)
+	card_row.position = Vector2(ml + 4.0, vp.y - mb - grid_h * k)
 
 	_relayout_stage(vp)
 	hint_label.reset_size()
-	hint_label.position = Vector2(ml, card_row.position.y - 40.0)
+	# right-aligned above CONFIRM (the grid fills the bottom-left)
+	hint_label.position = Vector2(vp.x - mr - hint_label.size.x, confirm_btn.position.y - 34.0)
 	if phase == Phase.PICK_STAGE and stage_row != null:
 		hint_label.position = Vector2(ml, stage_row.position.y - 40.0)
-
-	info_box.reset_size()
-	info_box.position = Vector2(ml, mt + 100.0)
 
 	vs_band.position = Vector2.ZERO
 	vs_band.size = vp
