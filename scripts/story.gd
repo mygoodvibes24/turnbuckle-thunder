@@ -19,11 +19,13 @@ extends Node3D
 const Wrestler := preload("res://scripts/wrestler.gd")
 const Audio := preload("res://scripts/audio.gd")
 const Music := preload("res://scripts/music.gd")
+const StoryText := preload("res://scripts/story_text.gd")
 const DATA_PATH := "res://scripts/story_data.gd"
 const CUTSCENE_SCENE := "res://cutscene.tscn"
 const MATCH_SCENE := "res://main.tscn"
 const TITLE_SCENE := "res://title.tscn"
 const SAVE_PATH := "user://story.cfg"
+const CAW_SCENE := "res://caw.tscn"
 
 const GOLD := Color(1.0, 0.82, 0.12)
 const RED := Color(0.86, 0.12, 0.08)
@@ -32,7 +34,7 @@ const CREAM := Color(0.95, 0.93, 0.88)
 const GREEN := Color(0.4, 0.95, 0.4)
 
 const SET_NAMES := {
-	"kitchen": "MOM'S KITCHEN", "bedroom": "TANK'S ROOM", "backyard": "THE BACKYARD",
+	"kitchen": "MOM'S KITCHEN", "bedroom": "{NAME}'S ROOM", "backyard": "THE BACKYARD",
 	"street": "THE BLOCK", "store_lot": "CORNER STORE LOT", "porch": "FRONT PORCH",
 	"car": "MOM'S CAR", "rooftop": "THE ROOFTOP",
 }
@@ -49,6 +51,8 @@ var stick_armed := true
 # data + save
 var chapters: Array = []
 var cast: Dictionary = {}
+var hero_id := "tank"              # the protagonist's roster id: "caw" (created wrestler) or "tank"
+var hero_choice := ""             # saved: "tank" once the player picked PLAY AS TANK at the prompt
 var unlocked := 0
 var completed: Array = []
 var bonus_got: Array = []
@@ -94,6 +98,7 @@ var header: Control
 var bank_panel: PanelContainer
 var bank_label: Label
 var menu_box: VBoxContainer
+var hero_box: VBoxContainer      # "create your wrestler or play as Tank" prompt (no CAW yet)
 var list_box: VBoxContainer
 var list_title: Label
 var card: PanelContainer
@@ -184,11 +189,13 @@ func _load_data() -> void:
 		return
 	var consts: Dictionary = scr.get_script_constant_map()
 	var ch: Variant = consts.get("CHAPTERS", [])
+	# Protagonist tokens ({NAME}, {his}...) resolve once here: the created wrestler or Tank.
+	hero_id = StoryText.hero_id()
 	if ch is Array:
-		chapters = ch
+		chapters = StoryText.resolve_deep(ch)
 	var ca: Variant = consts.get("CAST", {})
 	if ca is Dictionary:
-		cast = ca
+		cast = StoryText.hero_cast(ca)
 
 
 func _load_save() -> void:
@@ -205,6 +212,7 @@ func _load_save() -> void:
 		var s: Variant = cf.get_value("progress", "best_style", {})
 		if s is Dictionary:
 			best_style = (s as Dictionary).duplicate()
+		hero_choice = str(cf.get_value("hero", "choice", ""))
 	unlocked = clampi(unlocked, 0, maxi(chapters.size() - 1, 0))
 
 
@@ -215,6 +223,8 @@ func _save() -> void:
 	cf.set_value("progress", "bonus", bonus_got)
 	cf.set_value("progress", "cash", cash)
 	cf.set_value("progress", "best_style", best_style)
+	if hero_choice != "":
+		cf.set_value("hero", "choice", hero_choice)
 	cf.save(SAVE_PATH)
 
 
@@ -364,7 +374,7 @@ func _staged_audio() -> void:
 		return
 	match load_step:
 		0:
-			_spawn_fighter(0, "tank")
+			_spawn_fighter(0, hero_id)
 		1:
 			if want_opp != "" and want_opp != fighter_ids[1]:
 				_spawn_fighter(1, want_opp)
@@ -569,9 +579,22 @@ func _show_hub() -> void:
 	list_box.visible = false
 	list_title.visible = false
 	menu_box.visible = true
+	hero_box.visible = false
 	card.visible = true
 	cur = _continue_index()
 	_set_card(cur)
+	if _needs_hero_prompt():
+		menu_box.visible = false
+		hero_box.visible = true
+		var hb: Array[Button] = []
+		for c in hero_box.get_children():
+			if c is Button:
+				hb.append(c as Button)
+		var hacts: Array[Callable] = [_hero_create, _hero_tank]
+		_set_buttons(hb, hacts, 0)
+		hint.text = "UP / DOWN  select     ENTER / J  confirm     ESC  back to title"
+		_relayout()
+		return
 	var items: Array[Button] = []
 	for c in menu_box.get_children():
 		items.append(c as Button)
@@ -583,9 +606,29 @@ func _show_hub() -> void:
 	_relayout()
 
 
+## No created wrestler yet and the player has not picked Tank: ask who stars in the story.
+func _needs_hero_prompt() -> bool:
+	return not headless and hero_id == "tank" and hero_choice == "" and ResourceLoader.exists(CAW_SCENE)
+
+
+func _hero_create() -> void:
+	var game := _game()
+	if game != null:
+		game.set_meta("caw_return", "res://story.tscn")   # the editor may come back here
+	_go(CAW_SCENE)
+
+
+func _hero_tank() -> void:
+	hero_choice = "tank"
+	_save()
+	_snd("punch", -6.0)
+	_show_hub()
+
+
 func _show_chapters() -> void:
 	phase = Phase.CHAPTERS
 	menu_box.visible = false
+	hero_box.visible = false
 	list_box.visible = true
 	list_title.visible = true
 	for c in list_box.get_children():
@@ -773,7 +816,7 @@ func _show_title_card() -> void:
 	tw3.tween_property(nm, "scale", Vector2.ONE, 0.16).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tw3.parallel().tween_property(nm, "modulate:a", 1.0, 0.1)
 	tw3.tween_callback(func(): _snd("big_thud", -4.0))
-	var vs := _label("TANK MAGRUDER  vs  " + _opp_name(cur), font_i, 28, CREAM, 8)
+	var vs := _label(StoryText.hero_full_name() + "  vs  " + _opp_name(cur), font_i, 28, CREAM, 8)
 	tc.add_child(vs)
 	vs.reset_size()
 	vs.position = Vector2(vp.x * 0.5 - vs.size.x * 0.5, vp.y * 0.5 + 66)
@@ -801,7 +844,7 @@ func _launch_match(i: int) -> void:
 	if game != null:
 		game.set("story_active", true)
 		game.set("story_chapter", i)
-		game.set("p1_id", "tank")
+		game.set("p1_id", hero_id)
 		game.set("p2_id", _opp_id(i))
 		game.set("story_cpu_skill", float(m.get("cpu_skill", 0.3)))
 		# The chapter's fight location (a level id); a level not built yet = the backyard.
@@ -809,7 +852,7 @@ func _launch_match(i: int) -> void:
 		if not ResourceLoader.exists("res://scripts/levels/" + loc + ".gd"):
 			loc = "backyard"
 		game.set("level_id", loc)
-		game.set("story_objective", str(m.get("objective", "Win the match")))
+		game.set("story_objective", StoryText.resolve(str(m.get("objective", "Win the match"))))
 		game.set("story_bonus", _bonus_of(i).duplicate())
 		game.set("story_result", {})
 	_go(MATCH_SCENE)
@@ -892,6 +935,7 @@ func _show_result(won: bool, lines: Array, _res: Dictionary) -> void:
 	ui.visible = true
 	view_rect.visible = true
 	menu_box.visible = false
+	hero_box.visible = false
 	list_box.visible = false
 	list_title.visible = false
 	card.visible = false
@@ -1106,7 +1150,7 @@ func _dlg_show() -> void:
 		return
 	bg_time = str(sc.get("time", "night"))
 	var set_id := str(sc.get("set", "backyard"))
-	dlg_place.text = "%s  -  %s" % [str(SET_NAMES.get(set_id, set_id.to_upper())), bg_time.to_upper()]
+	dlg_place.text = "%s  -  %s" % [StoryText.resolve(str(SET_NAMES.get(set_id, set_id.to_upper()))), bg_time.to_upper()]
 	var who_list: Array[String] = []
 	var cs: Variant = sc.get("cast", {})
 	if cs is Dictionary:
@@ -1647,7 +1691,7 @@ func _build_ui() -> void:
 	title.position = Vector2(10, -6)
 	title.rotation = deg_to_rad(-2.0)
 	header.add_child(title)
-	var sub := _label("THE TANK MAGRUDER STORY", font_b, 20, GOLD, 6)
+	var sub := _label("THE %s STORY" % StoryText.hero_full_name(), font_b, 20, GOLD, 6)
 	sub.position = Vector2(18, 84)
 	header.add_child(sub)
 
@@ -1673,6 +1717,17 @@ func _build_ui() -> void:
 	for txt in ["CONTINUE", "CHAPTER SELECT", "BACK"]:
 		menu_box.add_child(_make_button(txt, true))
 
+	# protagonist prompt (shown on the hub until a wrestler is created or Tank is picked)
+	hero_box = VBoxContainer.new()
+	hero_box.add_theme_constant_override("separation", 12)
+	hero_box.visible = false
+	ui.add_child(hero_box)
+	var hp := _label("Create your wrestler to star in the story\n— or play as Tank.", font_i, 28, CREAM, 7)
+	hp.custom_minimum_size = Vector2(440, 0)
+	hero_box.add_child(hp)
+	for txt in ["CREATE", "PLAY AS TANK"]:
+		hero_box.add_child(_make_button(txt, true))
+
 	# chapter list
 	list_title = _label("CHAPTER SELECT", font_i, 30, CREAM, 8)
 	ui.add_child(list_title)
@@ -1681,7 +1736,7 @@ func _build_ui() -> void:
 	ui.add_child(list_box)
 
 	# fighter name tags under the 3D view
-	name_l = _label("TANK MAGRUDER", font_i, 24, Color(1.0, 0.5, 0.42), 7)
+	name_l = _label(StoryText.hero_full_name(), font_i, 24, Color(1.0, 0.5, 0.42), 7)
 	ui.add_child(name_l)
 	name_r = _label("", font_i, 24, CREAM, 7)
 	ui.add_child(name_r)
@@ -1820,6 +1875,9 @@ func _relayout() -> void:
 	menu_box.reset_size()
 	menu_box.size = menu_box.get_combined_minimum_size()
 	menu_box.position = Vector2(mx + 8.0, col_y + 20.0)
+	hero_box.reset_size()
+	hero_box.size = hero_box.get_combined_minimum_size()
+	hero_box.position = Vector2(mx + 8.0, col_y + 20.0)
 	list_title.reset_size()
 	list_title.position = Vector2(mx + 8.0, col_y - 6.0)
 	list_box.reset_size()

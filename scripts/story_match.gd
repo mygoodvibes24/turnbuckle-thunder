@@ -15,6 +15,7 @@ extends Node
 
 const Wrestler := preload("res://scripts/wrestler.gd")
 const StyleSys := preload("res://scripts/style.gd")
+const StoryText := preload("res://scripts/story_text.gd")
 const STORY_SCENE := "res://story.tscn"
 const GOLD := Color(1.0, 0.82, 0.12)
 const INK := Color(0.02, 0.02, 0.03)
@@ -57,10 +58,10 @@ func setup(p_main: Node3D, p_p1: Node3D, p_p2: Node3D) -> void:
 		skill = float(game.get("story_cpu_skill"))
 		var o: String = str(game.get("story_objective"))
 		if o != "":
-			objective = o
+			objective = StoryText.resolve(o)
 		var b: Variant = game.get("story_bonus")
 		if b is Dictionary:
-			bonus = b
+			bonus = StoryText.resolve_deep(b)
 	p2.set("ai_skill", clampf(skill, 0.0, 1.0))
 	bonus_type = str(bonus.get("type", "none"))
 	if bonus.is_empty() or bonus_type == "":

@@ -2,6 +2,8 @@
 
 City 2 City Wrestling: Backyard Brawl. Data lives in `scripts/story_data.gd` (`CAST`, `CHAPTERS`).
 
+> **Your wrestler stars.** This page tells the story with its default lead, Tank Magruder. If the player has made a wrestler in CREATE-A-WRESTLER (`caw.tscn`, saved to `user://caw.cfg`), that wrestler takes Tank's place in every cutscene and story match. The dialogue never names the lead directly. It uses tokens that `scripts/story_text.gd` fills in at runtime: `{NAME}`, `{FULLNAME}`, `{FIRST}` (the name Mom uses when they're in trouble, "Theodore"), `{SIG}` (their finisher) and `{he}/{him}/{his}/{son}/{boy}/{man}/{guy}`, which follow the wrestler's he/she/they pronouns. The family is still the Magruders, since it's Mom's house. Tank stays a normal Versus fighter. If no wrestler exists, the story hub offers CREATE or PLAY AS TANK.
+
 Tank Magruder is 26 (he says "twenty-five and a half, emotionally"). He has no job, he lives with his mom, and he has a dent-shaped hole in her refrigerator. His half of the rent is $600, it's due on the first, and backyard wrestling just paid him eleven dollars in tips. Over eight chapters he goes from the yard to a rooftop contract, loses everything to the fine print, and wins it back at the block party in front of the whole neighborhood. His mom is there for her first Saturday off in three years.
 
 ## The arc

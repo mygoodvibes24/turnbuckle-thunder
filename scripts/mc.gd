@@ -7,6 +7,7 @@ extends CanvasLayer
 ## low-priority calls are dropped while anything else was said recently.
 ## Created by main.gd (_setup_presentation): setup(main); main calls say(category, wrestler).
 
+const StoryText := preload("res://scripts/story_text.gd")
 const MC_NAME := "MC LAWN DART"
 const TOP_Y := 142.0          # under main.gd's name plate (~60) and style_hud's letters / HYPE bar (~124)
 const EDGE := 16.0
@@ -20,10 +21,11 @@ const CAT_COOLDOWN := 8.0     # the same category is not repeated within this ma
 const GOLD := Color(1.0, 0.84, 0.2)
 const INK := Color(0.04, 0.03, 0.06, 0.95)
 
-## category -> [priority, lines...]; {N} = the wrestler's short name, {S} = the move name.
+## category -> [priority, lines...]; {N} = the wrestler's short name, {S} = the move name,
+## {HIS} = HIS / HER / THEIR (a created wrestler's pronouns, else the model's body).
 const LINES := {
 	"signature": [5, "{N}'S SIGNATURE! HERE IT COMES!", "OH IT'S THE {S}!", "{N} SAVED THAT ONE FOR TV!"],
-	"brawl": [5, "BRAWL MODE! LOCK THE GATE!", "{N} IS FULLY CHARGED!", "SOMEBODY CALL HIS MAMA!"],
+	"brawl": [5, "BRAWL MODE! LOCK THE GATE!", "{N} IS FULLY CHARGED!", "SOMEBODY CALL {HIS} MAMA!"],
 	"roof": [4, "{N}'S OFF THE ROOF!", "FROM UP THERE?! NO FEAR!", "THAT'S A TWO-STORY DECISION!"],
 	"table": [4, "TABLE'S IN PIECES!", "THAT TABLE HAD A FAMILY!", "SPLINTER CITY, BABY!"],
 	"near_fall": [4, "NOOO! STILL ALIVE!", "SO CLOSE! SO CLOSE!", "HOW IS {N} UP?!"],
@@ -100,12 +102,30 @@ static func short_name(w: Node) -> String:
 	if w == null:
 		return "THIS GUY"
 	var nm: String = str(w.get("display_name")).to_upper()
+	if _is_caw(w):
+		return StoryText.hero_short_name()
 	var parts := nm.split(" ", false)
 	if parts.is_empty():
 		return "THIS GUY"
 	if parts.size() > 1 and parts[0] in ["LIL", "BIG", "EL", "THE", "DJ", "MC", "KID"]:
 		return parts[parts.size() - 1]
 	return parts[0]
+
+
+## The player's created wrestler (its HUD name is the CAW ring name)?
+static func _is_caw(w: Node) -> bool:
+	return w != null and StoryText.caw_active() and str(w.get("display_name")).to_upper() == StoryText.hero_full_name()
+
+
+static func his(w: Node) -> String:
+	if w == null:
+		return "HIS"
+	if _is_caw(w):
+		return StoryText.resolve("{HIS}")
+	var lk: Variant = w.get("look")
+	if lk is Dictionary and str((lk as Dictionary).get("body", "male")) == "female":
+		return "HER"
+	return "HIS"
 
 
 ## Ask the MC to call something. Returns true if the line was shown.
@@ -134,7 +154,7 @@ func say(cat: String, who: Node = null, move_name := "") -> bool:
 	var txt: String = entry[pick]
 	if txt.contains("{S}") and move_name == "":
 		txt = entry[1] if entry[1] != txt else "{N}! {N}! {N}!"
-	txt = txt.replace("{N}", short_name(who)).replace("{S}", move_name.to_upper())
+	txt = txt.replace("{N}", short_name(who)).replace("{S}", move_name.to_upper()).replace("{HIS}", his(who))
 	_last_ms = now
 	_cat_ms[cat] = now
 	_cur_prio = prio
