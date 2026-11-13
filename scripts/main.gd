@@ -3680,6 +3680,12 @@ func _update_camera(delta: float) -> void:
 	if cam_shake > 0.0:
 		camera.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * cam_shake * 0.25
 		cam_shake = max(0.0, cam_shake - delta * 2.5)
+	if dbg_q.has("line") and OS.has_feature("web") and Engine.get_process_frames() % 10 == 0:
+		var hq := str(JavaScriptBridge.call("eval", "window.location.hash", true))
+		for kv in hq.trim_prefix("#").split("&", false):
+			var pp := kv.split("=")
+			if pp.size() == 2:
+				dbg_q[pp[0]] = pp[1]
 	if dbg_q.has("line") and dbg_line.size() == 6:
 		var fi := int(str(dbg_q.get("focus", "-1")))
 		var dist := float(str(dbg_q.get("dist", "2.6")))
