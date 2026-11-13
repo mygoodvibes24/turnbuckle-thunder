@@ -32,7 +32,7 @@ const STAT_COLS := [Color(0.95, 0.22, 0.12), Color(0.2, 0.8, 1.0), Color(1.0, 0.
 const CARD_W := 96.0
 const CARD_H := 116.0
 const CARD_GAP := 8.0
-const ROW_GAP := 14.0         # between the two card rows
+const ROW_GAP := 10.0         # between the two card rows
 const STORY_COL := Color(0.72, 0.4, 1.0)   # the STORY badge on story-mode characters
 const PLAT_H := 0.24          # platform top: the fighter stands on it
 
@@ -1654,8 +1654,8 @@ func _layout_cards() -> void:
 		var b := cards[i]
 		var on := i == sel
 		var sl: Vector2i = slots[i] if i < slots.size() else Vector2i(i, 0)
-		b.position = Vector2(sl.x * (CARD_W + CARD_GAP), sl.y * (CARD_H + ROW_GAP) + (-8.0 if on else 0.0))
-		b.scale = Vector2(1.08, 1.08) if on else Vector2.ONE
+		b.position = Vector2(sl.x * (CARD_W + CARD_GAP), sl.y * (CARD_H + ROW_GAP))
+		b.scale = Vector2(1.07, 1.07) if on else Vector2.ONE   # no lift: the top row sits under the info panel
 		b.z_index = 1 if on else 0
 
 
@@ -1728,7 +1728,7 @@ func _relayout() -> void:
 	var grid_w := grid_cols * (CARD_W + CARD_GAP) - CARD_GAP
 	var grid_h := grid_rows * (CARD_H + ROW_GAP) - ROW_GAP
 	var free_w := confirm_btn.position.x - 24.0 - ml
-	var free_h := (vp.y - mb) - (info_box.position.y + info_box.size.y + 10.0)
+	var free_h := (vp.y - mb) - (info_box.position.y + info_box.size.y + 16.0)
 	var k := clampf(minf(free_w / grid_w, free_h / grid_h), 0.6, 1.25)
 	card_row.scale = Vector2(k, k)
 	card_row.position = Vector2(ml + 4.0, vp.y - mb - grid_h * k)
