@@ -30,7 +30,7 @@ const RED := Color(0.86, 0.12, 0.08)
 const CPU_BLUE := Color(0.2, 0.55, 1.0)
 const STAT_COLS := [Color(0.95, 0.22, 0.12), Color(0.2, 0.8, 1.0), Color(1.0, 0.8, 0.15), Color(1.0, 0.5, 0.12)]
 const CARD_W := 96.0
-const CARD_H := 122.0
+const CARD_H := 116.0
 const CARD_GAP := 8.0
 const ROW_GAP := 14.0         # between the two card rows
 const STORY_COL := Color(0.72, 0.4, 1.0)   # the STORY badge on story-mode characters
@@ -1238,7 +1238,7 @@ func _build_ui() -> void:
 	info_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	info_box.add_theme_constant_override("separation", 4)
 	ui.add_child(info_box)
-	name_label = _label("", font_i, 56, Color(0.97, 0.95, 0.9), 12)
+	name_label = _label("", font_i, 48, Color(0.97, 0.95, 0.9), 11)
 	info_box.add_child(name_label)
 	genre_box = PanelContainer.new()
 	genre_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1248,31 +1248,31 @@ func _build_ui() -> void:
 	genre_label.add_theme_constant_override("shadow_offset_x", 0)
 	genre_label.add_theme_constant_override("shadow_offset_y", 0)
 	genre_box.add_child(genre_label)
-	bio_label = _label("", font_b, 20, Color(0.92, 0.91, 0.88), 5)
+	bio_label = _label("", font_b, 19, Color(0.92, 0.91, 0.88), 5)
 	bio_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	bio_label.custom_minimum_size = Vector2(520, 56)
+	bio_label.custom_minimum_size = Vector2(520, 50)
 	info_box.add_child(bio_label)
 	var gap := Control.new()
-	gap.custom_minimum_size = Vector2(0, 6)
+	gap.custom_minimum_size = Vector2(0, 2)
 	gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	info_box.add_child(gap)
 	for si in Roster.STATS.size():
 		var row := HBoxContainer.new()
 		row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		row.add_theme_constant_override("separation", 4)
-		var nl := _label(str(Roster.STATS[si]), font_i, 22, GOLD, 5)
+		var nl := _label(str(Roster.STATS[si]), font_i, 19, GOLD, 5)
 		nl.custom_minimum_size = Vector2(96, 0)
 		row.add_child(nl)
 		var segs: Array = []
 		for k in 10:
 			var seg := ColorRect.new()
-			seg.custom_minimum_size = Vector2(24, 18)
+			seg.custom_minimum_size = Vector2(24, 15)
 			seg.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 			seg.mouse_filter = Control.MOUSE_FILTER_IGNORE
 			row.add_child(seg)
 			segs.append(seg)
 		stat_segs.append(segs)
-		var vl := _label("0", font_i, 22, Color(1, 1, 1), 5)
+		var vl := _label("0", font_i, 19, Color(1, 1, 1), 5)
 		vl.custom_minimum_size = Vector2(40, 0)
 		vl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		row.add_child(vl)
@@ -1721,14 +1721,14 @@ func _relayout() -> void:
 	confirm_btn.pivot_offset = confirm_btn.size * 0.5
 
 	info_box.reset_size()
-	info_box.position = Vector2(ml, mt + 100.0)
+	info_box.position = Vector2(ml, mt + 94.0)
 
 	# The card grid: as big as fits between the info panel and the bottom edge, and left of
 	# CONFIRM (cards stay >= ~90 px wide on a 720-high canvas; phones only get wider).
 	var grid_w := grid_cols * (CARD_W + CARD_GAP) - CARD_GAP
 	var grid_h := grid_rows * (CARD_H + ROW_GAP) - ROW_GAP
 	var free_w := confirm_btn.position.x - 24.0 - ml
-	var free_h := (vp.y - mb) - (info_box.position.y + info_box.size.y + 14.0)
+	var free_h := (vp.y - mb) - (info_box.position.y + info_box.size.y + 10.0)
 	var k := clampf(minf(free_w / grid_w, free_h / grid_h), 0.6, 1.25)
 	card_row.scale = Vector2(k, k)
 	card_row.position = Vector2(ml + 4.0, vp.y - mb - grid_h * k)
