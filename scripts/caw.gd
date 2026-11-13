@@ -1003,7 +1003,7 @@ func _desc_text() -> String:
 			"SAVE":
 				return "Save your wrestler (story mode stars them)"
 			"BACK":
-				return "Back to the title"
+				return "Leave the editor"
 	if rows.is_empty():
 		return ""
 	var r: Dictionary = rows[row_sel]
@@ -1205,14 +1205,25 @@ func _save() -> void:
 		_pose(Wrestler.S.WIN, 2.6)
 	var tw := create_tween()
 	tw.tween_interval(1.6)
-	tw.tween_callback(func(): _leave(TITLE_SCENE))
+	tw.tween_callback(func(): _leave(_return_scene()))
 
 
 func _back() -> void:
 	if dirty:
 		_open_confirm()
 	else:
-		_leave(TITLE_SCENE)
+		_leave(_return_scene())
+
+
+## Where SAVE / BACK go: Game's "caw_return" meta (set by whoever opened the editor, e.g. story
+## mode) when present -- consumed here -- else the title.
+func _return_scene() -> String:
+	if game != null and game.has_meta("caw_return"):
+		var p := str(game.get_meta("caw_return"))
+		game.remove_meta("caw_return")
+		if not p.is_empty():
+			return p
+	return TITLE_SCENE
 
 
 func _leave(scene: String) -> void:
@@ -1395,7 +1406,7 @@ func _ov_press(idx: int) -> void:
 		Ov.CONFIRM:
 			_close_overlay()
 			if v == "YES":
-				_leave(TITLE_SCENE)
+				_leave(_return_scene())
 			return
 		Ov.PRESET:
 			_close_overlay()

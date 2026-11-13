@@ -476,6 +476,9 @@ func _activate(i: int) -> void:
 		"STORY MODE":
 			_start_match(STORY_SCENE)
 		"CREATE A WRESTLER":
+			var game: Node = get_node_or_null("/root/Game")
+			if game != null and game.has_meta("caw_return"):
+				game.remove_meta("caw_return")   # opened from the title: SAVE / BACK come back here
 			_start_match(CAW_SCENE)
 		"QUICK BRAWL":
 			_start_match(SELECT_SCENE)
