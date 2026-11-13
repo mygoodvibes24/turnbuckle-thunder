@@ -25,7 +25,7 @@ const CAW_SCENE := "res://caw.tscn"         # CREATE A WRESTLER -> editor (scrip
 const MENU_DEFAULT := 2
 # Web builds: index.html?scene=caw (or select / story / match) jumps straight to that screen
 # (handy for testing; harmless otherwise).
-const URL_SCENES := {"caw": CAW_SCENE, "select": SELECT_SCENE, "story": STORY_SCENE, "match": MATCH_SCENE}
+const URL_SCENES := {"caw": CAW_SCENE, "select": SELECT_SCENE, "story": STORY_SCENE, "match": MATCH_SCENE, "cutscene": "res://cutscene.tscn"}
 
 enum Phase { INTRO, PRESS, MENU, PANEL, LEAVING }
 
