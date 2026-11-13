@@ -11,6 +11,8 @@ var p2: Node3D
 var ring_root: Node3D
 var camera: Camera3D
 var cam_target := Vector3.ZERO
+var dbg_q := {}          # PREVIEW BRANCH ONLY: URL params
+var dbg_line: Array = []
 var cam_shake := 0.0
 var touch: Control
 var match_over := false
@@ -96,8 +98,37 @@ func _ready() -> void:
 		kid = game.call("p2_look")
 		p1_name = str(game.call("p1_name"))
 		p2_name = str(game.call("p2_name"))
+	if OS.has_feature("web"):
+		var q := str(JavaScriptBridge.call("eval", "window.location.search", true))
+		for kv in q.trim_prefix("?").split("&", false):
+			var pp := kv.split("=")
+			if pp.size() == 2:
+				dbg_q[pp[0]] = pp[1]
+	var sd: Script = load("res://scripts/story_data.gd")
+	var cast: Dictionary = sd.get_script_constant_map().get("CAST", {})
+	if dbg_q.has("p1") and cast.has(dbg_q["p1"]):
+		var lk: Dictionary = cast[dbg_q["p1"]]["look"]
+		tank = lk.duplicate(true)
+		p1_name = str(cast[dbg_q["p1"]]["name"])
+	if dbg_q.has("p2") and cast.has(dbg_q["p2"]):
+		var lk2: Dictionary = cast[dbg_q["p2"]]["look"]
+		kid = lk2.duplicate(true)
+		p2_name = str(cast[dbg_q["p2"]]["name"])
 	p1 = _spawn(p1_name, tank, false, spawn_p1)
-	p2 = _spawn(p2_name, kid, true, spawn_p2)
+	p2 = _spawn(p2_name, kid, not dbg_q.has("line"), spawn_p2)
+	if dbg_q.has("line"):
+		var ids := ["mom", "pickles", "hollis", "rudy", "vale", "lawndart"]
+		var c0 := (spawn_p1 + spawn_p2) * 0.5 + Vector3(0, 0, 1.6)
+		for i in ids.size():
+			var e: Dictionary = cast[ids[i]]
+			var w: Node3D = Wrestler.new()
+			ring_root.add_child(w)
+			var lk3: Dictionary = e["look"]
+			w.setup(str(e["name"]), lk3.duplicate(true), false)
+			w.position = c0 + Vector3((float(i) - 2.5) * 0.95, 0, 0)
+			dbg_line.append(w)
+		p1.position += Vector3(0, 0, -2.0)
+		p2.position += Vector3(0, 0, -2.0)
 	p1.opponent = p2
 	p2.opponent = p1
 	p1._snap_face_opponent()
@@ -3646,6 +3677,23 @@ func _update_camera(delta: float) -> void:
 	if cam_shake > 0.0:
 		camera.position += Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * cam_shake * 0.25
 		cam_shake = max(0.0, cam_shake - delta * 2.5)
+	if dbg_q.has("line") and dbg_line.size() == 6:
+		var fi := int(str(dbg_q.get("focus", "-1")))
+		var dist := float(str(dbg_q.get("dist", "2.6")))
+		var hh := float(str(dbg_q.get("h", "0.95")))
+		var yaw := deg_to_rad(float(str(dbg_q.get("yaw", "0"))))
+		var c: Vector3
+		if fi < 0:
+			var a0: Node3D = dbg_line[0]
+			var a5: Node3D = dbg_line[5]
+			c = (a0.global_position + a5.global_position) * 0.5
+			dist = float(str(dbg_q.get("dist", "5.4")))
+		else:
+			var wf: Node3D = dbg_line[clampi(fi, 0, 5)]
+			c = wf.global_position
+		camera.position = c + Vector3(sin(yaw) * dist, hh, cos(yaw) * dist)
+		camera.look_at(c + Vector3(0, hh, 0))
+		camera.fov = float(str(dbg_q.get("fov", "40")))
 
 
 # ---- presentation: trick cam, trails, speed lines, hype MC (scripts/mc.gd)
