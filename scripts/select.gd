@@ -20,6 +20,7 @@ const Audio := preload("res://scripts/audio.gd")
 const Music := preload("res://scripts/music.gd")
 const Catalog := preload("res://scripts/levels/catalog.gd")
 const MATCH_SCENE := "res://main.tscn"
+const CAW_SCENE := "res://caw.tscn"
 const TITLE_SCENE := "res://title.tscn"
 
 enum Phase { PICK_P1, PICK_CPU, PICK_STAGE, READY, LEAVING }
@@ -40,7 +41,11 @@ var frames := 0
 var headless := false
 var lock_until_ms := 0      # wall clock: confirm/back ignored until then (also eats duplicate key events)
 var stick_armed := true
-var sel := 0                  # highlighted card (Roster.count() = RANDOM)
+var sel := 0                  # highlighted card (roster.size() = RANDOM, +1 = CREATE A WRESTLER)
+# The fighters on offer: scripts/roster.gd + the player's created wrestler ("caw", Game.caw_entry())
+# when one exists. Without one, a CREATE A WRESTLER card (after RANDOM) opens res://caw.tscn.
+var roster: Array = []
+var show_create := false
 var p1_idx := 0
 var p2_idx := 1
 var shown_idx := -1           # whose model is on the turntable (-1: none)
@@ -175,11 +180,17 @@ func _ready() -> void:
 	start_ms = Time.get_ticks_msec()
 	headless = DisplayServer.get_name() == "headless"
 	game = get_node_or_null("/root/Game")
+	roster = Roster.ROSTER.duplicate()
+	if game != null and game.has_method("caw_exists") and bool(game.call("caw_exists")) and game.has_method("caw_entry"):
+		var ce: Variant = game.call("caw_entry")
+		if ce is Dictionary and (ce as Dictionary).has("look") and (ce as Dictionary).has("stats"):
+			roster.append(ce)
+	show_create = roster.size() == Roster.ROSTER.size() and ResourceLoader.exists(CAW_SCENE)
 	if game != null:
-		p1_idx = maxi(0, Roster.index_of(str(game.get("p1_id"))))
-		p2_idx = maxi(0, Roster.index_of(str(game.get("p2_id"))))
+		p1_idx = maxi(0, _idx_of(str(game.get("p1_id"))))
+		p2_idx = maxi(0, _idx_of(str(game.get("p2_id"))))
 	if p2_idx == p1_idx:
-		p2_idx = (p1_idx + 1) % Roster.count()
+		p2_idx = (p1_idx + 1) % roster.size()
 	sel = p1_idx
 	_lock(0.5)   # the title's confirm press must not also pick a fighter
 	font_b = FontVariation.new()
@@ -195,6 +206,22 @@ func _ready() -> void:
 	_refresh_info(true)
 	_refresh_cards()
 	get_viewport().size_changed.connect(_relayout)
+
+
+func _idx_of(id: String) -> int:
+	for i in roster.size():
+		if str((roster[i] as Dictionary)["id"]) == id:
+			return i
+	return -1
+
+
+## Cards in the row: the fighters, RANDOM and (no created wrestler yet) CREATE A WRESTLER.
+func _card_count() -> int:
+	return roster.size() + (2 if show_create else 1)
+
+
+func _is_create(i: int) -> bool:
+	return show_create and i == roster.size() + 1
 
 
 # ---------------------------------------------------------------- per frame
@@ -267,10 +294,10 @@ func _staged_load() -> void:
 				music.call("start")
 		_:
 			# Background prebuild, nearest cards first.
-			var n := Roster.count()
+			var n := roster.size()
 			for k in n:
 				var i: int = posmod(sel + (k + 1) / 2 * (1 if k % 2 == 1 else -1), n)
-				var e: Dictionary = Roster.ROSTER[i]
+				var e: Dictionary = roster[i]
 				if not models.has(str(e["id"])):
 					_model_for(i)
 					break
@@ -366,7 +393,7 @@ func _move_sel(dir: int) -> void:
 	if phase == Phase.PICK_STAGE:
 		_set_stage(posmod(stage_sel + dir, stages.size() + 1))
 		return
-	_set_sel(posmod(sel + dir, Roster.count() + 1))
+	_set_sel(posmod(sel + dir, _card_count()))
 
 
 func _set_sel(i: int) -> void:
@@ -404,14 +431,20 @@ func _confirm() -> void:
 	if phase == Phase.PICK_STAGE:
 		_confirm_stage()
 		return
-	var n := Roster.count()
+	var n := roster.size()
 	var pick := sel
+	if _is_create(pick):
+		_snd("big_thud", -6.0)
+		if game != null:
+			game.set_meta("caw_return", "res://select.tscn")   # the editor may come back here
+		_leave(CAW_SCENE)
+		return
 	if phase == Phase.PICK_P1:
 		if pick >= n:
 			pick = randi() % n
 		p1_idx = pick
 		if game != null:
-			game.set("p1_id", str(Roster.ROSTER[p1_idx]["id"]))
+			game.set("p1_id", str(roster[p1_idx]["id"]))
 		phase = Phase.PICK_CPU
 		_lock(0.35)
 		shake = maxf(shake, 0.5)
@@ -434,7 +467,7 @@ func _confirm() -> void:
 			return
 		p2_idx = pick
 		if game != null:
-			game.set("p2_id", str(Roster.ROSTER[p2_idx]["id"]))
+			game.set("p2_id", str(roster[p2_idx]["id"]))
 		sel = p2_idx
 		_show_model(sel)
 		_refresh_cards()
@@ -474,8 +507,8 @@ func _go_ready() -> void:
 	_snd("punch", -2.0)
 	if audio != null:
 		audio.call("ring_bell", 2)
-	var a: Dictionary = Roster.ROSTER[p1_idx]
-	var b: Dictionary = Roster.ROSTER[p2_idx]
+	var a: Dictionary = roster[p1_idx]
+	var b: Dictionary = roster[p2_idx]
 	vs_label.text = "%s   VS   %s" % [a["display_name"], b["display_name"]]
 	vs_band.visible = true
 	vs_band.modulate.a = 0.0
@@ -509,7 +542,7 @@ func _leave(scene: String) -> void:
 # ---------------------------------------------------------------- the model on the turntable
 
 func _model_for(i: int) -> Node3D:
-	var e: Dictionary = Roster.ROSTER[i]
+	var e: Dictionary = roster[i]
 	var id := str(e["id"])
 	if models.has(id):
 		return models[id]
@@ -527,7 +560,7 @@ func _model_for(i: int) -> Node3D:
 func _shown_model() -> Node3D:
 	if shown_idx < 0:
 		return null
-	var e: Dictionary = Roster.ROSTER[shown_idx]
+	var e: Dictionary = roster[shown_idx]
 	var id := str(e["id"])
 	if models.has(id):
 		return models[id]
@@ -540,8 +573,8 @@ func _show_model(i: int) -> void:
 	var old := _shown_model()
 	if old != null:
 		old.visible = false
-	question.visible = i >= Roster.count()
-	if i >= Roster.count():
+	question.visible = i >= roster.size()
+	if i >= roster.size():
 		shown_idx = -1
 		_tint_rims(GOLD)
 		return
@@ -553,7 +586,7 @@ func _show_model(i: int) -> void:
 	_start_state(w, Wrestler.S.TAUNT)
 	plan = {"seq": [[Wrestler.S.TAUNT, Wrestler.TAUNT_TIME], [Wrestler.S.IDLE, 3.2],
 		[Wrestler.S.TAUNT, Wrestler.TAUNT_TIME], [Wrestler.S.IDLE, 4.0]], "i": 0, "left": Wrestler.TAUNT_TIME}
-	var e: Dictionary = Roster.ROSTER[i]
+	var e: Dictionary = roster[i]
 	var look: Dictionary = e["look"]
 	_tint_rims(look.get("gear", GOLD))
 
@@ -1163,7 +1196,7 @@ func _build_ui() -> void:
 	card_row = Control.new()
 	card_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	ui.add_child(card_row)
-	for i in Roster.count() + 1:
+	for i in _card_count():
 		_build_card(i)
 
 	confirm_btn = Button.new()
@@ -1224,7 +1257,7 @@ func _build_ui() -> void:
 
 
 func _build_card(i: int) -> void:
-	var n := Roster.count()
+	var n := roster.size()
 	var b := Button.new()
 	b.focus_mode = Control.FOCUS_NONE
 	b.size = Vector2(CARD_W, CARD_H)
@@ -1234,8 +1267,11 @@ func _build_card(i: int) -> void:
 	cards.append(b)
 	var short := "RANDOM"
 	var genre := "???"
-	if i < n:
-		var e: Dictionary = Roster.ROSTER[i]
+	if _is_create(i):
+		short = "CREATE"
+		genre = "NEW WRESTLER"
+	elif i < n:
+		var e: Dictionary = roster[i]
 		short = str(e["short_name"])
 		genre = str(e["genre"])
 	var pic := TextureRect.new()
@@ -1247,13 +1283,29 @@ func _build_card(i: int) -> void:
 	pic.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
 	pic.texture = _portrait(i)
 	b.add_child(pic)
-	if i >= n:
+	if _is_create(i):
+		var plus := _label("+", font_i, 72, Color(0.97, 0.95, 0.9), 10)
+		plus.position = Vector2(0, 4)
+		plus.size = Vector2(CARD_W, CARD_H - 44)
+		plus.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		plus.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		b.add_child(plus)
+	elif i >= n:
 		var q := _label("?", font_i, 64, GOLD, 10)
 		q.position = Vector2(0, 8)
 		q.size = Vector2(CARD_W, CARD_H - 44)
 		q.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		q.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		b.add_child(q)
+	if i < n and str((roster[i] as Dictionary)["id"]) == "caw":
+		var ini := _label(_initials(str((roster[i] as Dictionary)["display_name"])), font_i, 20, Color(0.97, 0.95, 0.9), 5)
+		var isb := StyleBoxFlat.new()
+		isb.bg_color = Color(0.02, 0.02, 0.03, 0.8)
+		isb.content_margin_left = 5
+		isb.content_margin_right = 5
+		ini.add_theme_stylebox_override("normal", isb)
+		ini.position = Vector2(8, 8)
+		b.add_child(ini)
 	var strip := ColorRect.new()
 	strip.color = Color(0.02, 0.02, 0.03, 0.92)
 	strip.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -1285,6 +1337,13 @@ func _build_card(i: int) -> void:
 	card_cpu_tags.append(cpt)
 
 
+func _initials(nm: String) -> String:
+	var out := ""
+	for w in nm.split(" ", false):
+		out += w.substr(0, 1)
+	return out.substr(0, 3).to_upper()
+
+
 func _tag(text: String, col: Color) -> Label:
 	var l := _label(text, font_i, 17, Color(1, 1, 1), 4)
 	var sb := StyleBoxFlat.new()
@@ -1303,11 +1362,11 @@ func _portrait(i: int) -> ImageTexture:
 	var w := 86
 	var h := 94
 	var img := Image.create_empty(w, h, false, Image.FORMAT_RGBA8)
-	var n := Roster.count()
+	var n := roster.size()
 	var gear := GOLD
 	var look: Dictionary = {}
 	if i < n:
-		var e: Dictionary = Roster.ROSTER[i]
+		var e: Dictionary = roster[i]
 		look = e["look"]
 		gear = look.get("gear", GOLD)
 	var skin: Color = look.get("skin", Color(0.5, 0.36, 0.28))
@@ -1408,8 +1467,16 @@ func _portrait(i: int) -> ImageTexture:
 
 
 func _refresh_info(instant: bool) -> void:
-	var n := Roster.count()
-	if sel >= n:
+	var n := roster.size()
+	if _is_create(sel):
+		name_label.text = "CREATE A WRESTLER"
+		genre_label.text = "  CUSTOM  "
+		genre_box.add_theme_stylebox_override("panel", _box_style(Color(0.97, 0.95, 0.9), Color(0.02, 0.02, 0.02), 6, 0.25))
+		bio_label.text = "Build your own brawler: body, face, hair, fits, colors, name. They star in STORY MODE too."
+		sig_label.text = ""
+		for si in 4:
+			stat_target[si] = 0.0
+	elif sel >= n:
 		name_label.text = "RANDOM"
 		genre_label.text = "  ANYONE  "
 		genre_box.add_theme_stylebox_override("panel", _box_style(GOLD, Color(0.02, 0.02, 0.02), 6, 0.25))
@@ -1418,7 +1485,7 @@ func _refresh_info(instant: bool) -> void:
 		for si in 4:
 			stat_target[si] = 0.0
 	else:
-		var e: Dictionary = Roster.ROSTER[sel]
+		var e: Dictionary = roster[sel]
 		var look: Dictionary = e["look"]
 		var gear: Color = look.get("gear", GOLD)
 		name_label.text = str(e["display_name"])
@@ -1441,26 +1508,26 @@ func _refresh_info(instant: bool) -> void:
 		step_label.text = "PLAYER 1"
 		step_box.add_theme_stylebox_override("panel", _box_style(RED, Color(0.02, 0.02, 0.02), 6))
 	elif phase == Phase.PICK_STAGE:
-		var a: Dictionary = Roster.ROSTER[p1_idx]
-		var b: Dictionary = Roster.ROSTER[p2_idx]
+		var a: Dictionary = roster[p1_idx]
+		var b: Dictionary = roster[p2_idx]
 		head_label.text = "PICK THE SPOT"
 		step_label.text = "STAGE      %s  VS  %s" % [a["short_name"], b["short_name"]]
 		step_box.add_theme_stylebox_override("panel", _box_style(GOLD.darkened(0.25), Color(0.02, 0.02, 0.02), 6))
 	else:
-		var p1e: Dictionary = Roster.ROSTER[p1_idx]
+		var p1e: Dictionary = roster[p1_idx]
 		head_label.text = "CHOOSE YOUR OPPONENT"
 		step_label.text = "CPU OPPONENT      P1: " + str(p1e["display_name"])
 		step_box.add_theme_stylebox_override("panel", _box_style(CPU_BLUE, Color(0.02, 0.02, 0.02), 6))
 
 
 func _refresh_cards() -> void:
-	var n := Roster.count()
+	var n := roster.size()
 	for i in cards.size():
 		var b := cards[i]
 		var on := i == sel
 		var gear := GOLD
 		if i < n:
-			var e: Dictionary = Roster.ROSTER[i]
+			var e: Dictionary = roster[i]
 			var look: Dictionary = e["look"]
 			gear = look.get("gear", GOLD)
 		var sb := StyleBoxFlat.new()
@@ -1552,7 +1619,7 @@ func _relayout() -> void:
 	confirm_btn.position = Vector2(vp.x - mr - confirm_btn.size.x, vp.y - mb - confirm_btn.size.y)
 	confirm_btn.pivot_offset = confirm_btn.size * 0.5
 
-	var row_w := (Roster.count() + 1) * (CARD_W + CARD_GAP) - CARD_GAP
+	var row_w := _card_count() * (CARD_W + CARD_GAP) - CARD_GAP
 	var free_w := confirm_btn.position.x - 24.0 - ml
 	var k := clampf(free_w / row_w, 0.6, 1.25)
 	card_row.scale = Vector2(k, k)

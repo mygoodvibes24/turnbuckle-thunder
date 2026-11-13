@@ -5,6 +5,14 @@ extends RefCounted
 ## first, descriptive not-yet-rendered keys after). CHAPTERS = 8 chapters, each with an intro
 ## cutscene (several scenes), a match, a one-scene win and a one-scene lose (lose sets up a retry).
 ##
+## THE PROTAGONIST is the player's created wrestler (caw_contract.md) or, when there is none, Tank.
+## CAST "tank" is that slot (scripts/story_text.gd hero_cast() swaps in the created look + name).
+## Never write the protagonist's name or pronouns literally: use the tokens resolved at runtime by
+## scripts/story_text.gd - {NAME}/{Name} (TANK), {FULLNAME}/{Fullname} (TANK MAGRUDER), {FIRST}/
+## {First} (Mom's "Theodore"), {SIG} (their finisher, FRIDGE DROP), {he} {him} {his} {son} {boy}
+## {man} {guy} ({He} capitalised, {HIS} upper case). Other characters keep their own pronouns.
+## The family name stays Magruder (it's Mom's house). Keep lines <= 140 chars with 14-char names.
+##
 ## Running jokes / callbacks (keep them consistent if you edit):
 ##   - Mom calls him THEODORE when he is in trouble. The good cheese is off limits. Chili lives
 ##     in the blue dish.
@@ -17,7 +25,7 @@ extends RefCounted
 ##   - MC Lawn Dart's "SOMEBODY CALL HIS MAMA!" -> in the finale, she is right there.
 
 const CAST := {
-	"tank": {"name": "TANK", "roster_id": "tank"},
+	"tank": {"name": "{NAME}", "roster_id": "tank"},
 	"peligro": {"name": "LIL PELIGRO", "roster_id": "peligro"},
 	"starla": {"name": "STARLA VOLT", "roster_id": "starla"},
 	"razz": {"name": "RAZZ DECIBEL", "roster_id": "razz"},
@@ -143,7 +151,7 @@ const CHAPTERS := [
 	# ------------------------------------------------------------------ CHAPTER 1 (rise)
 	{
 		"id": "ch1", "title": "CHAPTER 1", "name": "Rent Is Due",
-		"teaser": "Mom wants $600 by the first. Tank has eleven dollars and a dream.",
+		"teaser": "Mom wants $600 by the first. {Name} has eleven dollars and a dream.",
 		"payout": 100,
 		"intro": [
 			{
@@ -151,8 +159,8 @@ const CHAPTERS := [
 				"cast": {"tank": "left", "mom": "right"},
 				"lines": [
 					{"who": "narrator", "text": "The Eastside. 7:02 AM. The Magruder kitchen.", "emote": "idle", "shot": "wide"},
-					{"who": "mom", "text": "Theodore Magruder. Why is there a dent in my refrigerator the exact shape of a grown man?", "emote": "point", "shot": "two_shot", "action": "enter_right"},
-					{"who": "tank", "text": "Practicing the Fridge Drop, Ma. It's my finisher. The fridge is fine. Listen, it's humming.", "emote": "shrug"},
+					{"who": "mom", "text": "{First} Magruder. Why is there a dent in my refrigerator the exact shape of a grown {man}?", "emote": "point", "shot": "two_shot", "action": "enter_right"},
+					{"who": "tank", "text": "Practicing the {Sig}, Ma. It's my finisher. The fridge is fine. Listen, it's humming.", "emote": "shrug"},
 					{"who": "mom", "text": "It's humming because it's scared.", "emote": "cross_arms", "shot": "close"},
 					{"who": "mom", "text": "Rent is due on the first. Your half is six hundred dollars. You are twenty-six years old.", "emote": "talk"},
 					{"who": "tank", "text": "Twenty-five and a half. Emotionally.", "emote": "think"},
@@ -165,7 +173,7 @@ const CHAPTERS := [
 				"set": "bedroom", "time": "day", "music": "chill",
 				"cast": {"tank": "center", "pickles": "right"},
 				"lines": [
-					{"who": "pickles", "text": "TANK! Our last video got forty-one views and ELEVEN DOLLARS in tips!", "emote": "cheer", "action": "enter_right", "cash": 11},
+					{"who": "pickles", "text": "{NAME}! Our last video got forty-one views and ELEVEN DOLLARS in tips!", "emote": "cheer", "action": "enter_right", "cash": 11},
 					{"who": "tank", "text": "Eleven dollars?! We're rich! ...How far is eleven from six hundred?", "emote": "cheer"},
 					{"who": "pickles", "text": "Five hundred eighty-nine. I did the math on the Broomcam.", "emote": "think"},
 					{"who": "pickles", "text": "Behold: the Broomcam. One phone, one roll of duct tape, one broom. Cinema.", "emote": "flex", "shot": "insert"},
@@ -181,7 +189,7 @@ const CHAPTERS := [
 					{"who": "narrator", "text": "The Magruder backyard. One kiddie pool. One shed. Mr. Hollis's prize hydrangeas, just over the fence.", "emote": "idle", "shot": "wide"},
 					{"who": "hollis", "text": "Magruder! Anybody lands in my hydrangeas, I'm calling the city!", "emote": "angry"},
 					{"who": "tank", "text": "Evening, Mr. Hollis! Love the flowers! Very... purple!", "emote": "talk"},
-					{"who": "peligro", "text": "Big man! Today the student becomes the master! ...Wait. I was never your student. Today I just WIN!", "emote": "flex", "action": "enter_right"},
+					{"who": "peligro", "text": "Big {man}! Today the student becomes the master! ...Wait. I was never your student. Today I just WIN!", "emote": "flex", "action": "enter_right"},
 					{"who": "tank", "text": "Kid, I've been wrestling in this yard since you were bouncing in diapers.", "emote": "cross_arms"},
 					{"who": "peligro", "text": "I STILL bounce! That's my whole thing!", "emote": "point"},
 					{"who": "pickles", "text": "Rolling! Say something for the thumbnail!", "emote": "cheer"},
@@ -191,13 +199,13 @@ const CHAPTERS := [
 		],
 		"match": {"opponent": "peligro", "cpu_skill": 0.3, "location": "backyard",
 			"objective": "Win the match and start the rent fund",
-			"bonus": {"text": "Hit your FRIDGE DROP once", "type": "signature", "count": 1, "cash": 25}},
+			"bonus": {"text": "Hit your {SIG} once", "type": "signature", "count": 1, "cash": 25}},
 		"win": [
 			{
 				"set": "backyard", "time": "night", "music": "hype",
 				"cast": {"tank": "left", "peligro": "right", "pickles": "center"},
 				"lines": [
-					{"who": "pickles", "text": "THAT'S THUMBNAIL! Tips are pouring in! One hundred dollars, Tank!", "emote": "cheer", "cash": 100},
+					{"who": "pickles", "text": "THAT'S THUMBNAIL! Tips are pouring in! One hundred dollars, {Name}!", "emote": "cheer", "cash": 100},
 					{"who": "peligro", "text": "Okay, okay. You hit like a dropped fridge. Rematch someday. I'm getting a bigger trampoline.", "emote": "sit"},
 					{"who": "tank", "text": "A hundred bucks. Ma's gonna cry. Or yell. One of those.", "emote": "flex", "shot": "low_hero"},
 					{"who": "phone", "text": "Scrubs_N_Slams: that was GOOD baby. ice that shoulder", "emote": "phone", "shot": "insert"},
@@ -243,7 +251,7 @@ const CHAPTERS := [
 					{"who": "razz", "text": "Oi, big lad! My band, the Gutter Choir, is playing YOUR backyard Saturday. Your mum said yes.", "emote": "point", "action": "enter_right"},
 					{"who": "tank", "text": "My mom said YES?", "emote": "shock"},
 					{"who": "razz", "text": "She said 'over my dead body.' In punk, that's a yes.", "emote": "shrug"},
-					{"who": "pickles", "text": "Wait. A band means a crowd. Tank... a crowd TIPS.", "emote": "think"},
+					{"who": "pickles", "text": "Wait. A band means a crowd. {Name}... a crowd TIPS.", "emote": "think"},
 					{"who": "razz", "text": "We wrestle for it. I win, the yard's a mosh pit. You win, the Gutter Choir plays your entrance music.", "emote": "talk"},
 					{"who": "tank", "text": "Is the music good?", "emote": "think"},
 					{"who": "razz", "text": "It's LOUD, mate. That's better than good.", "emote": "flex", "shot": "low_hero"},
@@ -255,7 +263,7 @@ const CHAPTERS := [
 				"lines": [
 					{"who": "hollis", "text": "Absolutely not. No bands. No body slams. My hydrangeas just started speaking to me again.", "emote": "angry"},
 					{"who": "razz", "text": "Respect, grandpa. I'll keep it to one amp. Two. Three, tops.", "emote": "shrug"},
-					{"who": "hollis", "text": "Son, I've been in more noise than you'll ever make. Fine. Stay off the flowers.", "emote": "cross_arms", "shot": "close"},
+					{"who": "hollis", "text": "{Son}, I've been in more noise than you'll ever make. Fine. Stay off the flowers.", "emote": "cross_arms", "shot": "close"},
 					{"who": "tank", "text": "...What did he mean, 'more noise'?", "emote": "think"},
 					{"who": "narrator", "text": "Crowd: twenty-three neighbors, two dogs and one very confused pizza guy.", "emote": "idle", "shot": "wide"},
 					{"who": "razz", "text": "LET'S MAKE SOME NOISE!", "emote": "cheer", "shot": "low_hero", "sfx": "cheer_small"},
@@ -293,32 +301,32 @@ const CHAPTERS := [
 	# ------------------------------------------------------------------ CHAPTER 3 (rise)
 	{
 		"id": "ch3", "title": "CHAPTER 3", "name": "Heartbreak Suplex",
-		"teaser": "A pop star needs a villain for her music video. Tank needs a check.",
+		"teaser": "A pop star needs a villain for her music video. {Name} needs a check.",
 		"payout": 250,
 		"intro": [
 			{
 				"set": "bedroom", "time": "night", "music": "chill",
 				"cast": {"tank": "left", "pickles": "right"},
 				"lines": [
-					{"who": "pickles", "text": "Tank. TANK. MC Lawn Dart reposted the Razz match on LAWN DART LIVE!", "emote": "phone"},
+					{"who": "pickles", "text": "{Name}. {NAME}. MC Lawn Dart reposted the Razz match on LAWN DART LIVE!", "emote": "phone"},
 					{"who": "tank", "text": "THE MC Lawn Dart? The guy who yells at backyards for a living?", "emote": "shock"},
-					{"who": "tv", "text": "LAWN DART LIVE! THIS BIG MAN HITS LIKE A DROPPED FRIDGE! SOMEBODY CALL HIS MAMA!", "emote": "idle", "shot": "insert"},
+					{"who": "tv", "text": "LAWN DART LIVE! THIS BIG {MAN} HITS LIKE A DROPPED FRIDGE! SOMEBODY CALL {HIS} MAMA!", "emote": "idle", "shot": "insert"},
 					{"who": "pickles", "text": "Three thousand new subscribers overnight. And a DM.", "emote": "cheer"},
-					{"who": "phone", "text": "STARLA VOLT: hi!! i need a big scary man for my music video. $250? xoxo", "emote": "phone", "shot": "insert"},
-					{"who": "tank", "text": "Ask her if 'big scary man' gets a trailer.", "emote": "point"},
-					{"who": "pickles", "text": "It's a store parking lot, Tank. You get a shopping cart.", "emote": "shrug"},
+					{"who": "phone", "text": "STARLA VOLT: hi!! i need a big scary {man} for my music video. $250? xoxo", "emote": "phone", "shot": "insert"},
+					{"who": "tank", "text": "Ask her if 'big scary {man}' gets a trailer.", "emote": "point"},
+					{"who": "pickles", "text": "It's a store parking lot, {Name}. You get a shopping cart.", "emote": "shrug"},
 				],
 			},
 			{
 				"set": "store_lot", "time": "day", "music": "hype",
 				"cast": {"tank": "left", "starla": "right", "lawndart": "back_left"},
 				"lines": [
-					{"who": "starla", "text": "There he is, my villain! The song is 'Heartbreak Suplex.' You're the heartbreak. I'm the suplex.", "emote": "cheer", "action": "enter_right"},
+					{"who": "starla", "text": "There's my villain! The song is 'Heartbreak Suplex.' You're the heartbreak. I'm the suplex.", "emote": "cheer", "action": "enter_right"},
 					{"who": "tank", "text": "Hold on. I'm the VILLAIN?", "emote": "shock"},
-					{"who": "starla", "text": "You look like a guy who'd eat a girl's fries. Don't take it personal. It's the brand.", "emote": "shrug"},
+					{"who": "starla", "text": "You look like a {guy} who'd eat a girl's fries. Don't take it personal. It's the brand.", "emote": "shrug"},
 					{"who": "tank", "text": "I would NEVER eat a girl's fries. Without asking.", "emote": "sad", "shot": "close"},
 					{"who": "lawndart", "text": "LIVE FROM A PARKING LOT, IT'S YOUR BOY, MC LAWN DART! I HEARD THERE WAS A FRIDGE IN TOWN!", "emote": "cheer", "shot": "low_hero", "action": "enter_left"},
-					{"who": "starla", "text": "One thing, big guy. I do my own stunts. We shoot the fight in my aunt's backyard. Go easy and I'll know.", "emote": "point"},
+					{"who": "starla", "text": "One thing, big {guy}. I do my own stunts. We shoot the fight in my aunt's backyard. Go easy and I'll know.", "emote": "point"},
 					{"who": "tank", "text": "Ma raised me to never go easy. Also to wear clean socks. Today I'm one for two.", "emote": "cross_arms", "sfx": "bell"},
 				],
 			},
@@ -360,8 +368,8 @@ const CHAPTERS := [
 				"set": "kitchen", "time": "night", "music": "chill",
 				"cast": {"tank": "left", "mom": "right"},
 				"lines": [
-					{"who": "narrator", "text": "Two days until rent. Tank has $500. Mom has been awake since yesterday.", "emote": "idle", "shot": "wide"},
-					{"who": "mom", "text": "Theodore. Who ate the good cheese.", "emote": "eat"},
+					{"who": "narrator", "text": "Two days until rent. {Name} has $500. Mom has been awake since yesterday.", "emote": "idle", "shot": "wide"},
+					{"who": "mom", "text": "{First}. Who ate the good cheese.", "emote": "eat"},
 					{"who": "tank", "text": "A burglar. A hungry, handsome burglar.", "emote": "shrug"},
 					{"who": "mom", "text": "A burglar with your exact teeth marks. Also, Gerald came by and measured your room. He brought the fern.", "emote": "facepalm"},
 					{"who": "tank", "text": "Ma, I'm almost there. One more match. A real promoter called.", "emote": "talk"},
@@ -375,7 +383,7 @@ const CHAPTERS := [
 				"set": "store_lot", "time": "night", "music": "tense",
 				"cast": {"tank": "left", "rudy": "center", "dusty": "right", "pickles": "back_left"},
 				"lines": [
-					{"who": "rudy", "text": "Tank Magruder! Tank Magruder! Rudy Two-Times. Promoter. Promoter.", "emote": "talk", "action": "enter_left"},
+					{"who": "rudy", "text": "{Fullname}! {Fullname}! Rudy Two-Times. Promoter. Promoter.", "emote": "talk", "action": "enter_left"},
 					{"who": "pickles", "text": "Why does he say everything twice?", "emote": "think"},
 					{"who": "rudy", "text": "Lotta noise out here, kid. Lotta noise. Gotta make sure it lands. Make sure it lands.", "emote": "shrug"},
 					{"who": "rudy", "text": "Four hundred to the winner, cash, out back in my cousin's yard. Plus a car wash coupon. Barely expired.", "emote": "point"},
@@ -426,7 +434,7 @@ const CHAPTERS := [
 				"set": "kitchen", "time": "day", "music": "chill",
 				"cast": {"tank": "left", "mom": "right"},
 				"lines": [
-					{"who": "tank", "text": "Ma. Six hundred dollars. Rent. Paid. By me. Theodore. Your son.", "emote": "flex", "action": "slam_table", "sfx": "pop"},
+					{"who": "tank", "text": "Ma. Six hundred dollars. Rent. Paid. By me. {First}. Your {son}.", "emote": "flex", "action": "slam_table", "sfx": "pop"},
 					{"who": "mom", "text": "...Mm.", "emote": "shock", "shot": "close"},
 					{"who": "mom", "text": "I'm counting it again. Not because I don't trust you. Because I want to count it again.", "emote": "think"},
 					{"who": "mom", "text": "Look at you. Don't let it go to your head. It's big enough. I've seen it on the internet.", "emote": "laugh"},
@@ -439,14 +447,14 @@ const CHAPTERS := [
 				"cast": {"tank": "left", "vale": "center", "halo": "right", "pickles": "back_left"},
 				"lines": [
 					{"who": "narrator", "text": "Downtown. A rooftop party. Valet parking for people who don't own cars.", "emote": "idle", "shot": "wide"},
-					{"who": "vale", "text": "Tank Magruder. Preston Vale, Vale Elite. I turn backyard guys into front-yard guys.", "emote": "talk", "action": "enter_right"},
+					{"who": "vale", "text": "{Fullname}. Preston Vale, Vale Elite. I turn backyard guys into front-yard guys.", "emote": "talk", "action": "enter_right"},
 					{"who": "tank", "text": "What's the difference?", "emote": "think"},
 					{"who": "vale", "text": "About a hundred thousand followers and a pool.", "emote": "laugh"},
 					{"who": "vale", "text": "Sign tonight. One showcase match with my guy, Yung Halo. Six hundred, guaranteed. Then the sky.", "emote": "point"},
 					{"who": "halo", "text": "Don't get excited. I drop a song every week. I'll drop you before the chorus.", "emote": "cross_arms"},
-					{"who": "pickles", "text": "Tank. This contract is eleven pages. The font is tiny. I think page nine says 'forever.'", "emote": "think", "shot": "over_shoulder"},
+					{"who": "pickles", "text": "{Name}. This contract is eleven pages. The font is tiny. I think page nine says 'forever.'", "emote": "think", "shot": "over_shoulder"},
 					{"who": "tank", "text": "Six hundred guaranteed, Pickles. Ma's feet. The good cheese. I'm signing.", "emote": "shrug"},
-					{"who": "vale", "text": "Smart man. Sign here, here, and initial where it says 'all rights.'", "emote": "talk", "shot": "close"},
+					{"who": "vale", "text": "Smart {man}. Sign here, here, and initial where it says 'all rights.'", "emote": "talk", "shot": "close"},
 					{"who": "halo", "text": "...You should read it, man.", "emote": "sad", "shot": "close"},
 					{"who": "vale", "text": "Halo. Stretch. Smile. Cameras are on.", "emote": "point"},
 				],
@@ -462,8 +470,8 @@ const CHAPTERS := [
 				"lines": [
 					{"who": "vale", "text": "THAT is a product! Six hundred, as promised. See? I'm a man of my word. Several words. Eleven pages.", "emote": "cheer", "cash": 600},
 					{"who": "tank", "text": "Man, I thought you'd be shady. You're alright, Vale.", "emote": "laugh"},
-					{"who": "halo", "text": "Good match, big man. For real. ...Read page nine tonight.", "emote": "sad", "shot": "close"},
-					{"who": "vale", "text": "Halo. Car. Now. Welcome to the family, Tank!", "emote": "point"},
+					{"who": "halo", "text": "Good match, big {man}. For real. ...Read page nine tonight.", "emote": "sad", "shot": "close"},
+					{"who": "vale", "text": "Halo. Car. Now. Welcome to the family, {Name}!", "emote": "point"},
 				],
 			},
 		],
@@ -473,7 +481,7 @@ const CHAPTERS := [
 				"cast": {"tank": "left", "vale": "center", "halo": "right"},
 				"lines": [
 					{"who": "halo", "text": "Told you. Before the chorus.", "emote": "flex"},
-					{"who": "vale", "text": "Don't sweat it, big guy. You're under contract either way. Losers make great content too. Again!", "emote": "laugh"},
+					{"who": "vale", "text": "Don't sweat it, big {guy}. You're under contract either way. Losers make great content too. Again!", "emote": "laugh"},
 					{"who": "tank", "text": "...Did he say 'either way'?", "emote": "think"},
 				],
 			},
@@ -482,20 +490,20 @@ const CHAPTERS := [
 	# ------------------------------------------------------------------ CHAPTER 6 (setback)
 	{
 		"id": "ch6", "title": "CHAPTER 6", "name": "Page Nine",
-		"teaser": "The fine print bites. Vale owns the channel, and he wants Tank to lose on purpose.",
+		"teaser": "The fine print bites. Vale owns the channel, and he wants {Name} to lose on purpose.",
 		"payout": 750,
 		"intro": [
 			{
 				"set": "bedroom", "time": "day", "music": "sad",
 				"cast": {"tank": "left", "pickles": "right"},
 				"lines": [
-					{"who": "pickles", "text": "Tank. Our channel. It says 'owned by Vale Elite.' He renamed it TANK THE GOON.", "emote": "shock"},
-					{"who": "tv", "text": "VALE ELITE PRESENTS: TANK THE GOON! WATCH A BIG DUMB FRIDGE FALL OFF A SHED! (clown horn)", "emote": "idle", "shot": "insert"},
+					{"who": "pickles", "text": "{Name}. Our channel. It says 'owned by Vale Elite.' He renamed it {NAME} THE GOON.", "emote": "shock"},
+					{"who": "tv", "text": "VALE ELITE PRESENTS: {NAME} THE GOON! WATCH A BIG DUMB FRIDGE FALL OFF A SHED! (clown horn)", "emote": "idle", "shot": "insert"},
 					{"who": "tank", "text": "He put clown horns on me. On my ART.", "emote": "angry"},
-					{"who": "pickles", "text": "Page nine: 'all footage, likeness and catchphrases.' He owns 'That's thumbnail,' Tank. He owns MY thing.", "emote": "sad"},
+					{"who": "pickles", "text": "Page nine: 'all footage, likeness and catchphrases.' He owns 'That's thumbnail,' {Name}. He owns MY thing.", "emote": "sad"},
 					{"who": "phone", "text": "VALE: Big news! Sat you face Boom Bap Booker. You lose in round two. Legend's comeback. Sells great!", "emote": "phone", "shot": "insert"},
 					{"who": "tank", "text": "I don't lose on purpose.", "emote": "cross_arms"},
-					{"who": "pickles", "text": "Then don't. But I'm not filming a dive. And I'm not filming for HIM. I'm out, Tank.", "emote": "sad", "action": "exit_right"},
+					{"who": "pickles", "text": "Then don't. But I'm not filming a dive. And I'm not filming for HIM. I'm out, {Name}.", "emote": "sad", "action": "exit_right"},
 				],
 			},
 			{
@@ -504,8 +512,8 @@ const CHAPTERS := [
 				"lines": [
 					{"who": "mom", "text": "There's a man named Preston on my voicemail calling you 'the asset.' Explain.", "emote": "cross_arms", "action": "enter_right"},
 					{"who": "tank", "text": "I signed something, Ma. I didn't read it. He owns the channel. He kinda owns... me.", "emote": "sad"},
-					{"who": "mom", "text": "Theodore! I read every form at that hospital TWICE. Because somebody always hides the bite in the small print.", "emote": "angry", "action": "slam_table", "sfx": "thud"},
-					{"who": "tank", "text": "I was trying to HELP! You work doubles! Your feet! I wanted to be the guy who makes it easier!", "emote": "angry"},
+					{"who": "mom", "text": "{First}! I read every form at that hospital TWICE. Because somebody always hides the bite in the small print.", "emote": "angry", "action": "slam_table", "sfx": "thud"},
+					{"who": "tank", "text": "I was trying to HELP! You work doubles! Your feet! I wanted to be the {guy} who makes it easier!", "emote": "angry"},
 					{"who": "mom", "text": "Baby, I never asked you for easier. I asked you to show up. You've been a stranger in my house for a month.", "emote": "sad", "shot": "close"},
 					{"who": "mom", "text": "I don't need your money. I need you at this table, eating my chili, telling me about your day like a person.", "emote": "sad"},
 					{"who": "tank", "text": "...My day was bad, Ma.", "emote": "sit", "shot": "close"},
@@ -516,7 +524,7 @@ const CHAPTERS := [
 				"set": "street", "time": "dusk", "music": "tense",
 				"cast": {"tank": "left", "booker": "right"},
 				"lines": [
-					{"who": "booker", "text": "Young man. Your boss says you're supposed to lay down for me in round two.", "emote": "cross_arms", "action": "enter_right"},
+					{"who": "booker", "text": "Young {man}. Your boss says you're supposed to lay down for me in round two.", "emote": "cross_arms", "action": "enter_right"},
 					{"who": "tank", "text": "You KNOW about that?", "emote": "shock"},
 					{"who": "booker", "text": "I've been in this game since breakbeats came on vinyl. I can hear a rigged record spinning.", "emote": "laugh"},
 					{"who": "booker", "text": "I don't want a gift. I want a fight. Bring everything, or don't bring nothing.", "emote": "point", "shot": "close"},
@@ -527,13 +535,13 @@ const CHAPTERS := [
 		],
 		"match": {"opponent": "booker", "cpu_skill": 0.64, "location": "kitchen",
 			"objective": "Win for real. No dives. No deals.",
-			"bonus": {"text": "Hit your FRIDGE DROP twice. Your moves, your way.", "type": "signature", "count": 2, "cash": 75}},
+			"bonus": {"text": "Hit your {SIG} twice. Your moves, your way.", "type": "signature", "count": 2, "cash": 75}},
 		"win": [
 			{
 				"set": "backyard", "time": "night", "music": "sad",
 				"cast": {"tank": "left", "booker": "center", "vale": "right"},
 				"lines": [
-					{"who": "booker", "text": "That right there was REAL. You didn't lie down. That's rarer than clean vinyl, son.", "emote": "talk", "action": "shake_hands"},
+					{"who": "booker", "text": "That right there was REAL. You didn't lie down. That's rarer than clean vinyl, {son}.", "emote": "talk", "action": "shake_hands"},
 					{"who": "vale", "text": "You were supposed to LOSE! You're done, Magruder. I keep the channel. I keep EVERYTHING.", "emote": "angry", "action": "enter_right"},
 					{"who": "tank", "text": "Keep it. I'm keeping me.", "emote": "cross_arms", "shot": "low_hero"},
 					{"who": "booker", "text": "The crowd passed a hat. This is yours, not his. Now go home. Your mama's waiting.", "emote": "point", "cash": 750},
@@ -555,14 +563,14 @@ const CHAPTERS := [
 	# ------------------------------------------------------------------ CHAPTER 7 (comeback)
 	{
 		"id": "ch7", "title": "CHAPTER 7", "name": "Back to the Yard",
-		"teaser": "No channel. No promoter. Just a yard, a mop, and everybody who believed in him.",
+		"teaser": "No channel. No promoter. Just a yard, a mop, and everybody who believed in {him}.",
 		"payout": 1000,
 		"intro": [
 			{
 				"set": "rooftop", "time": "night", "music": "sad",
 				"cast": {"tank": "left", "mom": "right"},
 				"lines": [
-					{"who": "narrator", "text": "The roof of the Magruder house. 2 AM. Population: one big sad man.", "emote": "idle", "shot": "wide"},
+					{"who": "narrator", "text": "The roof of the Magruder house. 2 AM. Population: one big sad {man}.", "emote": "idle", "shot": "wide"},
 					{"who": "mom", "text": "Scoot. I brought chili. AND the good cheese. Don't get used to it.", "emote": "eat", "action": "enter_right"},
 					{"who": "tank", "text": "Ma, you climbed out the WINDOW? Your knees!", "emote": "shock"},
 					{"who": "mom", "text": "My knees did a double and a half today. A window is nothing.", "emote": "laugh"},
@@ -630,7 +638,7 @@ const CHAPTERS := [
 	# ------------------------------------------------------------------ CHAPTER 8 (finale)
 	{
 		"id": "ch8", "title": "CHAPTER 8", "name": "Block Party",
-		"teaser": "The whole block. Every rival. Mom's first Saturday off in three years. Tank's freedom on the line.",
+		"teaser": "The whole block. Every rival. Mom's first Saturday off in three years. {Name}'s freedom on the line.",
 		"payout": 2500,
 		"intro": [
 			{
@@ -641,7 +649,7 @@ const CHAPTERS := [
 					{"who": "mom", "text": "Before you go. Close your eyes.", "emote": "talk"},
 					{"who": "tank", "text": "Is it the good cheese? Is it a WHOLE BLOCK of the good cheese?", "emote": "think"},
 					{"who": "mom", "text": "Better. Open.", "emote": "laugh"},
-					{"who": "narrator", "text": "THE KITCHEN CHAMPIONSHIP. Cereal box, tinfoil, glitter glue. Made by nine-year-old Theodore.", "emote": "idle", "shot": "insert"},
+					{"who": "narrator", "text": "THE KITCHEN CHAMPIONSHIP. Cereal box, tinfoil, glitter glue. Made by nine-year-old {First}.", "emote": "idle", "shot": "insert"},
 					{"who": "tank", "text": "You KEPT this?!", "emote": "shock", "shot": "close"},
 					{"who": "mom", "text": "I keep everything you make, baby. Win or lose, you bring this home. That's the only title in this house.", "emote": "sad", "shot": "close"},
 					{"who": "tank", "text": "Love you, Ma.", "emote": "sad", "action": "hug"},
@@ -680,8 +688,8 @@ const CHAPTERS := [
 					{"who": "lawndart", "text": "LIVE FROM THE BIGGEST BACKYARD ON THE EASTSIDE... IT'S BLOCK PARTY MAIN EVENT TIME!", "emote": "cheer", "shot": "low_hero", "sfx": "cheer_small"},
 					{"who": "vale", "text": "Last chance, Magruder. Lose gracefully and I'll let you keep a catchphrase. A small one.", "emote": "point"},
 					{"who": "mom", "text": "Mr. Vale. I work doubles in an ER. I've seen scarier things than you in a waiting room at 3 AM.", "emote": "cross_arms", "action": "walk_to:center"},
-					{"who": "hollis", "text": "And I've seen HER, son. I'd sit down.", "emote": "laugh"},
-					{"who": "lawndart", "text": "SOMEBODY CALL HIS MAMA! ...Oh. She's right here. And she is NOT playing!", "emote": "shock"},
+					{"who": "hollis", "text": "And I've seen HER, {son}. I'd sit down.", "emote": "laugh"},
+					{"who": "lawndart", "text": "SOMEBODY CALL {HIS} MAMA! ...Oh. She's right here. And she is NOT playing!", "emote": "shock"},
 					{"who": "tank", "text": "This one's for the yard. For Ma. For everybody who paid eleven bucks to believe.", "emote": "flex", "shot": "low_hero", "sfx": "bell"},
 				],
 			},
@@ -694,14 +702,14 @@ const CHAPTERS := [
 				"set": "backyard", "time": "night", "music": "hype",
 				"cast": {"tank": "center", "mom": "left", "halo": "right", "vale": "back_right", "pickles": "back_left"},
 				"lines": [
-					{"who": "halo", "text": "You did it, big man. ...WE did it. Nobody owns either of us now.", "emote": "cheer", "action": "shake_hands"},
+					{"who": "halo", "text": "You did it, big {man}. ...WE did it. Nobody owns either of us now.", "emote": "cheer", "action": "shake_hands"},
 					{"who": "mom", "text": "Mr. Vale. Page nine is now confetti. Darlene's son has a few more pages for you. Run along.", "emote": "point"},
 					{"who": "vale", "text": "This isn't over! I have LAWYERS! ...I have a lawyer. He's my cousin.", "emote": "shock", "action": "exit_right"},
 					{"who": "pickles", "text": "Purse plus tips: TWENTY-FIVE HUNDRED DOLLARS! Two hundred thousand views! THAT'S THUMBNAIL!", "emote": "cheer", "cash": 2500},
 					{"who": "mom", "text": "Come here, champ. Kitchen Champion of the World. Undisputed.", "emote": "sad", "action": "hug"},
 					{"who": "tank", "text": "Ma... I think I can cover rent for, like, a while.", "emote": "sad", "shot": "close"},
 					{"who": "mom", "text": "Good. Rent's still due on the first. And Gerald is still asking about your room.", "emote": "laugh"},
-					{"who": "narrator", "text": "Tank Magruder. No job. Still lives with his mom. Undisputed Kitchen Champion. THE END... for now.", "emote": "idle", "shot": "wide"},
+					{"who": "narrator", "text": "{Fullname}. No job. Still lives with {his} mom. Undisputed Kitchen Champion. THE END... for now.", "emote": "idle", "shot": "wide"},
 				],
 			},
 		],
@@ -711,7 +719,7 @@ const CHAPTERS := [
 				"cast": {"tank": "left", "mom": "back_left", "halo": "right"},
 				"lines": [
 					{"who": "halo", "text": "Hey. Get up. I didn't want it like this. Make me fight you again. Please.", "emote": "sad"},
-					{"who": "mom", "text": "Theodore. I did not take a Saturday off to watch you nap in the grass. UP.", "emote": "point", "shot": "close"},
+					{"who": "mom", "text": "{First}. I did not take a Saturday off to watch you nap in the grass. UP.", "emote": "point", "shot": "close"},
 					{"who": "tank", "text": "Yes, ma'am.", "emote": "flex", "shot": "low_hero"},
 				],
 			},

@@ -28,6 +28,7 @@ const Wrestler := preload("res://scripts/wrestler.gd")
 const Roster := preload("res://scripts/roster.gd")
 const Audio := preload("res://scripts/audio.gd")
 const Music := preload("res://scripts/music.gd")
+const StoryText := preload("res://scripts/story_text.gd")
 const STORY_DATA_PATH := "res://scripts/story_data.gd"
 
 ## Play every set once (day/dusk/night) instead of the demo when launched directly.
@@ -340,8 +341,10 @@ func _ready() -> void:
 ## Play a list of SCENE dicts (see story_schema.md) with the story CAST. Emits finished(skipped).
 func play(p_scenes: Array, p_cast: Dictionary = {}) -> void:
 	_started = true
-	scenes = p_scenes
-	cast_def = p_cast
+	# The protagonist ("tank" slot) is the created wrestler when there is one; story text tokens
+	# ({NAME}, {his}...) resolve here so every caption / phone / TV / cash line shows them right.
+	scenes = StoryText.resolve_deep(p_scenes)
+	cast_def = StoryText.hero_cast(p_cast)
 	scene_i = -1
 	line_i = -1
 	if audio == null:
@@ -360,9 +363,9 @@ func play(p_scenes: Array, p_cast: Dictionary = {}) -> void:
 ## Chapter card ("CHAPTER 1" / "Rent Is Due" / teaser). Tap or ~4 s dismisses it; emits
 ## title_card_done. play() called while a card is up waits for it.
 func show_title_card(title: String, chapter_name: String, teaser := "") -> void:
-	card_title.text = title.to_upper()
-	card_name.text = chapter_name.to_upper()
-	card_teaser.text = teaser
+	card_title.text = StoryText.resolve(title).to_upper()
+	card_name.text = StoryText.resolve(chapter_name).to_upper()
+	card_teaser.text = StoryText.resolve(teaser)
 	card.visible = true
 	card.modulate.a = 0.0
 	card_active = true
@@ -1933,7 +1936,7 @@ func _set_kitchen() -> void:
 	var bills := [[Vector3(-2.95, 1.5, 0), 0.08, "PAST DUE", Color(0.85, 0.1, 0.08)],
 		[Vector3(-2.68, 1.62, 0), -0.12, "FINAL\nNOTICE", Color(0.85, 0.1, 0.08)],
 		[Vector3(-2.82, 1.0, 0), 0.05, "RENT\n$900", Color(0.1, 0.1, 0.1)],
-		[Vector3(-2.55, 1.05, 0), -0.06, "A+\nTANK\n(1998)", Color(0.15, 0.3, 0.8)]]
+		[Vector3(-2.55, 1.05, 0), -0.06, "A+\n" + StoryText.hero_short_name() + "\n(1998)", Color(0.15, 0.3, 0.8)]]
 	for b: Array in bills:
 		var bp: Vector3 = b[0]
 		bp.z = back + 0.73
