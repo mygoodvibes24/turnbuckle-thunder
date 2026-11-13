@@ -3,6 +3,7 @@ extends Node3D
 ## Everything is generated in code so the project has no imported assets.
 
 const Wrestler := preload("res://scripts/wrestler.gd")
+const DbgRoster := preload("res://scripts/roster.gd")
 const TouchControls := preload("res://scripts/touch_controls.gd")
 const RING_TOP := 0.0  # no ring any more: the yard ground is y 0 (yard_contract.md)
 
@@ -104,8 +105,10 @@ func _ready() -> void:
 			var pp := kv.split("=")
 			if pp.size() == 2:
 				dbg_q[pp[0]] = pp[1]
-	var sd: Script = load("res://scripts/story_data.gd")
-	var cast: Dictionary = sd.get_script_constant_map().get("CAST", {})
+	var cast := {}
+	for rid in ["mom", "pickles", "hollis", "rudy", "vale", "lawndart"]:
+		var re: Dictionary = DbgRoster.find(rid)
+		cast[rid] = {"name": re["display_name"], "look": re["look"]}
 	if dbg_q.has("p1") and cast.has(dbg_q["p1"]):
 		var lk: Dictionary = cast[dbg_q["p1"]]["look"]
 		tank = lk.duplicate(true)
