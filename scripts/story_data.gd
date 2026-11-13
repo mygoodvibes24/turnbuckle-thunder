@@ -1,7 +1,9 @@
 extends RefCounted
 ## City 2 City Wrestling - Backyard Brawl: STORY MODE script (const data only, load with preload).
 ## Format: /home/user/story_schema.md. CAST = every speaking/visible character; roster fighters
-## point at scripts/roster.gd with roster_id, NPCs carry a wrestler.gd look dict (rendered keys
+## point at scripts/roster.gd with roster_id. The story NPCs (mom, pickles, hollis, rudy, vale,
+## lawndart) are Versus fighters too: their looks live in roster.gd and CAST points at them with
+## roster_id (one look shared by cutscenes and matches). Cutscene-only extras carry a look dict (rendered keys
 ## first, descriptive not-yet-rendered keys after). CHAPTERS = 8 chapters, each with an intro
 ## cutscene (several scenes), a match, a one-scene win and a one-scene lose (lose sets up a retry).
 ##
@@ -34,117 +36,19 @@ const CAST := {
 	"halo": {"name": "YUNG HALO", "roster_id": "halo"},
 	# Bernadette Magruder: certified nursing assistant, county hospital ER, works doubles. Teal scrubs,
 	# white clogs, hospital badge on a lanyard, reading glasses pushed up into her curls.
-	"mom": {
-		"name": "MOM", "anim_style": "diva",
-		"look": {
-			"anim_style": "diva",
-			"gear": Color(0.2, 0.62, 0.62), "skin": Color(0.4, 0.27, 0.19), "face": "kid",
-			"hair": "curls", "hair_color": Color(0.1, 0.07, 0.06),
-			"top": "tee", "top_color": Color(0.22, 0.6, 0.6), "top_accent": Color(0.9, 0.92, 0.94),
-			"graphic": "none", "sleeves": "short",
-			"bottom_color": Color(0.2, 0.56, 0.57), "bottom_fade": Color(0.3, 0.66, 0.66),
-			"shoe_color": Color(0.95, 0.95, 0.93), "shoe_accent": Color(0.82, 0.84, 0.86),
-			"bracelet": true, "wristband_color": Color(0.85, 0.75, 0.3), "bulk": 0.9,
-			# not rendered yet
-			"body": "female", "hair_style": "curls", "top_style": "tee", "bottom_style": "slim",
-			"shoes": "sneakers", "hat": "none", "outfit": "scrubs",
-			"accessories": ["hospital_badge_lanyard", "reading_glasses_on_head", "watch"],
-		},
-	},
+	"mom": {"name": "MOM", "anim_style": "diva", "roster_id": "mom"},
 	# Darnell "Pickles" Pickett: best friend since second grade, cameraman, channel manager.
 	# Films everything on the BROOMCAM (cracked phone duct-taped to a broom handle).
-	"pickles": {
-		"name": "PICKLES", "anim_style": "hyper",
-		"look": {
-			"anim_style": "hyper",
-			"gear": Color(0.45, 0.78, 0.2), "skin": Color(0.56, 0.38, 0.26), "face": "kid",
-			"hair": "curls", "hair_color": Color(0.06, 0.045, 0.04),
-			"top": "hoodie", "top_color": Color(0.34, 0.6, 0.18), "top_accent": Color(0.95, 0.85, 0.2),
-			"graphic": "none", "hood": false,
-			"bottom_color": Color(0.5, 0.45, 0.34), "bottom_fade": Color(0.66, 0.6, 0.48),
-			"shoe_color": Color(0.85, 0.2, 0.18), "shoe_accent": Color(0.95, 0.95, 0.95),
-			"bulk": 0.84,
-			# not rendered yet
-			"body": "male", "hair_style": "curls", "top_style": "hoodie", "bottom_style": "baggy_jeans",
-			"shoes": "high_tops", "hat": "bucket", "hat_color": Color(0.95, 0.85, 0.2),
-			"accessories": ["broomcam", "headphones_round_neck", "duct_tape_roll"],
-		},
-	},
+	"pickles": {"name": "PICKLES", "anim_style": "hyper", "roster_id": "pickles"},
 	# Mr. Hollis: the grumpy next-door neighbor with prize hydrangeas. Secretly HURRICANE HOLLIS,
 	# six-time regional champion, forty years retired. White tank undershirt, gardening gloves.
-	"hollis": {
-		"name": "MR. HOLLIS", "anim_style": "oldschool",
-		"look": {
-			"anim_style": "oldschool",
-			"gear": Color(0.55, 0.3, 0.75), "skin": Color(0.33, 0.22, 0.16), "face": "tank",
-			"hair": "none", "hair_color": Color(0.82, 0.82, 0.8),
-			"top": "tee", "top_color": Color(0.93, 0.92, 0.88), "top_accent": Color(0.55, 0.3, 0.75),
-			"graphic": "none", "sleeves": "none",
-			"bottom_color": Color(0.42, 0.36, 0.28), "bottom_fade": Color(0.5, 0.44, 0.36),
-			"shoe_color": Color(0.3, 0.2, 0.14), "shoe_accent": Color(0.4, 0.3, 0.22),
-			"tattoos": true, "bulk": 1.05,
-			# not rendered yet
-			"body": "male", "hair_style": "buzz", "top_style": "tee", "bottom_style": "slim",
-			"shoes": "boots", "hat": "none",
-			"accessories": ["gardening_gloves", "garden_hose", "white_mustache", "old_title_belt_tattoo"],
-		},
-	},
+	"hollis": {"name": "MR. HOLLIS", "anim_style": "oldschool", "roster_id": "hollis"},
 	# Rudy Two-Times: scrappy promoter who runs fights behind the store lot. Says everything twice.
-	"rudy": {
-		"name": "RUDY TWO-TIMES", "anim_style": "swagger",
-		"look": {
-			"anim_style": "swagger",
-			"gear": Color(0.1, 0.7, 0.7), "skin": Color(0.78, 0.58, 0.44), "face": "tank",
-			"hair": "curls", "hair_color": Color(0.15, 0.1, 0.07),
-			"top": "hoodie", "top_color": Color(0.08, 0.62, 0.62), "top_accent": Color(0.6, 0.15, 0.55),
-			"graphic": "none", "hood": false,
-			"bottom_color": Color(0.08, 0.6, 0.6), "bottom_fade": Color(0.16, 0.7, 0.7),
-			"shoe_color": Color(0.95, 0.95, 0.95), "shoe_accent": Color(0.6, 0.15, 0.55),
-			"chain": true, "bracelet": true, "bulk": 0.95,
-			# not rendered yet
-			"body": "male", "hair_style": "curls", "top_style": "tracksuit", "bottom_style": "track_pants",
-			"shoes": "sneakers", "hat": "bucket", "hat_color": Color(0.6, 0.15, 0.55),
-			"stripe_color": Color(0.6, 0.15, 0.55), "stripe_count": 1, "chain_color": Color(1.0, 0.8, 0.26),
-			"accessories": ["fanny_pack_of_cash", "clipboard", "toothpick"],
-		},
-	},
+	"rudy": {"name": "RUDY TWO-TIMES", "anim_style": "swagger", "roster_id": "rudy"},
 	# Preston Vale: slick influencer-promoter, boss of the VALE ELITE crew. The antagonist.
-	"vale": {
-		"name": "PRESTON VALE", "anim_style": "newschool",
-		"look": {
-			"anim_style": "newschool",
-			"gear": Color(0.85, 0.75, 0.45), "skin": Color(0.86, 0.68, 0.56), "face": "kid",
-			"hair": "none", "hair_color": Color(0.7, 0.55, 0.3),
-			"top": "tee", "top_color": Color(0.96, 0.95, 0.92), "top_accent": Color(0.85, 0.75, 0.45),
-			"graphic": "none", "sleeves": "long",
-			"bottom_color": Color(0.12, 0.12, 0.16), "bottom_fade": Color(0.2, 0.2, 0.25),
-			"shoe_color": Color(0.96, 0.96, 0.96), "shoe_accent": Color(0.85, 0.75, 0.45),
-			"chain": true, "bulk": 0.86,
-			# not rendered yet
-			"body": "male", "hair_style": "buzz", "top_style": "designer_hoodie", "bottom_style": "slim",
-			"shoes": "sneakers", "hat": "none", "chain_style": "layered",
-			"chain_color": Color(0.92, 0.82, 0.5), "outfit": "cream_blazer_over_tee",
-			"accessories": ["tinted_shades", "phone_on_gimbal", "contract_folder", "veneers"],
-		},
-	},
+	"vale": {"name": "PRESTON VALE", "anim_style": "newschool", "roster_id": "vale"},
 	# MC Lawn Dart: the backyard's hype MC (mc.gd) in person. Runs the LAWN DART LIVE hype channel.
-	"lawndart": {
-		"name": "MC LAWN DART", "anim_style": "hyper",
-		"look": {
-			"anim_style": "hyper",
-			"gear": Color(1.0, 0.84, 0.2), "skin": Color(0.48, 0.32, 0.22), "face": "tank",
-			"hair": "locs", "hair_color": Color(0.06, 0.045, 0.04),
-			"top": "hoodie", "top_color": Color(1.0, 0.8, 0.16), "top_accent": Color(0.06, 0.06, 0.07),
-			"graphic": "none", "hood": false,
-			"bottom_color": Color(0.06, 0.06, 0.07), "bottom_fade": Color(0.2, 0.2, 0.22),
-			"shoe_color": Color(1.0, 0.84, 0.2), "shoe_accent": Color(0.06, 0.06, 0.07),
-			"chain": true, "bulk": 1.0,
-			# not rendered yet
-			"body": "male", "hair_style": "locs", "top_style": "tracksuit", "bottom_style": "track_pants",
-			"shoes": "high_tops", "hat": "none", "chain_color": Color(1.0, 0.84, 0.2),
-			"accessories": ["handheld_mic", "megaphone", "gold_sunglasses"],
-		},
-	},
+	"lawndart": {"name": "MC LAWN DART", "anim_style": "hyper", "roster_id": "lawndart"},
 }
 
 const CHAPTERS := [
