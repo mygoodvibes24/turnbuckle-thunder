@@ -1211,7 +1211,7 @@ func _print_tex(kind: String, ink: Color, acc: Color, bg: Color) -> ImageTexture
 		var rim := tri.duplicate()
 		rim.append(tri[0])
 		_lines(img, rim, 4.0, blk, 1.0, 0.2)
-		_poly(img, tri, ink, 1.0)
+		_poly_ok(img, tri, ink, 1.0)
 		_dab(img, 30, 99, 8, 8, blk, 1.0, 0.2)
 		_dab(img, 30, 99, 6.5, 6.5, Color(0.92, 0.12, 0.1, 1.0), 1.0, 0.25)
 		_text(img, "REC", 74, 90, 18, 2.6, ink, blk)
@@ -4529,7 +4529,7 @@ func _shoe_ex_tex(kind: String, base: Color, acc: Color) -> ImageTexture:
 				var x: float = sx
 				_lines(img, PackedVector2Array([Vector2(x, 0), Vector2(x, 128)]), 0.6, stitch, 0.6)    # welt stitching
 		"walkers":
-			_poly(img, PackedVector2Array([Vector2(30, 96), Vector2(226, 96), Vector2(226, 128), Vector2(30, 128)]), base.darkened(0.06), 1.0)
+			_poly_ok(img, PackedVector2Array([Vector2(30, 96), Vector2(226, 96), Vector2(226, 128), Vector2(30, 128)]), base.darkened(0.06), 1.0)
 			for k in 10:
 				_dab(img, 96.0 + k * 7.0, 108, 1.2, 1.2, base.darkened(0.4), 0.8, 0.4)                  # perforations
 			img.fill_rect(Rect2i(0, 0, 256, 14), acc)
@@ -4689,7 +4689,7 @@ func _hat_tex(kind: String, c: Color, band: Color) -> ImageTexture:
 			img.fill_rect(Rect2i(106, 108, 44, 8), band)
 			for cx in [0.0, 256.0]:
 				var x: float = cx
-				_poly(img, _star_px(x, 70, 22, 9), band, 1.0)                                              # front logo, worn at the back
+				_poly_ok(img, _star_px(x, 70, 22, 9), band, 1.0)                                              # front logo, worn at the back
 		"bucket":
 			for k in 11:
 				var y := 8.0 + k * 11.0
@@ -4921,10 +4921,10 @@ func _paint_face_ex(img: Image, skin: Color, hair_c: Color, kind: String, ex: Di
 					var py := 144.0 + 5.0 * sin(t * PI)
 					_fl(img, [Vector2(px, py - 2.0), Vector2(px + 3.5 * e, py + 4.0)], 1.2, hair_c.lightened(0.1) if k % 2 == 0 else hair_c.darkened(0.3),
 						0.9, 0.5)                                                                                 # bushy brow hairs
-			_fd(img, 0, 65.5, 28, 6.5, hair_c.darkened(0.15), 0.95, 0.5)                                       # walrus moustache
+			_fd(img, 0, 62.5, 29, 9.5, hair_c.darkened(0.12), 0.97, 0.45)                                      # walrus moustache
 			for k in 15:
 				var x := lerpf(-27.0, 27.0, float(k) / 14.0)
-				_fl(img, [Vector2(x, 71), Vector2(x * 1.1, 57.5)], 1.1, hair_c.lightened(0.12) if k % 2 == 0 else hair_c.darkened(0.25), 0.9, 0.5)
+				_fl(img, [Vector2(x, 71), Vector2(x * 1.1, 57.5)], 1.6, hair_c.darkened(0.06) if k % 2 == 0 else hair_c.darkened(0.2), 0.7, 0.7)
 		"mom":
 			var ln := _skin_shade(skin, 0.3)
 			for sg in [-1.0, 1.0]:
@@ -5247,6 +5247,38 @@ func _top_suit(body: Array, top_c: Color, acc: Color, kc: String, m: Dictionary)
 
 # --- story-cast props ------------------------------------------------------------------------
 
+## Filled polygon (even-odd, 2x2 supersampled) with the standard crossing test. (_poly's crossing
+## x is mirrored per edge; the older art is tuned to it, so it stays as is.)
+func _poly_ok(img: Image, pts: PackedVector2Array, c: Color, a: float) -> void:
+	var w := img.get_width()
+	var h := img.get_height()
+	var lo := pts[0]
+	var hi := pts[0]
+	for p in pts:
+		lo = Vector2(minf(lo.x, p.x), minf(lo.y, p.y))
+		hi = Vector2(maxf(hi.x, p.x), maxf(hi.y, p.y))
+	var n := pts.size()
+	for y in range(maxi(0, int(floor(lo.y))), mini(h - 1, int(ceil(hi.y))) + 1):
+		for x in range(maxi(0, int(floor(lo.x))), mini(w - 1, int(ceil(hi.x))) + 1):
+			var cov := 0.0
+			for sy in 2:
+				for sx in 2:
+					var q := Vector2(float(x) + 0.25 + 0.5 * sx, float(y) + 0.25 + 0.5 * sy)
+					var inside := false
+					var j := n - 1
+					for i in n:
+						var pi := pts[i]
+						var pj := pts[j]
+						if (pi.y > q.y) != (pj.y > q.y):
+							if q.x < pi.x + (q.y - pi.y) / (pj.y - pi.y) * (pj.x - pi.x):
+								inside = not inside
+						j = i
+					if inside:
+						cov += 0.25
+			if cov > 0.0:
+				img.set_pixel(x, y, img.get_pixel(x, y).lerp(c, a * cov))
+
+
 ## Spectacles on parent (head geometry space, or a tilted pivot for "pushed up"): o = the bridge
 ## centre, lens / frame materials, w = width scale, half = half-moon reading lenses.
 func _specs(parent: Node3D, o: Vector3, lens: Material, frame: Material, w: float, half: bool) -> void:
@@ -5413,7 +5445,7 @@ func _scrubs_tex(base: Color, acc: Color, skin: Color) -> ImageTexture:
 		_lines(img, PackedVector2Array([Vector2(x0, by), Vector2(x1, by)]), 0.9, dk, 0.5)          # back yoke seam
 	var vb := _trow(0.468, t0, t1, 256)
 	var vn := PackedVector2Array([Vector2(86, 0), Vector2(170, 0), Vector2(128, vb)])
-	_poly(img, vn, skin, 1.0)
+	_poly_ok(img, vn, skin, 1.0)
 	_dab(img, 128, 6, 36, 12, _skin_shade(skin, 0.35), 0.55, 1.0)                                  # shadow under the chin
 	_dab(img, 128, vb - 8, 8, 10, _skin_shade(skin, 0.3), 0.5, 1.0)
 	for sg in [-1.0, 1.0]:
@@ -5471,14 +5503,14 @@ func _shirt_hem_tex(base: Color, acc: Color, kind: String) -> ImageTexture:
 			_lines(img, PackedVector2Array([Vector2(131, 0), Vector2(131, 64)]), 1.0, dk, 0.6)
 			_pearl(img, 128, 22, 2.6)
 		"suit":
-			_poly(img, PackedVector2Array([Vector2(126, 0), Vector2(130, 0), Vector2(150, 64), Vector2(106, 64)]), dk.darkened(0.2), 1.0)   # front opening
+			_poly_ok(img, PackedVector2Array([Vector2(126, 0), Vector2(130, 0), Vector2(150, 64), Vector2(106, 64)]), dk.darkened(0.2), 1.0)   # front opening
 			_lines(img, PackedVector2Array([Vector2(126, 0), Vector2(106, 64)]), 1.0, lt, 0.5)
 			_lines(img, PackedVector2Array([Vector2(130, 0), Vector2(150, 64)]), 1.0, lt, 0.5)
 			for sg in [-1.0, 1.0]:
 				var s: float = sg
 				var q0 := 128.0 + 30.0 * s
 				var q1 := 128.0 + 64.0 * s
-				_poly(img, PackedVector2Array([Vector2(q0, 4), Vector2(q1, 4), Vector2(q1, 14), Vector2(q0, 14)]), base.lightened(0.04), 1.0)
+				_poly_ok(img, PackedVector2Array([Vector2(q0, 4), Vector2(q1, 4), Vector2(q1, 14), Vector2(q0, 14)]), base.lightened(0.04), 1.0)
 				_lines(img, PackedVector2Array([Vector2(q0, 14), Vector2(q1, 14)]), 1.2, dk, 0.7)    # pocket flaps
 			_lines(img, PackedVector2Array([Vector2(1, 20), Vector2(1, 64)]), 1.2, dk, 0.7)            # back vent
 			_lines(img, PackedVector2Array([Vector2(255, 20), Vector2(255, 64)]), 1.2, dk, 0.7)
@@ -5487,7 +5519,7 @@ func _shirt_hem_tex(base: Color, acc: Color, kind: String) -> ImageTexture:
 		var c: float = sx
 		_lines(img, PackedVector2Array([Vector2(c, 0), Vector2(c, 64)]), 0.9, dk, 0.55)
 		if kind != "suit":
-			_poly(img, PackedVector2Array([Vector2(c - 2, 40), Vector2(c + 2, 40), Vector2(c + 3, 64), Vector2(c - 3, 64)]), dk, 0.8)   # side vents
+			_poly_ok(img, PackedVector2Array([Vector2(c - 2, 40), Vector2(c + 2, 40), Vector2(c + 3, 64), Vector2(c - 3, 64)]), dk, 0.8)   # side vents
 	_cloth_pass(img, "skirt", "cotton", 2.0, 92)
 	return _done(img)
 
@@ -5548,7 +5580,7 @@ func _polo_tex(base: Color, acc: Color) -> ImageTexture:
 	var ex := 128.0 - 38.0
 	var ey := _trow(0.47, t0, t1, 256)
 	_lines(img, PackedVector2Array([Vector2(ex, ey - 10), Vector2(ex, ey + 8)]), 0.9, acc.darkened(0.3), 1.0, 0.3)
-	_poly(img, PackedVector2Array([Vector2(ex, ey - 10), Vector2(ex + 10, ey - 6), Vector2(ex, ey - 2)]), acc, 1.0)
+	_poly_ok(img, PackedVector2Array([Vector2(ex, ey - 10), Vector2(ex + 10, ey - 6), Vector2(ex, ey - 2)]), acc, 1.0)
 	_lines(img, _arc_pts(ex, ey + 8, 7, 2, 0.0, 360.0, 12), 0.8, acc.darkened(0.3), 0.9)
 	_cloth_pass(img, "torso", "cotton", 3.0, 95)
 	return _done(img)
@@ -5605,7 +5637,7 @@ func _hawaiian_tex(base: Color, acc: Color, skin: Color) -> ImageTexture:
 		var o: float = [-54.0, -34.0, -16.0, 18.0, 36.0, 56.0][k]
 		_fold(img, Vector2(128 + o, 120), Vector2(128 + o + 5.0 * (_hash01(k * 1.9) - 0.5), 252), 3.2, dk, lt, 0.32)
 	var vb := _trow(0.43, t0, t1, 256)
-	_poly(img, PackedVector2Array([Vector2(98, 0), Vector2(158, 0), Vector2(128, vb)]), skin, 1.0)
+	_poly_ok(img, PackedVector2Array([Vector2(98, 0), Vector2(158, 0), Vector2(128, vb)]), skin, 1.0)
 	_dab(img, 128, 8, 26, 12, _skin_shade(skin, 0.35), 0.55, 1.0)
 	_dab(img, 128, vb - 12, 6, 14, _skin_shade(skin, 0.25), 0.5, 1.0)
 	for sg in [-1.0, 1.0]:
@@ -5643,10 +5675,10 @@ func _suit_tex(base: Color, tie: Color, shirt: Color) -> ImageTexture:
 		_fold(img, Vector2(128 + 36 * s, 120), Vector2(128 + 40 * s, 230), 2.2, dk, lt, 0.22)
 		_fold(img, Vector2(128 + 42 * s, 20), Vector2(128 + 62 * s, 64), 2.4, dk, lt, 0.3)
 	var vb := _trow(0.33, t0, t1, 256)
-	_poly(img, PackedVector2Array([Vector2(90, 0), Vector2(166, 0), Vector2(128, vb)]), shirt, 1.0)
+	_poly_ok(img, PackedVector2Array([Vector2(90, 0), Vector2(166, 0), Vector2(128, vb)]), shirt, 1.0)
 	_dab(img, 128, 4, 22, 8, shirt.darkened(0.35), 0.5, 1.0)
 	var tie_p := PackedVector2Array([Vector2(124, 0), Vector2(132, 0), Vector2(137, vb - 6), Vector2(128, vb + 6), Vector2(119, vb - 6)])
-	_poly(img, tie_p, tie, 1.0)
+	_poly_ok(img, tie_p, tie, 1.0)
 	for k in 9:
 		var y := 8.0 + k * 11.0
 		if y < vb:
@@ -5656,7 +5688,7 @@ func _suit_tex(base: Color, tie: Color, shirt: Color) -> ImageTexture:
 		var s: float = sg
 		var lap := PackedVector2Array([Vector2(128 + 38 * s, 0), Vector2(128 + 62 * s, 0), Vector2(128 + 60 * s, 34),
 			Vector2(128 + 50 * s, 40), Vector2(128 + 56 * s, 50), Vector2(128 + 4 * s, vb + 2), Vector2(128 + 1 * s, vb)])
-		_poly(img, lap, base.lightened(0.07), 1.0)
+		_poly_ok(img, lap, base.lightened(0.07), 1.0)
 		var edge := PackedVector2Array([lap[1], lap[2], lap[3], lap[4], lap[5]])
 		var shad := PackedVector2Array()
 		for q in edge:
@@ -5671,14 +5703,14 @@ func _suit_tex(base: Color, tie: Color, shirt: Color) -> ImageTexture:
 	_lines(img, PackedVector2Array([Vector2(129, vb), Vector2(126, 256)]), 1.0, dk, 0.7)
 	var py := _trow(0.44, t0, t1, 256)
 	_lines(img, PackedVector2Array([Vector2(128 - 62, py), Vector2(128 - 32, py - 2)]), 1.2, dk, 0.8)          # breast pocket welt
-	_poly(img, PackedVector2Array([Vector2(128 - 58, py), Vector2(128 - 52, py - 8), Vector2(128 - 46, py - 3), Vector2(128 - 40, py - 9),
+	_poly_ok(img, PackedVector2Array([Vector2(128 - 58, py), Vector2(128 - 52, py - 8), Vector2(128 - 46, py - 3), Vector2(128 - 40, py - 9),
 		Vector2(128 - 35, py - 2)]), tie.lightened(0.15), 1.0)                                        # pocket square
 	var fy := _trow(0.13, t0, t1, 256)
 	for sg in [-1.0, 1.0]:
 		var s: float = sg
 		var q0 := 128.0 + 26.0 * s
 		var q1 := 128.0 + 62.0 * s
-		_poly(img, PackedVector2Array([Vector2(q0, fy), Vector2(q1, fy), Vector2(q1, fy + 12), Vector2(q0, fy + 12)]), base.lightened(0.05), 1.0)
+		_poly_ok(img, PackedVector2Array([Vector2(q0, fy), Vector2(q1, fy), Vector2(q1, fy + 12), Vector2(q0, fy + 12)]), base.lightened(0.05), 1.0)
 		_lines(img, PackedVector2Array([Vector2(q0, fy + 12), Vector2(q1, fy + 12)]), 1.2, dk, 0.8)
 		_lines(img, PackedVector2Array([Vector2(q0, fy), Vector2(q1, fy)]), 0.8, dk, 0.6)
 	_cloth_pass(img, "torso", "cotton", 1.5, 99)
