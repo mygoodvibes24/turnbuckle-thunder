@@ -358,8 +358,8 @@ const ROSTER := [
 			"bottom": "track_pants", "bottom_color": Color(0.06, 0.06, 0.07), "bottom_fade": Color(0.2, 0.2, 0.22),
 			"bottom_accent": Color(1.0, 0.8, 0.16),
 			"shoes": "hightops", "shoe_color": Color(1.0, 0.84, 0.2), "shoe_accent": Color(0.06, 0.06, 0.07),
-			"accessories": ["headphones", "mic", "sunglasses", "gold_chain"], "chain_color": Color(1.0, 0.84, 0.2),
-			"headphone_color": Color(0.07, 0.07, 0.08), "headphone_accent": Color(1.0, 0.84, 0.2),
+			"accessories": ["headphones", "mic", "sunglasses", "gold_chain"], "chain_color": Color(0.88, 0.89, 0.92),
+			"headphone_color": Color(0.93, 0.93, 0.91), "headphone_accent": Color(0.06, 0.06, 0.07),
 		},
 		# ---- END LOOK: lawndart ----
 	},
