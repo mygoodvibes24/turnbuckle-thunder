@@ -5338,7 +5338,7 @@ func _build_cast_accessories(hg: Node3D, shell: Array, accs: Array, mc: Color, m
 		var am := _mat(ha, null, 0.7, 0.3)
 		for sg in [-1.0, 1.0]:
 			var s: float = sg
-			var c := _push_out(shell, Vector3(0.09 * s, 0.6, 0.03), 0.034)
+			var c := _push_out(shell, Vector3(0.094 * s, 0.586, 0.05), 0.036)
 			var cup := _pivot(torso, c)
 			cup.rotation = Vector3(0.0, 0.3 * s, -0.4 * s)
 			_ball(cup, 0.042, Vector3.ZERO, shell_m, Vector3(0.6, 1.0, 0.95), 14)
