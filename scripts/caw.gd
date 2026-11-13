@@ -79,7 +79,7 @@ const FIRST_NAMES := ["THEODORE", "DESTINY", "MARCUS", "JASMINE", "ALEXIS", "DWA
 	"KEISHA", "SAMANTHA", "TYRONE"]
 
 const DEFAULT_LOOK := {
-	"gear": Color(1.0, 0.5, 0.12), "skin": Color(0.42, 0.28, 0.2), "body": "male", "face": "kid",
+	"gear": Color(0.95, 0.5, 0.12), "skin": Color(0.42, 0.28, 0.2), "body": "male", "face": "kid",
 	"hair": "short", "hair_color": Color(0.04, 0.03, 0.03),
 	"top": "tee", "top_color": Color(0.18, 0.18, 0.2), "top_accent": Color(1.0, 0.5, 0.12), "graphic": "skull_bolt",
 	"bottom": "baggy", "bottom_color": Color(0.3, 0.42, 0.6), "bottom_fade": Color(0.62, 0.7, 0.82),
@@ -663,6 +663,7 @@ func _build_row(i: int) -> void:
 	vl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	vl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vl.clip_text = true
+	vl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	if st != "stat" and st != "slider":
 		vl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	else:
