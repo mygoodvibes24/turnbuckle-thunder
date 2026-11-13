@@ -177,11 +177,11 @@ func _make_asphalt_map() -> ImageTexture:
 	for pr: Rect2 in [Rect2(-5.6, 1.2, 2.6, 1.8), Rect2(2.2, -2.6, 3.4, 1.4), Rect2(-9.6, -4.6, 2.4, 3.2), Rect2(4.6, 3.4, 2.2, 1.6)]:
 		var p0 := _w2p(pr.position.x, pr.position.y)
 		var sz := pr.size * ppm
-		m._soft_rect(img, p0.x, p0.y, sz.x, sz.y, Color(0.12, 0.12, 0.125), 0.75, 2.0)
+		m._soft_rect(img, p0.x, p0.y, sz.x, sz.y, Color(0.13, 0.13, 0.135), 0.45, 6.0)
 		for e: Array in [[p0, p0 + Vector2(sz.x, 0)], [p0 + Vector2(sz.x, 0), p0 + sz], [p0 + sz, p0 + Vector2(0, sz.y)], [p0 + Vector2(0, sz.y), p0]]:
 			var ea: Vector2 = e[0]
 			var eb: Vector2 = e[1]
-			m._line_px(img, ea, eb, Color(0.05, 0.05, 0.055), 0.9)
+			m._line_px(img, ea, eb, Color(0.05, 0.05, 0.055), 0.55)
 			m._line_px(wet, ea, eb, Color(1, 1, 1), 0.7)
 	# Cracks + their tar-snake sealant (glossy black squiggles).
 	var dark := Color(0.06, 0.06, 0.06)
@@ -582,8 +582,8 @@ func _build_sign_and_awning() -> void:
 	m._beam("glow", Vector3(-3.25, 3.87, fzn), Vector3(4.25, 3.87, fzn), 0.03, tube)
 	m._beam("glow", Vector3(-3.25, 3.03, fzn), Vector3(-3.25, 3.87, fzn), 0.03, tube)
 	m._beam("glow", Vector3(4.25, 3.03, fzn), Vector3(4.25, 3.87, fzn), 0.03, tube)
-	_lab("STAR-BRITE", Vector3(-0.55, 3.56, fzn + 0.01), 104, Color(1.0, 0.78, 0.88), 0.0, false, Color(1.0, 0.16, 0.45, 0.55), 22)
-	_mart_label = _lab("MART", Vector3(3.15, 3.56, fzn + 0.01), 104, Color(0.82, 0.96, 1.0), 0.0, false, Color(0.1, 0.55, 1.0, 0.55), 22)
+	_lab("STAR-BRITE", Vector3(-0.95, 3.56, fzn + 0.01), 104, Color(1.0, 0.78, 0.88), 0.0, false, Color(1.0, 0.16, 0.45, 0.55), 22)
+	_mart_label = _lab("MART", Vector3(2.75, 3.56, fzn + 0.01), 104, Color(0.82, 0.96, 1.0), 0.0, false, Color(0.1, 0.55, 1.0, 0.55), 22)
 	_lab("BEER  *  ICE  *  LOTTO  *  ATM", Vector3(0.5, 3.16, fzn + 0.01), 40, Color(1.0, 0.9, 0.6), 0.0, false, Color(1.0, 0.5, 0.1, 0.45), 12)
 	# Little OPEN neon in window B and the posters on the glass.
 	var gz := WALL_Z - 0.05
