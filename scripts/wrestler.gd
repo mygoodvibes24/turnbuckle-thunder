@@ -11037,7 +11037,7 @@ func _hf_face_opp_or_center() -> void:
 func _hf_perch_call(pr: Dictionary) -> String:
 	match _perch_kind(pr):
 		"roof":
-			return "From the SHED ROOF!"
+			return "From the %s!" % _perch_name(pr).to_upper()
 		"trampoline":
 			return "Off the TRAMPOLINE!"
 	return "Off the %s!" % _perch_name(pr)
@@ -11260,7 +11260,7 @@ func _hf_start_climb(mode: String) -> void:
 			hf_time = 0.35 + 0.28 * h
 			sfx.emit("climb", 0.6, global_position + Vector3(0, 1.0, 0))
 			if _perch_kind(hf_perch) == "roof":
-				announce.emit("%s is climbing onto the SHED ROOF!" % display_name)
+				announce.emit("%s is climbing onto the %s!" % [display_name, _perch_name(hf_perch).to_upper()])
 			else:
 				announce.emit("%s is going up on the %s!" % [display_name, _perch_name(hf_perch)])
 			trick.emit("Going Up Top", 100, "movement")  # style hook

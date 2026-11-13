@@ -24,7 +24,7 @@ const INK := Color(0.04, 0.03, 0.06, 0.95)
 const LINES := {
 	"signature": [5, "{N}'S SIGNATURE! HERE IT COMES!", "OH IT'S THE {S}!", "{N} SAVED THAT ONE FOR TV!"],
 	"brawl": [5, "BRAWL MODE! LOCK THE GATE!", "{N} IS FULLY CHARGED!", "SOMEBODY CALL HIS MAMA!"],
-	"roof": [4, "{N}'S OFF THE ROOF!", "FROM THE SHED?! NO FEAR!", "THAT'S A TWO-STORY DECISION!"],
+	"roof": [4, "{N}'S OFF THE ROOF!", "FROM UP THERE?! NO FEAR!", "THAT'S A TWO-STORY DECISION!"],
 	"table": [4, "TABLE'S IN PIECES!", "THAT TABLE HAD A FAMILY!", "SPLINTER CITY, BABY!"],
 	"near_fall": [4, "NOOO! STILL ALIVE!", "SO CLOSE! SO CLOSE!", "HOW IS {N} UP?!"],
 	"combo_max": [3, "x8! I CAN'T EVEN!", "MAXED OUT! MAXED OUT!", "{N} BROKE THE METER!"],
