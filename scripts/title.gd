@@ -19,9 +19,13 @@ const Music := preload("res://scripts/music.gd")
 const MATCH_SCENE := "res://main.tscn"
 const SELECT_SCENE := "res://select.tscn"   # QUICK BRAWL -> character select -> match
 const STORY_SCENE := "res://story.tscn"     # STORY MODE -> story hub (scripts/story.gd)
+const CAW_SCENE := "res://caw.tscn"         # CREATE A WRESTLER -> editor (scripts/caw.gd)
 # The menu opens on QUICK BRAWL so "Enter, Enter" still reaches the character select
-# (screenshot scripts rely on it); STORY MODE sits above it.
-const MENU_DEFAULT := 1
+# (screenshot scripts rely on it); STORY MODE and CREATE A WRESTLER sit above it.
+const MENU_DEFAULT := 2
+# Web builds: index.html?scene=caw (or select / story / match) jumps straight to that screen
+# (handy for testing; harmless otherwise).
+const URL_SCENES := {"caw": CAW_SCENE, "select": SELECT_SCENE, "story": STORY_SCENE, "match": MATCH_SCENE}
 
 enum Phase { INTRO, PRESS, MENU, PANEL, LEAVING }
 
@@ -79,7 +83,7 @@ var logo_scale_target := 1.0
 var logo_pos_target := Vector2.ZERO
 var margin := 60.0
 
-const MENU_ITEMS := ["STORY MODE", "QUICK BRAWL", "HOW TO PLAY", "CREDITS"]
+const MENU_ITEMS := ["STORY MODE", "CREATE A WRESTLER", "QUICK BRAWL", "HOW TO PLAY", "CREDITS"]
 const GOLD := Color(1.0, 0.82, 0.12)
 const RED := Color(0.86, 0.12, 0.08)
 
@@ -200,6 +204,19 @@ func _ready() -> void:
 	_build_ui()
 	_relayout()
 	get_viewport().size_changed.connect(_relayout)
+	_url_scene_override()
+
+
+## ?scene=<name> in the page URL (web builds only): go straight to that screen.
+func _url_scene_override() -> void:
+	if not OS.has_feature("web"):
+		return
+	var v: Variant = JavaScriptBridge.eval("new URLSearchParams(window.location.search).get('scene') || ''", true)
+	var key := str(v).strip_edges().to_lower()
+	if URL_SCENES.has(key):
+		phase = Phase.LEAVING
+		var scene: String = URL_SCENES[key]
+		get_tree().call_deferred("change_scene_to_file", scene)
 
 
 # ---------------------------------------------------------------- per frame
@@ -215,9 +232,13 @@ func _process(delta: float) -> void:
 
 	# Headless (CI smoke test): run through the title, then the character select (which
 	# auto-advances into the match), so all three keep getting exercised by "Check for script errors".
+	# With no created wrestler saved yet, the CAW editor goes first (it saves a random one and
+	# moves on to the select by itself).
 	if headless and frames == 150 and phase != Phase.LEAVING:
 		phase = Phase.LEAVING
-		get_tree().change_scene_to_file(SELECT_SCENE)
+		var game: Node = get_node_or_null("/root/Game")
+		var have_caw := game != null and game.has_method("caw_exists") and bool(game.call("caw_exists"))
+		get_tree().change_scene_to_file(SELECT_SCENE if have_caw else CAW_SCENE)
 		return
 
 	_staged_load()
@@ -451,14 +472,16 @@ func _activate(i: int) -> void:
 		return
 	sel = i
 	_update_sel()
-	match i:
-		0:
+	match MENU_ITEMS[i]:
+		"STORY MODE":
 			_start_match(STORY_SCENE)
-		1:
+		"CREATE A WRESTLER":
+			_start_match(CAW_SCENE)
+		"QUICK BRAWL":
 			_start_match(SELECT_SCENE)
-		2:
+		"HOW TO PLAY":
 			_open_panel("how")
-		3:
+		"CREDITS":
 			_open_panel("credits")
 
 
@@ -1308,10 +1331,10 @@ func _build_ui() -> void:
 		var b := Button.new()
 		b.text = MENU_ITEMS[i]
 		b.focus_mode = Control.FOCUS_NONE
-		b.custom_minimum_size = Vector2(440, 62)
+		b.custom_minimum_size = Vector2(480, 54)
 		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		b.add_theme_font_override("font", font_i)
-		b.add_theme_font_size_override("font_size", 36)
+		b.add_theme_font_size_override("font_size", 32)
 		b.add_theme_color_override("font_outline_color", Color(0.02, 0.02, 0.02))
 		b.add_theme_color_override("font_pressed_color", Color(0.06, 0.04, 0.02))
 		b.add_theme_stylebox_override("pressed", _btn_box(true))

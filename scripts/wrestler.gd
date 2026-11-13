@@ -2096,6 +2096,11 @@ func _head_opts(female: bool, hair: String) -> Dictionary:
 			o["scalp"] = "sleek"
 	if "face_tattoos" in _accs():
 		o["tattoos"] = true
+	# Faces whose details live in _paint_face_ex (stubble / moustache / brow ring) need it to run
+	# even when nothing else above asked for it.
+	var fk := str(look.get("face", ""))
+	if o.is_empty() and fk in ["country", "oldschool", "punk"]:
+		o["face_ex"] = true
 	return o
 
 

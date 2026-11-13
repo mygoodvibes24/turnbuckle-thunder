@@ -40,6 +40,8 @@ func roster() -> Array:
 
 
 func entry(id: String) -> Dictionary:
+	if id == CAW_ID and caw_exists():
+		return caw_entry()
 	return Roster.find(id)
 
 
@@ -55,6 +57,16 @@ func p2_entry() -> Dictionary:
 func look_of(id: String) -> Dictionary:
 	var look: Dictionary = entry(id)["look"]
 	return look.duplicate(true)
+
+
+## Display name / short name of any fighter id ("caw" included; Tank's when no CAW is saved).
+func name_of(id: String) -> String:
+	return str(entry(id)["display_name"])
+
+
+func short_name_of(id: String) -> String:
+	var e := entry(id)
+	return str(e.get("short_name", e["display_name"]))
 
 
 func p1_look() -> Dictionary:
@@ -82,3 +94,129 @@ func random_id(exclude := "") -> String:
 	if ids.is_empty():
 		return exclude
 	return ids[randi() % ids.size()]
+
+
+# ---------------------------------------------------------------- CREATE-A-WRESTLER (caw_contract.md)
+# One created wrestler, saved in user://caw.cfg section "wrestler" (scripts/caw.gd edits it).
+# entry("caw") / look_of("caw") / name_of("caw") return it once it is saved.
+
+const CAW_ID := "caw"
+const CAW_PATH := "user://caw.cfg"
+const CAW_SECTION := "wrestler"
+const CAW_FIELDS := ["ring_name", "short_name", "first_name", "pronouns", "look", "stats", "anim_style",
+	"signature_set", "signature", "genre", "bio"]
+const CAW_DEFAULT_BIO := "Homemade brawler from the block. Built from scratch, tested on the trampoline."
+
+var _caw_loaded := false
+var _caw := {}
+
+
+func _caw_load() -> void:
+	if _caw_loaded:
+		return
+	_caw_loaded = true
+	_caw = {}
+	var cf := ConfigFile.new()
+	if cf.load(CAW_PATH) != OK or not cf.has_section(CAW_SECTION):
+		return
+	var d := {}
+	for k: String in CAW_FIELDS:
+		if cf.has_section_key(CAW_SECTION, k):
+			d[k] = cf.get_value(CAW_SECTION, k)
+	var look_v: Variant = d.get("look", "")
+	if look_v is String:
+		look_v = str_to_var(str(look_v))
+	if not (look_v is Dictionary):
+		return   # unreadable save: treat as none
+	d["look"] = look_v
+	_caw = _caw_clean(d)
+
+
+## Fills defaults and clamps a CAW record to the contract (names uppercase, stats 1..10).
+func _caw_clean(src: Dictionary) -> Dictionary:
+	var d := {}
+	var ring := str(src.get("ring_name", "")).strip_edges().to_upper().left(14)
+	if ring.is_empty():
+		ring = "ROOKIE"
+	d["ring_name"] = ring
+	var short := str(src.get("short_name", "")).strip_edges().to_upper().left(10)
+	if short.is_empty():
+		short = ring.split(" ", false)[0].left(10)
+	d["short_name"] = short
+	var first := str(src.get("first_name", "")).strip_edges().to_upper().left(12)
+	if first.is_empty():
+		first = "THEODORE"
+	d["first_name"] = first
+	var pro := str(src.get("pronouns", "he"))
+	d["pronouns"] = pro if pro in ["he", "she", "they"] else "they"
+	var look := {}
+	var lv: Variant = src.get("look", {})
+	if lv is Dictionary:
+		look = (lv as Dictionary).duplicate(true)
+	var stats := {}
+	var sv: Variant = src.get("stats", {})
+	var sd: Dictionary = sv if sv is Dictionary else {}
+	for k: String in Roster.STATS:
+		stats[k] = clampi(int(sd.get(k, 6)), 1, 10)
+	d["stats"] = stats
+	d["anim_style"] = str(src.get("anim_style", look.get("anim_style", "swagger")))
+	d["signature_set"] = str(src.get("signature_set", look.get("signature_set", "tank")))
+	look["anim_style"] = d["anim_style"]
+	look["signature_set"] = d["signature_set"]
+	d["look"] = look
+	d["signature"] = str(src.get("signature", "BACKYARD BOMB"))
+	d["genre"] = "CUSTOM"
+	d["bio"] = str(src.get("bio", CAW_DEFAULT_BIO))
+	return d
+
+
+func caw_exists() -> bool:
+	_caw_load()
+	return not _caw.is_empty()
+
+
+## The saved CAW fields (caw_contract.md), a copy; {} when none is saved.
+func caw_data() -> Dictionary:
+	_caw_load()
+	return _caw.duplicate(true)
+
+
+## A roster.gd-style entry for the created wrestler (id "caw"); Tank's entry when none is saved.
+## Extra keys beyond a roster entry: first_name, pronouns.
+func caw_entry() -> Dictionary:
+	_caw_load()
+	if _caw.is_empty():
+		return Roster.find("tank")
+	var d := _caw
+	var look: Dictionary = d["look"]
+	var stats: Dictionary = d["stats"]
+	return {
+		"id": CAW_ID,
+		"display_name": d["ring_name"],
+		"short_name": d["short_name"],
+		"first_name": d["first_name"],
+		"pronouns": d["pronouns"],
+		"genre": d["genre"],
+		"bio": d["bio"],
+		"stats": stats.duplicate(),
+		"anim_style": d["anim_style"],
+		"signature_set": d["signature_set"],
+		"signature": d["signature"],
+		"look": look.duplicate(true),
+	}
+
+
+## Saves the created wrestler (fields per caw_contract.md) to user://caw.cfg.
+func save_caw(d: Dictionary) -> void:
+	var c := _caw_clean(d)
+	var cf := ConfigFile.new()
+	for k: String in CAW_FIELDS:
+		if k == "look":
+			cf.set_value(CAW_SECTION, k, var_to_str(c["look"]))
+		else:
+			cf.set_value(CAW_SECTION, k, c[k])
+	var err := cf.save(CAW_PATH)
+	if err != OK:
+		push_warning("save_caw: could not write %s (error %d)" % [CAW_PATH, err])
+	_caw = c
+	_caw_loaded = true
