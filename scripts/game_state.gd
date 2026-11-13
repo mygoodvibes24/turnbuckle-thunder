@@ -40,7 +40,48 @@ func roster() -> Array:
 
 
 func entry(id: String) -> Dictionary:
+	if id == "caw":
+		return caw_entry()
 	return Roster.find(id)
+
+
+# ---- THROWAWAY TEST STUB (never merged): a fake created wrestler for screenshots.
+const TEST_LOOK := {
+	"anim_style": "swagger", "signature_set": "tank", "body": "female", "face": "punk",
+	"gear": Color(0.1, 0.85, 0.95), "skin": Color(0.55, 0.38, 0.27),
+	"hair_style": "spikes", "hair_color": Color(0.95, 0.2, 0.55),
+	"top_style": "studded_vest", "top_color": Color(0.08, 0.08, 0.1), "vest_color": Color(0.1, 0.8, 0.9),
+	"bottom_style": "skinny_ripped", "bottom_color": Color(0.15, 0.15, 0.2),
+	"shoes": "combat_boots", "shoe_color": Color(0.1, 0.1, 0.1), "shoe_accent": Color(0.1, 0.85, 0.95),
+	"chain": true, "bulk": 1.0,
+}
+
+
+func caw_exists() -> bool:
+	return true
+
+
+func caw_data() -> Dictionary:
+	return {"ring_name": "ROXY RUMBLE", "short_name": "ROXY", "first_name": "ROXANNE", "pronouns": "she",
+		"look": TEST_LOOK, "stats": {"POWER": 7, "AIR": 5, "FLOW": 6, "GRIT": 7}, "anim_style": "swagger",
+		"signature_set": "tank", "genre": "CUSTOM", "bio": "Made in the editor. Hits like rent day."}
+
+
+func caw_entry() -> Dictionary:
+	var d := caw_data()
+	return {"id": "caw", "display_name": d["ring_name"], "short_name": d["short_name"], "genre": "CUSTOM",
+		"bio": d["bio"], "stats": d["stats"], "anim_style": "swagger", "signature_set": "tank",
+		"signature": "RENT DAY DRIVER", "look": TEST_LOOK}
+
+
+func _ready() -> void:
+	if OS.has_feature("web"):
+		var q := str(JavaScriptBridge.eval("window.location.search", true))
+		for kv in q.trim_prefix("?").split("&", false):
+			var kp := kv.split("=")
+			if kp.size() == 2 and kp[0] == "go":
+				var target := "res://" + kp[1] + ".tscn"
+				get_tree().change_scene_to_file.call_deferred(target)
 
 
 func p1_entry() -> Dictionary:
