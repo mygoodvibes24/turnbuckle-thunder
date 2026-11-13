@@ -74,8 +74,8 @@ func _init() -> void:
 	preview_color = Color(0.22, 0.24, 0.34)
 	yard_bounds = Rect2(-7.0, -5.0, 14.0, 10.0)
 	cam_clamp = Rect2(-5.0, -4.0, 10.0, 7.5)
-	cam_height = 3.0
-	cam_back = 5.7
+	cam_height = 2.6
+	cam_back = 6.0
 	default_surface = "gravel"
 	surfaces = [{"rect": WALK_RECT, "kind": "concrete"}]
 	spawn_p1 = Vector3(-1.8, 0.0, 0.3)
@@ -146,7 +146,7 @@ func _make_gravel_texture() -> ImageTexture:
 	var peb2: Image = m._noise_img(n, n, 0.55, 1, true)
 	var blot: Image = m._noise_img(n, n, 0.018, 2, true)
 	var img := Image.create_empty(n, n, false, Image.FORMAT_RGBA8)
-	var base := Color(0.34, 0.32, 0.3)
+	var base := Color(0.3, 0.285, 0.27)
 	var tar := Color(0.075, 0.07, 0.068)
 	for y in n:
 		for x in n:
@@ -157,8 +157,8 @@ func _make_gravel_texture() -> ImageTexture:
 			var c := base.darkened((mv - 0.5) * 0.5)
 			var stone := Color(0.58, 0.54, 0.47).lerp(Color(0.4, 0.39, 0.4), q)
 			c = c.lerp(stone, smoothstep(0.56, 0.72, p) * 0.75)
-			c = c.lerp(tar, smoothstep(0.42, 0.26, p) * 0.7)
-			c = c.lerp(tar, smoothstep(0.66, 0.8, bl) * 0.65)                 # bare tar patches
+			c = c.lerp(tar, smoothstep(0.4, 0.22, p) * 0.5)
+			c = c.lerp(tar, smoothstep(0.72, 0.86, bl) * 0.28)                 # bare tar patches
 			c = c.lerp(Color(0.24, 0.22, 0.2), smoothstep(0.35, 0.15, bl) * 0.3) # dusty stains
 			var r := randf()
 			if r < 0.07:
@@ -169,7 +169,7 @@ func _make_gravel_texture() -> ImageTexture:
 	for i in 4:
 		var cx := randf_range(0.2, 0.8) * n
 		var cy := randf_range(0.2, 0.8) * n
-		m._soft_dot(img, cx, cy, randf_range(14.0, 30.0), randf_range(10.0, 22.0), Color(0.05, 0.05, 0.06), 0.22, 10.0)
+		m._soft_dot(img, cx, cy, randf_range(14.0, 30.0), randf_range(10.0, 22.0), Color(0.05, 0.05, 0.06), 0.12, 12.0)
 	return m._sharp_tex(img)
 
 
@@ -243,15 +243,14 @@ func _build_deck() -> void:
 	gm.cull_mode = BaseMaterial3D.CULL_DISABLED
 	var w := ROOF_X * 2.0
 	var d := FRONT_Z - BACK_Z
-	m._ground_quad(Vector3(0, 0.0, (FRONT_Z + BACK_Z) * 0.5), Vector2(w, d), gm, 0.0, Vector2(w / 3.0, d / 3.0))
+	m._ground_quad(Vector3(0, 0.0, (FRONT_Z + BACK_Z) * 0.5), Vector2(w, d), gm, 0.0, Vector2(w / 2.5, d / 2.5))
 	# Concrete pavers from the stairwell door out toward the middle of the roof.
 	var pm: StandardMaterial3D = m._tex_mat(m._make_concrete_texture(128, true, 2))
 	pm.cull_mode = BaseMaterial3D.CULL_DISABLED
 	m._ground_quad(Vector3(WALK_RECT.get_center().x, 0.02, WALK_RECT.get_center().y), WALK_RECT.size, pm, 0.0, Vector2(1.0, 3.0))
 	# Tar-paper flashing patches and seams (darker, slightly glossy strips).
-	var tar := Color(0.07, 0.065, 0.065)
 	for sz: float in [-2.6, 1.9]:
-		m._bx("flat", Vector3(w - 0.4, 0.012, 0.18), Vector3(0, 0.006, sz), tar)
+		m._bx("flat", Vector3(w - 0.4, 0.012, 0.08), Vector3(0, 0.006, sz), Color(0.16, 0.15, 0.14))
 	m._bx("flat", Vector3(2.2, 0.012, 1.4), Vector3(2.8, 0.006, 1.2), Color(0.1, 0.095, 0.09), 0.2)
 	m._bx("flat", Vector3(1.3, 0.012, 0.9), Vector3(-3.6, 0.006, -2.4), Color(0.09, 0.085, 0.08), -0.3)
 	# Spray-painted C2C on the gravel? No - a taped "X" mark for the music video (hero mark).
