@@ -981,6 +981,7 @@ func _refresh_all() -> void:
 	tag_name.text = str(info["ring_name"])
 	tag_sub.text = "%s   POW %d  AIR %d  FLO %d  GRT %d" % [_value_for_pronouns(), int(stats["POWER"]), int(stats["AIR"]),
 		int(stats["FLOW"]), int(stats["GRIT"])]
+	_relayout_tag()
 
 
 func _value_for_pronouns() -> String:
@@ -1257,6 +1258,7 @@ func _open_overlay(mode: int, title: String, items: Array, layout: Array, sel_i:
 	ov_title.text = title
 	ov_foot.text = foot
 	for c in ov_grid.get_children():
+		ov_grid.remove_child(c)   # now, so the panel's minimum size forgets the old grid
 		c.queue_free()
 	ov_btns.clear()
 	for i in items.size():
@@ -1274,6 +1276,7 @@ func _open_overlay(mode: int, title: String, items: Array, layout: Array, sel_i:
 	_refresh_overlay()
 	_refresh_all()
 	_relayout()
+	call_deferred("_relayout")
 
 
 func _close_overlay() -> void:
@@ -1846,8 +1849,8 @@ func _animate_camera(dt: float) -> void:
 	var want := 1.0 if TABS[tab] == "HEAD" else 0.0
 	cam_zoom = move_toward(cam_zoom, want, dt * 2.5)
 	var z := cam_zoom * cam_zoom * (3.0 - 2.0 * cam_zoom)
-	var dist := lerpf(5.4, 2.2, z)
-	var ty := lerpf(1.0, 1.82, z) + PLAT_H
+	var dist := lerpf(5.4, 2.3, z)
+	var ty := lerpf(1.0, 1.62, z) + PLAT_H
 	var sway := 0.05 * sin(t * 0.21)
 	camera.position = Vector3(sway * 3.0, ty + lerpf(0.28, 0.04, z), dist)
 	camera.look_at(Vector3(sway, ty, 0.0))
@@ -1939,13 +1942,13 @@ func _build_set() -> void:
 		_add(rib, Vector3(0, 0.3 * float(i) + 0.15, -3.48), _mat(Color(0.2, 0.2, 0.22)))
 	var stripe := BoxMesh.new()
 	stripe.size = Vector3(14, 0.34, 0.02)
-	_add(stripe, Vector3(0, 2.75, -3.44), _mat(Color(0.75, 0.1, 0.07)))
+	_add(stripe, Vector3(0, 2.75, -3.44), _mat(Color(0.45, 0.07, 0.05)))
 	var sign3 := Label3D.new()
 	sign3.text = "CREATE-A-WRESTLER"
 	sign3.font = font_i
 	sign3.font_size = 96
-	sign3.pixel_size = 0.004
-	sign3.modulate = Color(1.0, 0.86, 0.25)
+	sign3.pixel_size = 0.0028
+	sign3.modulate = Color(0.75, 0.62, 0.2)
 	sign3.outline_size = 0
 	sign3.position = Vector3(0.6, 2.75, -3.42)
 	world.add_child(sign3)
@@ -2296,10 +2299,7 @@ func _relayout() -> void:
 	panel.position = Vector2(m.x, top)
 	panel.size = Vector2(PANEL_W, maxf(140.0, bar_box.position.y - 10.0 - top))
 
-	tag_box.reset_size()
-	var tsz := tag_box.get_combined_minimum_size()
-	tag_box.size = Vector2(maxf(tsz.x, 300.0), tsz.y)
-	tag_box.position = Vector2(vp.x - m.z - tag_box.size.x, bar_box.position.y + bs.y - tsz.y)
+	_relayout_tag()
 	drag_hint.reset_size()
 	drag_hint.position = Vector2(vp.x - m.z - drag_hint.size.x, top)
 
@@ -2312,6 +2312,16 @@ func _relayout() -> void:
 	_relayout_flash()
 
 
+func _relayout_tag() -> void:
+	if tag_box == null or bar_box == null:
+		return
+	var vp := get_viewport().get_visible_rect().size
+	tag_box.reset_size()
+	var tsz := tag_box.get_combined_minimum_size()
+	tag_box.size = Vector2(maxf(tsz.x, 300.0), tsz.y)
+	tag_box.position = Vector2(vp.x - margin.z - tag_box.size.x, bar_box.position.y + bar_box.size.y - tsz.y)
+
+
 func _relayout_flash() -> void:
 	if flash_label == null:
 		return
@@ -2319,4 +2329,4 @@ func _relayout_flash() -> void:
 	flash_label.reset_size()
 	var fs := flash_label.get_combined_minimum_size()
 	var cx := (margin.x + PANEL_W + vp.x) * 0.5
-	flash_label.position = Vector2(cx - fs.x * 0.5, vp.y * 0.18)
+	flash_label.position = Vector2(cx - fs.x * 0.5, vp.y * 0.3)
