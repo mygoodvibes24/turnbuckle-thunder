@@ -512,7 +512,7 @@ func _make_chalk_texture() -> ImageTexture:
 				prev = q
 	for c: Vector2 in corners:
 		m._soft_dot(img, c.x, c.y, 9.0, 9.0, Color(0.9, 0.35, 0.45), 0.7, 3.0)   # pink chalk turnbuckles
-	m._soft_text(img, "C2C", 80.0, 104.0, 9.0, Color(0.45, 0.7, 0.95), 0.75)
+	m._soft_text(img, "C2C", 101.0, 113.0, 5.0, Color(0.5, 0.72, 0.95), 0.6)
 	var nz: Image = m._noise_img(n, n, 0.06, 3, false)
 	for y in n:
 		for x in n:
@@ -885,12 +885,12 @@ func _build_bus_stop() -> void:
 
 func _build_hoop() -> void:
 	# Portable basketball hoop at the end of house B's driveway; kids play out in the street.
-	var b := Vector3(1.55, CURB_H, -6.5)
+	var b := Vector3(2.55, CURB_H, -6.5)
 	m._bx("flat", Vector3(1.0, 0.45, 0.7), b + Vector3(0, 0.225, 0), Color(0.12, 0.12, 0.13))
 	m._bx("flat", Vector3(0.7, 0.1, 0.5), b + Vector3(0, 0.5, 0), Color(0.18, 0.18, 0.2))
 	var pole_top := b + Vector3(0, 3.1, 0.35)
 	m._beam("metal", b + Vector3(0, 0.4, 0), pole_top, 0.12, Color(0.25, 0.26, 0.28))
-	var board := Vector3(1.55, 3.3, -5.4)
+	var board := Vector3(2.55, 3.3, -5.4)
 	m._beam("metal", pole_top, board + Vector3(0, -0.1, -0.05), 0.07, Color(0.25, 0.26, 0.28))
 	m._bx("flat", Vector3(1.12, 0.74, 0.05), board, Color(0.92, 0.92, 0.9))
 	m._bx("flat", Vector3(1.18, 0.8, 0.03), board + Vector3(0, 0, -0.03), Color(0.1, 0.1, 0.1))
@@ -984,7 +984,7 @@ func _build_party() -> void:
 	m._cy("flat", 0.03, 0.04, 0.12, dj + Vector3(-1.05, 1.5, 0.32), Color(0.2, 0.2, 0.22), 8)
 	m._cy("flat", 0.2, 0.2, 0.02, dj + Vector3(-1.05, 0.01, 0.2), Color(0.12, 0.12, 0.13), 10)
 	# Speaker on a pole stand to the left of the booth, and the stage light tripod on the right.
-	var ps := Vector3(2.7, CURB_H, -6.15)
+	var ps := Vector3(5.4, CURB_H, -6.35)
 	for k in 3:
 		var a := TAU * k / 3.0 + 0.5
 		m._beam("metal", ps + Vector3(cos(a) * 0.45, 0, sin(a) * 0.45), ps + Vector3(0, 0.9, 0), 0.03, Color(0.15, 0.15, 0.16))
@@ -1261,7 +1261,7 @@ func _build_crowd_spots() -> void:
 	var w := CURB_H + 0.015
 	# Back sidewalk, between the props.
 	for spot: Vector3 in [Vector3(-9.3, w, -5.9), Vector3(-7.4, w, -5.75), Vector3(-6.9, w, -6.6), Vector3(-2.7, w, -5.65),
-			Vector3(-0.6, w, -5.65), Vector3(0.6, w, -5.7), Vector3(2.4, w, -5.6), Vector3(5.4, w, -5.75), Vector3(8.2, w, -5.65),
+			Vector3(-0.6, w, -5.65), Vector3(0.6, w, -5.7), Vector3(1.4, w, -5.6), Vector3(6.2, w, -5.65), Vector3(8.2, w, -5.65),
 			Vector3(9.9, w, -5.7), Vector3(-11.5, w, -5.8), Vector3(11.6, w, -5.9)]:
 		_fan(spot + Vector3(randf_range(-0.1, 0.1), 0, randf_range(-0.1, 0.1)), "stand", 0.62)
 	_fan(Vector3(4.0, w, -6.75), "filmer", 0.75, 1.6)        # the DJ behind the decks
