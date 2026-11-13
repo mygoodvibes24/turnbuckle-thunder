@@ -1196,6 +1196,25 @@ func _print_tex(kind: String, ink: Color, acc: Color, bg: Color) -> ImageTexture
 		_print_vermin(img, ink, acc, blk)
 	elif kind == "drip_heart":
 		_print_drip_heart(img, ink, acc, blk)
+	elif kind == "rec":
+		# "rec": a phone viewfinder -- corner brackets round a play button, a red REC dot
+		for cv in [[18.0, 14.0, 1.0, 1.0], [110.0, 14.0, -1.0, 1.0], [18.0, 78.0, 1.0, -1.0], [110.0, 78.0, -1.0, -1.0]]:
+			var c: Array = cv
+			var cx: float = c[0]
+			var cy: float = c[1]
+			var dx: float = c[2]
+			var dy: float = c[3]
+			var br := PackedVector2Array([Vector2(cx + 20 * dx, cy), Vector2(cx, cy), Vector2(cx, cy + 16 * dy)])
+			_lines(img, br, 4.4, blk, 1.0, 0.2)
+			_lines(img, br, 2.4, ink, 1.0, 0.3)
+		var tri := PackedVector2Array([Vector2(52, 28), Vector2(52, 64), Vector2(82, 46)])
+		var rim := tri.duplicate()
+		rim.append(tri[0])
+		_lines(img, rim, 4.0, blk, 1.0, 0.2)
+		_poly(img, tri, ink, 1.0)
+		_dab(img, 30, 99, 8, 8, blk, 1.0, 0.2)
+		_dab(img, 30, 99, 6.5, 6.5, Color(0.92, 0.12, 0.1, 1.0), 1.0, 0.25)
+		_text(img, "REC", 74, 90, 18, 2.6, ink, blk)
 	else:
 		var tri := PackedVector2Array([Vector2(64, 6), Vector2(100, 66), Vector2(28, 66)])
 		var rim := tri.duplicate()
@@ -2050,7 +2069,7 @@ func _build_body() -> void:
 	elif hair == "curls":
 		_loft(hg, HAIR_CAP, _mat(white, _tex("hcap" + str(hair_c), _cap_tex.bind(hair_c)), 0.1, 0.7), true, false, Vector3.ZERO, 16)
 		_build_curls(hg, _mat(white, _tex("locs" + str(hair_c), _loc_tex.bind(hair_c)), 0.15, 0.6), 34)
-	elif hair in ["ponytail", "spikes", "twists"]:
+	elif hair in ["ponytail", "spikes", "twists", "bun", "slick"]:
 		_build_hair_ex(hg, hair, hair_c)
 	if look.get("mask", false):
 		_build_costume_mask(hg)
@@ -2092,14 +2111,16 @@ func _head_opts(female: bool, hair: String) -> Dictionary:
 			o["scalp"] = "mohawk"
 		"twists":
 			o["scalp"] = "fade"
-		"ponytail":
+		"ponytail", "bun", "slick":
 			o["scalp"] = "sleek"
+		"balding":
+			o["scalp"] = "balding"
 	if "face_tattoos" in _accs():
 		o["tattoos"] = true
 	# Faces whose details live in _paint_face_ex (stubble / moustache / brow ring) need it to run
 	# even when nothing else above asked for it.
 	var fk := str(look.get("face", ""))
-	if o.is_empty() and fk in ["country", "oldschool", "punk"]:
+	if o.is_empty() and fk in ["country", "oldschool", "punk", "older", "mom", "grin", "smug"]:
 		o["face_ex"] = true
 	return o
 
@@ -2584,7 +2605,9 @@ const LOOK_ALIASES := {
 	"bottom": {"baggy_jeans": "baggy", "glam_pants": "high_shorts", "ripped_skinny": "skinny_ripped", "slim": "stacked"},
 	"shoes": {"boots": "combat_boots", "high_tops": "hightops"},
 	"acc": {"headset_mic": "headset", "star_earrings": "hoops", "big_buckle": "buckle", "gold_rope_chain": "rope_chain",
-		"tinted_shades": "glasses", "studs": "studded_belt"},
+		"tinted_shades": "glasses", "studs": "studded_belt", "hospital_badge_lanyard": "badge", "fanny_pack_of_cash": "fanny_pack",
+		"headphones_round_neck": "headphones", "handheld_mic": "mic", "broomcam": "phone_stick", "gardening_gloves": "garden_gloves",
+		"gold_sunglasses": "sunglasses", "reading_glasses_on_head": "readers_up"},
 }
 
 
@@ -2904,7 +2927,16 @@ func _build_top_ex(top: String, female: bool, kt: float, m: Dictionary) -> Array
 	_loft(torso, [Vector4(0.665, 0.05 * nk, 0.054 * nk, 0.004), Vector4(0.6, 0.054 * nk, 0.058 * nk, -0.004),
 		Vector4(0.53, 0.062 * nk, 0.064 * nk, -0.01)], neck, false, false, Vector3.ZERO, 12)
 	var shell: Array = []
+	_hem_out = []
 	match top:
+		"scrubs":
+			shell = _top_scrubs(body, top_c, acc, kc, m)
+		"polo":
+			shell = _top_polo(body, top_c, acc, kc, m)
+		"hawaiian":
+			shell = _top_hawaiian(body, top_c, acc, kc, m)
+		"suit_jacket":
+			shell = _top_suit(body, top_c, acc, kc, m)
 		"stage_top":
 			shell = _top_stage(body, top_c, acc, out_c, kc, m)
 		"studded_vest":
@@ -3096,16 +3128,33 @@ func _build_arm_ex(side: int, m: Dictionary, top: String, bulk: float, female: b
 	else:
 		elbow_r = el
 	var wrist := 0.033 * k
-	if top == "studded_vest":
+	var short_sl := top in SHORT_SLEEVE_TOPS
+	if short_sl:
 		_ball(sh, 0.05 * k, Vector3(-inset * s * 0.97, -0.014, 0.0), upper, Vector3(1.0, 1.05, 1.08), 12)     # deltoid
 		var ua := [Vector4(0.03, 0.05 * k, 0.053 * k, 0.0), Vector4(-0.06, 0.051 * k, 0.054 * k, 0.004),
 			Vector4(-0.16, 0.046 * k, 0.049 * k, 0.006), Vector4(-0.26, 0.042 * k, 0.045 * k, 0.003),
 			Vector4(-0.345, 0.04 * k, 0.042 * k, 0.0)]
 		_loft(sh, ua, upper, true, true, Vector3.ZERO, 12, _arm_xo(ua, inset, s))
 		var sl: Material = m["sl_short"]
-		_ball(sh, 0.068, Vector3(-inset * s, -0.006, 0.0), sl, Vector3(1.0, 0.85, 1.05), 14)
-		_shoulder_bridge(sh, side, Vector3(-inset * s, -0.006, 0.0), 0.068, sl, Vector3(1.0, 0.85, 1.05))
-		var sr := [Vector4(0.02, 0.068, 0.072, 0.0), Vector4(-0.07, 0.07, 0.073, 0.004), Vector4(-0.15, 0.066, 0.068, 0.006)]
+		var sk := 1.0           # sleeve width, end and flare per top (the vest's fitted tee = 1, -0.15, 1)
+		var send := -0.15
+		var flare := 1.0
+		match top:
+			"scrubs":
+				sk = 1.08
+				send = -0.17
+			"polo":
+				send = -0.16
+			"hawaiian":
+				sk = 1.16
+				flare = 1.06
+		if female and top != "studded_vest":
+			sk *= 0.9
+		var sr0 := 0.068 * sk
+		_ball(sh, sr0, Vector3(-inset * s, -0.006, 0.0), sl, Vector3(1.0, 0.85, 1.05), 14)
+		_shoulder_bridge(sh, side, Vector3(-inset * s, -0.006, 0.0), sr0, sl, Vector3(1.0, 0.85, 1.05))
+		var sr := [Vector4(0.02, 0.068 * sk, 0.072 * sk, 0.0), Vector4(-0.07, 0.07 * sk, 0.073 * sk, 0.004),
+			Vector4(send, 0.066 * sk * flare, 0.068 * sk * flare, 0.006)]
 		_loft(sh, sr, sl, false, false, Vector3.ZERO, 14, _arm_xo(sr, inset, s), 0.03, 3.0 + s)              # fitted sleeve
 		_ball(el, 0.041 * k, Vector3(0, 0.0, -0.004), upper, Vector3.ONE, 10)
 		_loft(el, [Vector4(0.02, 0.042 * k, 0.042 * k, 0.0), Vector4(-0.06, 0.047 * k, 0.044 * k, 0.004),
@@ -3121,6 +3170,8 @@ func _build_arm_ex(side: int, m: Dictionary, top: String, bulk: float, female: b
 				r = 0.72
 			"tracksuit":
 				r = 0.8
+			"suit_jacket":
+				r = 0.74
 			"puffer":
 				r = 1.02
 		var puffer := top == "puffer"
@@ -3149,7 +3200,25 @@ func _build_arm_ex(side: int, m: Dictionary, top: String, bulk: float, female: b
 		var wr := wrist + 0.006
 		_loft(el, [Vector4(-0.236, wr, wr * 0.93, 0.0), Vector4(-0.242, wr + 0.002, wr * 0.95, 0.0), Vector4(-0.282, wr + 0.001, wr * 0.92, 0.0),
 			Vector4(-0.288, wr - 0.002, wr * 0.88, 0.0)], wb, false, false, Vector3.ZERO, 12)
-	var hand := _build_hand(el, side, lerpf(1.0, bulk, 0.5) * (0.88 if female else 1.0), skin)
+	var accs := _accs()
+	if side < 0 and "watch" in accs:
+		var wc: Color = look.get("watch_color", Color(1.0, 0.8, 0.32))
+		var wy := -0.255 if short_sl else -0.268
+		var wrx := (0.031 * k + 0.006) if short_sl else (wrist * 0.93 + 0.005)
+		var wrz := (0.028 * k + 0.006) if short_sl else (wrist * 0.84 + 0.005)
+		var wm := _mat(wc, null, 0.95, 0.22)
+		_loft(el, [Vector4(wy + 0.007, wrx, wrz, 0.0), Vector4(wy - 0.007, wrx, wrz, 0.0)], wm, false, false, Vector3.ZERO, 12)
+		var face := _add_mesh(el, _flat_mesh(_oval_pts(0.012, 0.012, 16), 0.006, 0.002), Vector3(s * (wrx + 0.002), wy, 0.0),
+			_mat(Color.WHITE, _tex("watch" + str(wc), _watch_tex.bind(wc)), 0.9, 0.2))
+		face.rotation.y = s * PI * 0.5
+	var hand_m: Material = skin
+	if "garden_gloves" in accs:
+		var gc: Color = look.get("glove_color", Color(0.42, 0.58, 0.3))
+		var gcu: Color = look.get("glove_cuff", Color(0.88, 0.82, 0.62))
+		hand_m = _mat(Color.WHITE, _tex("glove" + str(gc), _glove_tex.bind(gc)), 0.1, 0.7)
+		_loft(el, [Vector4(-0.25, wrist * 1.05 + 0.011, wrist * 0.95 + 0.011, 0.0), Vector4(-0.3, wrist * 0.9 + 0.006, wrist * 0.8 + 0.006, 0.0)],
+			_mat(gcu), false, false, Vector3.ZERO, 12)                                                  # glove cuff
+	var hand := _build_hand(el, side, lerpf(1.0, bulk, 0.5) * (0.88 if female else 1.0), hand_m)
 	if side < 0:
 		hand_l = hand
 	else:
@@ -3186,6 +3255,15 @@ func _build_waist_ex(bottom: String, female: bool, kt: float, m: Dictionary) -> 
 			tex = _tex("trw" + kb, _trackwaist_tex.bind(bot_c, acc))
 			spec = 0.3
 			_belt_y = Vector2(0.11, 0.08)
+		"scrub_pants", "slacks", "suit_pants", "cargo_shorts":
+			rings = _resample(WAIST_F, 0.14, -0.245, 8) if female else WAIST_FIT
+			var tr: Vector4 = rings[0]
+			var br: Vector4 = rings[rings.size() - 1]
+			var bt := tr.x - (0.02 if bottom == "scrub_pants" else 0.038)
+			var bb := tr.x - (0.05 if bottom == "scrub_pants" else 0.071)
+			tex = _tex("tsw" + bottom + kb + str(tr.x), _trouser_waist_tex.bind(bot_c, tr.x, br.x, bt, bb, bottom))
+			spec = 0.1 if bottom == "suit_pants" else 0.0
+			_belt_y = Vector2(bt, bb)
 		_:
 			rings = _resample(WAIST_F, 0.14, -0.245, 8) if female else WAIST_FIT
 			var top_r: Vector4 = rings[0]
@@ -3217,6 +3295,21 @@ func _build_waist_ex(bottom: String, female: bool, kt: float, m: Dictionary) -> 
 				var side := "-" if si < 0 else "+"
 				m["leg_th_" + side] = _mat(white, _tex("trt" + side + kb, _track_leg_tex.bind(bot_c, acc, si, false)), 0.3, 0.45)
 				m["leg_sn_" + side] = _mat(white, _tex("trs" + side + kb, _track_leg_tex.bind(bot_c, acc, si, true)), 0.3, 0.45)
+		"scrub_pants", "slacks", "suit_pants", "cargo_shorts":
+			var lsp := 0.1 if bottom == "suit_pants" else 0.0
+			for sv in [-1, 1]:
+				var si: int = sv
+				var side := "-" if si < 0 else "+"
+				m["leg_th_" + side] = _mat(white, _tex("tleg" + bottom + side + kb, _trouser_leg_tex.bind(bot_c, si, "thigh", bottom)), lsp, 0.5)
+				if bottom == "cargo_shorts":
+					m["leg_sn_" + side] = _sheen(_mat(white, _tex("legsk_s" + str(skin_c), _skin_leg_tex.bind(skin_c, "shin")), 0.25, 0.55), sheen_c)
+				else:
+					m["leg_sn_" + side] = _mat(white, _tex("tshin" + bottom + side + kb, _trouser_leg_tex.bind(bot_c, si, "shin", bottom)), lsp, 0.5)
+			if bottom == "cargo_shorts":
+				var sc: Color = look.get("sock_color", Color(0.95, 0.95, 0.93))
+				var sst: Color = look.get("sock_stripe", gear_color)
+				m["sock"] = _mat(white, _tex("sock" + str(sc) + str(sst), _sock_tex.bind(sc, sst)))
+				m["thigh_skin"] = _sheen(_mat(white, _tex("legsk_t" + str(skin_c), _skin_leg_tex.bind(skin_c, "thigh")), 0.25, 0.55), sheen_c)
 		_:
 			var rip := Color(0, 0, 0, 0)
 			if bottom == "skinny_ripped":
@@ -3247,6 +3340,7 @@ func _build_leg_ex(side: int, m: Dictionary, bottom: String, bulk: float, female
 	var shin: Array
 	var t_in := 0.035
 	var fold := 0.02
+	var shin_fold := -1.0
 	var k := lerpf(1.0, bulk, 0.4)
 	match bottom:
 		"high_shorts", "leggings":
@@ -3269,6 +3363,29 @@ func _build_leg_ex(side: int, m: Dictionary, bottom: String, bulk: float, female
 				Vector4(-0.47, 0.092, 0.098, 0.004)]
 			shin = [Vector4(0.06, 0.092, 0.098, 0.004), Vector4(-0.1, 0.09, 0.096, 0.002), Vector4(-0.3, 0.084, 0.09, 0.002),
 				Vector4(-0.38, 0.082, 0.088, 0.004), Vector4(-0.418, 0.08, 0.086, 0.008)]
+		"scrub_pants":
+			t_in = 0.025
+			fold = 0.03
+			thigh = [Vector4(0.08, 0.106, 0.112, 0.006), Vector4(-0.1, 0.104, 0.11, 0.008), Vector4(-0.3, 0.094, 0.1, 0.006),
+				Vector4(-0.47, 0.084, 0.09, 0.004)]
+			shin = [Vector4(0.06, 0.084, 0.09, 0.004), Vector4(-0.1, 0.082, 0.088, 0.002), Vector4(-0.3, 0.078, 0.084, 0.002),
+				Vector4(-0.385, 0.077, 0.083, 0.004), Vector4(-0.405, 0.075, 0.081, 0.006)]
+		"slacks", "suit_pants":
+			fold = 0.008 if bottom == "suit_pants" else 0.014
+			thigh = [Vector4(0.08, 0.098, 0.104, 0.006), Vector4(0.0, 0.096, 0.102, 0.008), Vector4(-0.14, 0.088, 0.094, 0.008),
+				Vector4(-0.3, 0.078, 0.084, 0.006), Vector4(-0.47, 0.07, 0.075, 0.004)]
+			shin = [Vector4(0.06, 0.07, 0.075, 0.004), Vector4(-0.1, 0.067, 0.072, 0.002), Vector4(-0.26, 0.064, 0.069, 0.002),
+				Vector4(-0.36, 0.064, 0.07, 0.004), Vector4(-0.395, 0.066, 0.073, 0.008), Vector4(-0.41, 0.065, 0.073, 0.012)]
+			if bottom == "suit_pants":
+				k *= 0.94
+		"cargo_shorts":
+			t_in = 0.02
+			fold = 0.03
+			shin_fold = 0.0
+			thigh = [Vector4(0.08, 0.116, 0.122, 0.006), Vector4(-0.1, 0.116, 0.122, 0.008), Vector4(-0.3, 0.108, 0.114, 0.008),
+				Vector4(-0.44, 0.104, 0.11, 0.006), Vector4(-0.5, 0.104, 0.11, 0.006)]
+			shin = [Vector4(0.04, 0.056, 0.062, 0.0), Vector4(-0.06, 0.06, 0.066, -0.008), Vector4(-0.16, 0.056, 0.062, -0.006),
+				Vector4(-0.28, 0.042, 0.046, -0.002), Vector4(-0.37, 0.034, 0.037, 0.0), Vector4(-0.42, 0.033, 0.036, 0.004)]
 		"stacked":
 			thigh = [Vector4(0.08, 0.102, 0.108, 0.006), Vector4(0.0, 0.1, 0.106, 0.008), Vector4(-0.12, 0.092, 0.098, 0.008),
 				Vector4(-0.26, 0.08, 0.086, 0.006), Vector4(-0.38, 0.07, 0.074, 0.004), Vector4(-0.47, 0.066, 0.07, 0.004)]
@@ -3290,8 +3407,19 @@ func _build_leg_ex(side: int, m: Dictionary, bottom: String, bulk: float, female
 	tmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
 	var s0: Vector4 = shin[0]
 	_ball(kn, s0.y * 0.98, Vector3(0, -0.01, 0.004), sn_m, Vector3(1.0, 1.0, s0.z / s0.y), 12)            # knee
-	var smi := _loft(kn, shin, sn_m, false, false, Vector3.ZERO, 16, PackedFloat32Array(), fold, 8.0 + s * 2.3)
+	var sf := fold if shin_fold < 0.0 else shin_fold
+	var smi := _loft(kn, shin, sn_m, false, false, Vector3.ZERO, 16, PackedFloat32Array(), sf, 8.0 + s * 2.3)
 	smi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	if bottom == "cargo_shorts":
+		var inner: Array = _bulked([Vector4(-0.26, 0.074, 0.08, 0.004), Vector4(-0.47, 0.058, 0.064, 0.004)], k, k)
+		_loft(hp, inner, m["thigh_skin"], false, false, Vector3.ZERO, 12, _leg_xo(inner, t_in, s))    # bare thigh up the shorts
+		var sock: Array = []
+		for yv in [-0.19, -0.205, -0.38, -0.425]:
+			var yy: float = yv
+			var r := _ring_at(shin, yy)
+			var add := 0.006 if yy > -0.21 else 0.003
+			sock.append(Vector4(yy, r.y + add, r.z + add, r.w))
+		_loft(kn, sock, m["sock"], false, false, Vector3.ZERO, 14)                                   # high socks
 	if bottom == "high_shorts":
 		var sl := [Vector4(0.06, 0.098, 0.103, 0.003), Vector4(-0.03, 0.095, 0.1, 0.005), Vector4(-0.082, 0.091, 0.097, 0.006),
 			Vector4(-0.088, 0.094, 0.1, 0.006), Vector4(-0.104, 0.092, 0.098, 0.006)]
@@ -3310,7 +3438,12 @@ func _build_shoe_ex(kn: Node3D, kind: String, female: bool) -> void:
 	var sa: Color = look.get("shoe_accent", Color(0.92, 0.92, 0.9))
 	var key := kind + str(sc) + str(sa)
 	var fx := 0.86 if female else 1.0
-	var upper := _mat(white, _tex("shx" + key, _shoe_ex_tex.bind(kind, sc, sa)), 0.3 if kind == "cowboy_boots" else 0.15, 0.5)
+	var u_spec := 0.3 if kind == "cowboy_boots" else 0.15
+	var u_rough := 0.5
+	if kind == "dress_shoes":
+		u_spec = 0.75
+		u_rough = 0.25
+	var upper := _mat(white, _tex("shx" + key, _shoe_ex_tex.bind(kind, sc, sa)), u_spec, u_rough)
 	var parts: Array = []        # [rings, material, centre y, cap_top]
 	match kind:
 		"platforms":
@@ -3344,6 +3477,32 @@ func _build_shoe_ex(kn: Node3D, kind: String, female: bool) -> void:
 			var shaft := _mat(white, _tex("sha" + key, _shaft_tex.bind(kind, sc, sa)), 0.3, 0.5)
 			_loft(kn, _bulked([Vector4(-0.15, 0.058, 0.062, 0.0), Vector4(-0.25, 0.054, 0.058, -0.004), Vector4(-0.33, 0.052, 0.058, 0.0),
 				Vector4(-0.37, 0.054, 0.066, 0.008)], fx, fx), shaft, false, false, Vector3.ZERO, 14)
+		"clogs":
+			var ft := [Vector4(0.085, 0.062, 0.036, -0.006), Vector4(0.07, 0.085, 0.05, 0.0), Vector4(0.02, 0.096, 0.064, 0.008),
+				Vector4(-0.06, 0.104, 0.07, 0.008), Vector4(-0.14, 0.106, 0.064, 0.002), Vector4(-0.2, 0.094, 0.05, -0.006),
+				Vector4(-0.235, 0.06, 0.03, -0.01)]
+			parts.append([_bulked(ft, fx, 1.0), upper, -0.39])
+			var so := [Vector4(0.112, 0.08, 0.03, 0.0), Vector4(0.09, 0.104, 0.032, 0.0), Vector4(0.0, 0.108, 0.032, 0.0),
+				Vector4(-0.13, 0.112, 0.032, 0.0), Vector4(-0.21, 0.1, 0.03, 0.0), Vector4(-0.245, 0.064, 0.024, 0.0)]
+			parts.append([_bulked(so, fx, 1.0), _mat(white, _tex("rub" + str(sa), _rubber_tex.bind(sa, false)), 0.1, 0.6), -0.43])
+			var strap := PackedVector3Array()
+			for i in 9:
+				var t := lerpf(-1.4, 1.4, float(i) / 8.0)
+				strap.append(Vector3(sin(t) * 0.068 * fx, -0.392 + 0.008 * cos(t), -0.075 - cos(t) * 0.035))
+			_tube(kn, strap, _const_r(9, 0.0075), 6, upper)                                         # heel strap
+		"dress_shoes":
+			var ft := [Vector4(0.088, 0.05, 0.044, 0.01), Vector4(0.066, 0.062, 0.056, 0.01), Vector4(0.0, 0.066, 0.056, 0.006),
+				Vector4(-0.07, 0.07, 0.042, -0.004), Vector4(-0.15, 0.064, 0.03, -0.012), Vector4(-0.205, 0.048, 0.022, -0.016),
+				Vector4(-0.24, 0.024, 0.014, -0.016), Vector4(-0.256, 0.006, 0.006, -0.015)]
+			parts.append([_bulked(ft, fx, 1.0), upper, -0.402])
+			var so := [Vector4(0.082, 0.05, 0.007, 0.0), Vector4(0.0, 0.068, 0.007, 0.0), Vector4(-0.14, 0.066, 0.007, 0.0),
+				Vector4(-0.21, 0.046, 0.006, 0.0), Vector4(-0.258, 0.008, 0.005, 0.0)]
+			var leather := _mat(Color(0.14, 0.09, 0.06), null, 0.3, 0.4)
+			parts.append([_bulked(so, fx, 1.0), leather, -0.45])
+			_block(kn, Vector3(0.06 * fx, 0.022, 0.06), Vector3(0, -0.449, -0.058), leather)                # heel
+		"walkers":
+			parts.append([_bulked(SNEAKER_UP, fx * 1.06, 1.06), upper, -0.396])
+			parts.append([_bulked(SNEAKER_SOLE, fx * 1.06, 1.3), _mat(white, _tex("sole", _sole_tex)), -0.428])
 		"shelltoes", "hightops":
 			parts.append([_bulked(SNEAKER_UP, fx, 0.95 if kind == "shelltoes" else 1.0), upper, -0.398])
 			parts.append([_bulked(SNEAKER_SOLE, fx, 1.0), _mat(white, _tex("sole", _sole_tex)), -0.437])
@@ -3376,7 +3535,7 @@ func _build_shoe_ex(kn: Node3D, kind: String, female: bool) -> void:
 ## The back of every brim stays inside 0.19 m of the head so lying poses keep it off the mat.
 func _build_hat(hg: Node3D) -> void:
 	var kind := str(look.get("hat", "none"))
-	if not (kind in ["cowboy", "fedora", "bucket"]):
+	if not (kind in ["cowboy", "fedora", "bucket", "sun_hat", "cap_back"]):
 		return
 	var hc: Color = look.get("hat_color", Color(0.08, 0.08, 0.09))
 	var band: Color = look.get("hat_band", hc.darkened(0.6))
@@ -3398,6 +3557,17 @@ func _build_hat(hg: Node3D) -> void:
 			crown = [Vector4(0.12, 0.048, 0.07, 0.004), Vector4(0.112, 0.071, 0.092, 0.0), Vector4(0.082, 0.082, 0.102, 0.0),
 				Vector4(0.03, 0.087, 0.108, 0.0), Vector4(0.0, 0.089, 0.11, 0.0), Vector4(-0.01, 0.09, 0.111, 0.0)]
 			brim = _brim_mesh(0.087, 0.109, 0.052, 0.064, 0.05, 0.012, 0.02, 0.022, 0.0, 0.005)
+		"sun_hat":
+			hat.position.y = 0.158
+			crown = [Vector4(0.112, 0.062, 0.078, 0.0), Vector4(0.106, 0.08, 0.098, 0.0), Vector4(0.06, 0.09, 0.108, 0.0),
+				Vector4(0.0, 0.095, 0.115, 0.0), Vector4(-0.01, 0.096, 0.116, 0.0)]
+			brim = _brim_mesh(0.093, 0.114, 0.076, 0.086, 0.06, -0.014, 0.02, 0.0, 0.03, 0.006)
+		"cap_back":
+			hat.position.y = 0.156
+			crown = [Vector4(0.1, 0.03, 0.036, -0.004), Vector4(0.094, 0.06, 0.072, -0.006), Vector4(0.074, 0.08, 0.098, -0.006),
+				Vector4(0.04, 0.089, 0.109, -0.008), Vector4(0.0, 0.092, 0.113, -0.01), Vector4(-0.012, 0.093, 0.114, -0.01)]
+			brim = _brim_mesh(0.093, 0.114, 0.0, 0.0, 0.064, -0.022, 0.0, 0.014, 0.0, 0.006)            # the bill, turned to the back
+			_ball(hat, 0.008, Vector3(0, 0.1, -0.004), _mat(hc.darkened(0.2)), Vector3(1, 0.6, 1), 8)    # top button
 		_:
 			hat.position.y = 0.163
 			crown = [Vector4(0.1, 0.064, 0.08, 0.0), Vector4(0.096, 0.078, 0.096, 0.0), Vector4(0.06, 0.087, 0.106, 0.0),
@@ -3424,6 +3594,19 @@ func _build_hair_ex(hg: Node3D, hair: String, hair_c: Color) -> void:
 		"spikes":
 			_build_spikes(hg, _sheen(_mat(white, _tex("strand" + str(hair_c) + str(tip), _strand_tex.bind(hair_c, tip)), 0.3, 0.45),
 				sheen_c, 2.4, 0.7))
+		"bun":
+			_loft(hg, HAIR_CAP, _sheen(_mat(white, _tex("pulled" + str(hair_c), _pulled_tex.bind(hair_c)), 0.12, 0.6), sheen_c, 2.6, 0.6),
+				true, false, Vector3.ZERO, 16)
+			var bm := _sheen(_mat(white, _tex("coil" + str(hair_c), _coil_tex.bind(hair_c)), 0.1, 0.7), sheen_c, 2.6, 0.5)
+			_ball(hg, 0.05, Vector3(0, 0.252, -0.074), bm, Vector3(1.0, 0.86, 0.95), 14)                    # top bun
+			var tie: Color = look.get("hair_tie", gear_color)
+			var bd := Vector3(0, 0.88, -0.48)
+			_tube(hg, _ring_pts(Vector3(0, 0.252, -0.074) - bd * 0.02, Vector3.RIGHT, Vector3(0, 0.48, 0.88), 0.042, 0.04, 14),
+				_const_r(15, 0.0065), 6, _mat(tie, null, 0.4, 0.5))                                        # scrunchie
+		"slick":
+			var sm := _sheen(_mat(white, _tex("sleek" + str(hair_c), _sleek_tex.bind(hair_c)), 0.35, 0.4), sheen_c, 2.6, 1.0)
+			_loft(hg, HAIR_CAP, sm, true, false, Vector3.ZERO, 16)
+			_ball(hg, 0.05, Vector3(0, 0.234, 0.03), sm, Vector3(1.5, 0.52, 1.05), 14)                    # combed-back front volume
 		"twists":
 			_build_twists(hg, _sheen(_mat(white, _tex("twist" + str(hair_c) + str(tip), _loc_tex2.bind(hair_c, tip)), 0.18, 0.6),
 				Color(0.06, 0.058, 0.065), 3.0, 0.9), 64)
@@ -3598,6 +3781,7 @@ func _build_accessories(hg: Node3D, shell: Array) -> void:
 			var bkc: Color = look.get("buckle_color", mc)
 			var bk := _mat(white, _tex("buckle" + str(bkc), _buckle_tex.bind(bkc)), 0.95, 0.25)
 			_add_mesh(hips, _flat_mesh(_oval_pts(0.052, 0.036, 24), 0.008, 0.003), Vector3(0, my, wr.z + wr.w + 0.01), bk)
+	_build_cast_accessories(hg, shell, accs, mc, mm)
 
 
 ## Chain lying on the outer shell round the neck, `drop` deep at the front, `wid` wide, with
@@ -3632,6 +3816,9 @@ func _build_chain_ex(shell: Array, chain_m: Material, drop: float, rad: float, w
 				_ball(pd, 0.0065, Vector3(0.014 * s, 0.002, 0.008), pm, Vector3(1, 1, 0.5), 8)               # reels
 		"star":
 			_add_mesh(pd, _flat_mesh(_star_pts(0.024, 0.011, 5), 0.007, 0.002), Vector3(0, -0.01, 0.0), pm)
+		"badge":
+			_block(pd, Vector3(0.012, 0.016, 0.006), Vector3(0, 0.004, 0.0), _mat(Color(0.82, 0.83, 0.86), null, 0.9, 0.25))   # clip
+			_add_mesh(pd, _flat_mesh(_oval_pts(0.025, 0.036, 16, 0.22), 0.003), Vector3(0, -0.034, 0.002), pm)
 		"heart":
 			var hp := PackedVector2Array()
 			for i in 24:
@@ -3997,6 +4184,15 @@ func _collar_tex(base: Color, acc: Color, kind: String) -> ImageTexture:
 		_lines(img, PackedVector2Array([Vector2(0, 3), Vector2(128, 3)]), 1.2, Color(0.95, 0.92, 0.84), 0.9)
 		img.fill_rect(Rect2i(0, 26, 128, 6), base.darkened(0.2))
 		_pearl(img, 64, 18, 2.4)
+	elif kind == "polo":
+		for x in range(0, 128, 2):
+			img.fill_rect(Rect2i(x, 0, 1, 32), base.darkened(0.12))
+		img.fill_rect(Rect2i(0, 22, 128, 2), acc)
+		img.fill_rect(Rect2i(0, 26, 128, 2), acc)
+	elif kind == "shirt":
+		_lines(img, PackedVector2Array([Vector2(0, 4), Vector2(128, 4)]), 0.6, base.darkened(0.3), 0.6)
+		img.fill_rect(Rect2i(0, 28, 128, 4), base.darkened(0.15))
+		_dab(img, 64, 16, 2.0, 2.0, base.darkened(0.25), 1.0, 0.4)
 	else:
 		img.fill_rect(Rect2i(0, 3, 128, 4), acc)
 		img.fill_rect(Rect2i(0, 9, 128, 2), acc)
@@ -4303,6 +4499,48 @@ func _shoe_ex_tex(kind: String, base: Color, acc: Color) -> ImageTexture:
 					_lines(img, _arc_pts(cx, 70, 14 + k * 6, 22 + k * 6, 200.0, 520.0, 18), 0.8, th, 0.7, 0.4)     # side scrolls
 				_lines(img, PackedVector2Array([Vector2(cx - 40, 24), Vector2(cx + 40, 24)]), 0.8, th, 0.6)
 			_lines(img, PackedVector2Array([Vector2(128, 40), Vector2(128, 120)]), 1.0, base.darkened(0.4), 0.5)
+		"clogs":
+			_dab(img, 128, 102, 96, 30, base.lightened(0.18), 0.5, 1.0)                              # toe box
+			for row in 3:
+				for k in 7:
+					var hx := 128.0 + (float(k) - 3.0) * 13.0 + (6.5 if row % 2 == 1 else 0.0)
+					var hy := 64.0 + row * 13.0
+					_dab(img, hx, hy, 3.4, 3.4, base.darkened(0.55), 1.0, 0.25)                      # vent holes
+					_dab(img, hx - 0.8, hy - 0.8, 1.4, 1.4, base.lightened(0.3), 0.6, 0.5)
+			for sg in [-1.0, 1.0]:
+				var s: float = sg
+				for k in 4:
+					_dab(img, 128.0 + 64.0 * s + (float(k) - 1.5) * 12.0, 74, 3.0, 3.0, base.darkened(0.5), 1.0, 0.3)
+			img.fill_rect(Rect2i(0, 0, 256, 10), base.darkened(0.1))
+			_lines(img, PackedVector2Array([Vector2(0, 10), Vector2(256, 10)]), 0.8, base.darkened(0.35), 0.6)
+		"dress_shoes":
+			var dk := base.darkened(0.5)
+			_dab(img, 128, 112, 62, 22, base.lightened(0.5), 0.55, 1.0)                              # polished toe
+			_dab(img, 128, 10, 120, 14, base.darkened(0.3), 0.5, 1.0)                                # heel counter
+			_lines(img, _arc_pts(128, 132, 56, 34, 200.0, 340.0, 14), 1.0, dk, 0.8)                 # cap toe
+			_lines(img, _arc_pts(128, 136, 56, 34, 200.0, 340.0, 14), 0.6, stitch, 0.5)
+			for sx in [116.0, 140.0]:
+				var x: float = sx
+				_lines(img, PackedVector2Array([Vector2(x, 30), Vector2(x, 66)]), 0.8, dk, 0.8)        # eyestays
+			for k in 4:
+				var y := 36.0 + k * 8.0
+				_lines(img, PackedVector2Array([Vector2(117, y), Vector2(139, y)]), 1.2, dk.darkened(0.4), 1.0, 0.4)   # laces
+			for sx in [18.0, 238.0]:
+				var x: float = sx
+				_lines(img, PackedVector2Array([Vector2(x, 0), Vector2(x, 128)]), 0.6, stitch, 0.6)    # welt stitching
+		"walkers":
+			_poly(img, PackedVector2Array([Vector2(30, 96), Vector2(226, 96), Vector2(226, 128), Vector2(30, 128)]), base.darkened(0.06), 1.0)
+			for k in 10:
+				_dab(img, 96.0 + k * 7.0, 108, 1.2, 1.2, base.darkened(0.4), 0.8, 0.4)                  # perforations
+			img.fill_rect(Rect2i(0, 0, 256, 14), acc)
+			for k in 3:
+				var y := 30 + k * 18
+				img.fill_rect(Rect2i(98, y, 64, 12), acc)                                             # velcro straps
+				_lines(img, PackedVector2Array([Vector2(98, y), Vector2(162, y), Vector2(162, y + 12), Vector2(98, y + 12), Vector2(98, y)]),
+					0.7, acc.darkened(0.4), 0.8)
+				for x in range(102, 160, 3):
+					img.set_pixel(x, y + 6, acc.lightened(0.2))
+				_dab(img, 164, y + 6, 4, 6, base.darkened(0.3), 0.8, 0.3)                              # strap loop
 		"shelltoes":
 			for sg in [-1.0, 1.0]:
 				var s: float = sg
@@ -4347,7 +4585,7 @@ func _shoe_ex_tex(kind: String, base: Color, acc: Color) -> ImageTexture:
 				var y := 22.0 + k * 8.0
 				_lines(img, PackedVector2Array([Vector2(110, y), Vector2(146, y + 5)]), 1.6, lace, 1.0, 0.4)
 				_lines(img, PackedVector2Array([Vector2(146, y), Vector2(110, y + 5)]), 1.6, lace.darkened(0.12), 1.0, 0.4)
-	_cloth_pass(img, "foot", "skin" if kind in ["combat_boots", "cowboy_boots"] else "none", 0.0, 60)
+	_cloth_pass(img, "foot", "skin" if kind in ["combat_boots", "cowboy_boots", "dress_shoes"] else "none", 0.0, 60)
 	return _done(img)
 
 
@@ -4432,6 +4670,26 @@ func _hat_tex(kind: String, c: Color, band: Color) -> ImageTexture:
 	var lt := c.lightened(0.2)
 	_dab(img, 128, 30, 140, 40, lt, 0.35, 1.0)
 	match kind:
+		"sun_hat":
+			for y in range(0, 128, 4):
+				for x in range(0, 256, 4):
+					var lo := ((x >> 2) + (y >> 2)) % 2 == 0
+					img.fill_rect(Rect2i(x, y, 4, 2), c.lightened(0.14) if lo else c.darkened(0.12))      # straw weave
+					img.fill_rect(Rect2i(x, y + 2, 4, 2), c.darkened(0.06) if lo else c.lightened(0.08))
+			img.fill_rect(Rect2i(0, 92, 256, 26), band)
+			_lines(img, PackedVector2Array([Vector2(0, 93), Vector2(256, 93)]), 0.8, band.lightened(0.3), 0.6)
+			_lines(img, PackedVector2Array([Vector2(0, 117), Vector2(256, 117)]), 0.8, band.darkened(0.4), 0.6)
+		"cap_back":
+			for k in 6:
+				var x := float(k) * 256.0 / 6.0 + 21.0
+				_lines(img, PackedVector2Array([Vector2(x, 0), Vector2(x, 128)]), 1.0, dk, 0.7)            # panel seams
+				_lines(img, PackedVector2Array([Vector2(x + 2.5, 6), Vector2(x + 2.5, 128)]), 0.5, lt, 0.5)
+				_dab(img, x + 21.0, 34, 2.2, 2.2, dk, 1.0, 0.3)                                            # eyelets
+			_dab(img, 128, 128, 22, 34, dk.darkened(0.4), 1.0, 0.3)                                       # strap opening (at the front)
+			img.fill_rect(Rect2i(106, 108, 44, 8), band)
+			for cx in [0.0, 256.0]:
+				var x: float = cx
+				_poly(img, _star_px(x, 70, 22, 9), band, 1.0)                                              # front logo, worn at the back
 		"bucket":
 			for k in 11:
 				var y := 8.0 + k * 11.0
@@ -4465,7 +4723,7 @@ func _hat_tex(kind: String, c: Color, band: Color) -> ImageTexture:
 				for x in range(0, 256, 5):
 					img.set_pixel(x, b0 + 3, band.lightened(0.4))
 					img.set_pixel(x, 118, band.lightened(0.4))
-	_cloth_pass(img, "limb", "cotton" if kind == "bucket" else "fleece", 3.0, 65)
+	_cloth_pass(img, "limb", "cotton" if kind in ["bucket", "sun_hat", "cap_back"] else "fleece", 3.0, 65)
 	return _done(img)
 
 
@@ -4474,7 +4732,12 @@ func _brim_tex(kind: String, c: Color) -> ImageTexture:
 	# the edge binding.
 	var img := _new_img(256, 64, c)
 	img.fill_rect(Rect2i(0, 0, 256, 6), c.darkened(0.4))
-	if kind == "bucket":
+	if kind == "sun_hat":
+		for y in range(6, 64, 4):
+			for x in range(0, 256, 4):
+				img.fill_rect(Rect2i(x, y, 4, 2), c.lightened(0.12) if ((x >> 2) + (y >> 2)) % 2 == 0 else c.darkened(0.1))
+		img.fill_rect(Rect2i(0, 60, 256, 4), c.darkened(0.25))
+	elif kind in ["bucket", "cap_back"]:
 		for k in 6:
 			var y := 10 + k * 9
 			for x in range(0, 256, 6):
@@ -4483,7 +4746,7 @@ func _brim_tex(kind: String, c: Color) -> ImageTexture:
 		img.fill_rect(Rect2i(0, 56, 256, 8), c.darkened(0.3))
 	else:
 		img.fill_rect(Rect2i(0, 59, 256, 5), c.lightened(0.12))
-	_cloth_pass(img, "plain", "cotton" if kind == "bucket" else "fleece", 3.0, 66)
+	_cloth_pass(img, "plain", "cotton" if kind in ["bucket", "sun_hat", "cap_back"] else "fleece", 3.0, 66)
 	return _done(img)
 
 
@@ -4638,6 +4901,65 @@ func _paint_face_ex(img: Image, skin: Color, hair_c: Color, kind: String, ex: Di
 				var e: float = sg
 				_fl(img, [Vector2(-3 * e, 66.3), Vector2(-11 * e, 66.6), Vector2(-21 * e, 63.4)], 1.7, hair_c, 0.92, 0.5)   # pencil moustache
 			_fd(img, 0, 30, 5, 4, hair_c, 0.55, 0.8)
+		"older":
+			var ln := _skin_shade(skin, 0.42)
+			for k in 3:
+				var y := 160.0 + k * 7.0
+				_fl(img, [Vector2(-34, y), Vector2(-12, y + 2.0), Vector2(12, y + 2.0), Vector2(34, y)], 0.9, ln, 0.45, 0.9)   # forehead lines
+			for sg in [-1.0, 1.0]:
+				var e: float = sg
+				_fl(img, [Vector2(5 * e, 139), Vector2(7 * e, 150)], 0.9, ln, 0.4, 0.9)                           # frown lines
+				for k in 3:
+					_fl(img, [Vector2(46 * e, 127.0 + (k - 1) * 4.0), Vector2(56 * e, 125.0 + (k - 1) * 7.0)], 0.8, ln, 0.5, 0.8)   # crow's feet
+				_fl(img, _eye_arc(31 * e, 118.5, 13.0, 3.5, -1.0), 1.1, ln, 0.5, 0.8)                             # bags
+				_fl(img, [Vector2(16 * e, 88), Vector2(25 * e, 70), Vector2(29 * e, 52), Vector2(27 * e, 40)], 1.9, ln, 0.6, 0.9)   # deep smile lines
+				_fl(img, [Vector2(36 * e, 42), Vector2(31 * e, 26)], 1.4, ln, 0.35, 0.9)                        # jowls
+				_fl(img, [Vector2(9 * e, 144), Vector2(26 * e, 149.5), Vector2(47 * e, 146)], 5.4, hair_c.darkened(0.12), 0.9, 0.6)
+				for k in 10:
+					var t := float(k) / 9.0
+					var px := lerpf(9.0, 47.0, t) * e
+					var py := 144.0 + 5.0 * sin(t * PI)
+					_fl(img, [Vector2(px, py - 2.0), Vector2(px + 3.5 * e, py + 4.0)], 1.2, hair_c.lightened(0.1) if k % 2 == 0 else hair_c.darkened(0.3),
+						0.9, 0.5)                                                                                 # bushy brow hairs
+			_fd(img, 0, 65.5, 28, 6.5, hair_c.darkened(0.15), 0.95, 0.5)                                       # walrus moustache
+			for k in 15:
+				var x := lerpf(-27.0, 27.0, float(k) / 14.0)
+				_fl(img, [Vector2(x, 71), Vector2(x * 1.1, 57.5)], 1.1, hair_c.lightened(0.12) if k % 2 == 0 else hair_c.darkened(0.25), 0.9, 0.5)
+		"mom":
+			var ln := _skin_shade(skin, 0.3)
+			for sg in [-1.0, 1.0]:
+				var e: float = sg
+				_fd(img, 31 * e, 116, 12, 3.5, _skin_shade(skin, 0.4), 0.45, 1.0)                                # tired eyes
+				_fl(img, _eye_arc(31 * e, 118.5, 12.0, 3.0, -1.0), 0.8, ln, 0.35, 0.8)
+				_fl(img, [Vector2(17 * e, 86), Vector2(24 * e, 70), Vector2(27 * e, 58)], 1.4, ln, 0.4, 0.9)     # smile lines
+				_fd(img, 40 * e, 100, 12, 8, _skin_light(skin, 0.22), 0.35, 1.0)
+				_fl(img, [Vector2(19 * e, 55.8), Vector2(25 * e, 59.0)], 1.2, Color(0.07, 0.035, 0.03), 0.8, 0.6)   # warm smile
+			_fd(img, 0, 50.5, 21, 5.6, skin.lerp(Color(0.45, 0.17, 0.2), 0.5), 0.55, 0.6)
+		"grin":
+			var lip := skin.lerp(Color(0.34, 0.15, 0.15), 0.45)
+			_fd(img, 0, 53.5, 28, 10.5, lip.darkened(0.15), 1.0, 0.4)                                          # wide open lips
+			_fd(img, 0, 53.5, 24, 7.0, Color(0.24, 0.05, 0.05), 1.0, 0.35)                                     # mouth
+			_fd(img, 0, 57.0, 21, 3.2, Color(0.96, 0.94, 0.87), 1.0, 0.3)                                      # top teeth
+			_fd(img, 0, 49.6, 14, 1.6, Color(0.86, 0.83, 0.76), 0.8, 0.4)
+			for k in 6:
+				var x := (float(k) - 2.5) * 6.6
+				_fl(img, [Vector2(x, 59.6), Vector2(x, 54.2)], 0.5, Color(0.62, 0.56, 0.5), 0.6, 0.5)
+			for sg in [-1.0, 1.0]:
+				var e: float = sg
+				_fl(img, [Vector2(23 * e, 54), Vector2(29 * e, 60), Vector2(31 * e, 64)], 1.5, Color(0.1, 0.04, 0.03), 0.8, 0.6)   # corners up
+				_fd(img, 38 * e, 92, 13, 8, _skin_light(skin, 0.3), 0.45, 1.0)                                     # bunched cheeks
+				_fl(img, [Vector2(33 * e, 66), Vector2(34 * e, 56)], 1.0, _skin_shade(skin, 0.35), 0.4, 0.8)       # dimples
+		"smug":
+			for sg in [-1.0, 1.0]:
+				var e: float = sg
+				_fd(img, 31 * e, 131.0, 14.5, 3.4, _skin_shade(skin, 0.12), 0.85, 0.5)                           # heavy lids
+				_fl(img, _eye_arc(31 * e, 125.6, 14.0, 3.4, 1.0), 1.8, Color(0.03, 0.02, 0.015), 0.95, 0.5)
+			_fl(img, [Vector2(-10, 143.5), Vector2(-26, 148), Vector2(-45, 145)], 5.0, _skin_light(skin, 0.24), 0.9, 0.6)
+			_fl(img, [Vector2(-10, 147), Vector2(-27, 154), Vector2(-46, 150)], 3.6, hair_c.darkened(0.2), 0.95, 0.5)   # one raised brow
+			_fl(img, [Vector2(10, 55.4), Vector2(23, 57.8), Vector2(28.5, 61.5)], 1.3, Color(0.07, 0.035, 0.03), 0.9, 0.6)   # smirk
+			_fd(img, 27, 64, 6, 4, _skin_light(skin, 0.22), 0.4, 1.0)
+			_fd(img, 0, 18, 20, 7, _skin_light(skin, 0.18), 0.4, 1.0)
+			_fl(img, [Vector2(0, 27), Vector2(0, 16)], 1.0, _skin_shade(skin, 0.35), 0.35, 0.8)               # chin cleft
 	if fem:
 		var brow_c := hair_c.darkened(0.25)
 		for sg in [-1.0, 1.0]:
@@ -4726,8 +5048,13 @@ func _paint_scalp_ex(img: Image, hair_c: Color, mode: String) -> void:
 					k = lerpf(0.28 + 0.1 * _hash01(float(x * 5 + y * 11)), 0.95, smoothstep(0.14, 0.2, ys[y]))
 				"sleek":
 					k = 0.95 if (x % 5) != 0 else 0.98
+				"balding":
+					k = (0.62 + 0.26 * _hash01(float(x * 5 + y * 11))) * (1.0 - smoothstep(0.15, 0.178, ys[y])) * smoothstep(0.95, 1.25, d)
 			var c := img.get_pixel(x, y).lerp(hair_c if (mode != "sleek" or x % 5 != 0) else hair_c.darkened(0.35), k * edge)
 			img.set_pixel(x, y, c)
+	if mode == "balding":
+		var sr := _trow(0.215, HEAD_TOP, 0.0, h)
+		_dab(img, float(w) * 0.5, sr, 70, 12, img.get_pixel(w / 2, int(sr)).lightened(0.22), 0.45, 1.0)   # shiny crown
 
 
 ## "vermin": a made-up punk band's logo -- a rat skull pierced by a safety pin over jagged
@@ -4802,6 +5129,814 @@ func _print_drip_heart(img: Image, ink: Color, acc: Color, blk: Color) -> void:
 		var a := PI * 0.5 * k
 		_lines(img, PackedVector2Array([Vector2(98, 22), Vector2(98 + cos(a) * 9, 22 + sin(a) * 9)]), 1.6, ink, 1.0, 0.3)
 	_dab(img, 98, 22, 2.4, 2.4, ink, 1.0, 0.3)
+
+
+# --- story-cast outfits --------------------------------------------------------------------
+# Generic look keys added for the story cast (all reusable):
+#   top     "scrubs" (V-neck scrub top, chest pocket + pens) | "polo" (golf polo, tucked) |
+#           "hawaiian" (boxy camp-collar shirt, original hibiscus print) | "suit_jacket" (slim
+#           jacket over shirt_color shirt + top_accent tie)
+#   bottom  "scrub_pants" | "slacks" (pressed trousers) | "suit_pants" | "cargo_shorts" (+ high socks,
+#           sock_color / sock_stripe)
+#   shoes   "clogs" | "dress_shoes" | "walkers" (velcro walking shoes)
+#   hat     "sun_hat" (straw, hat_band ribbon) | "cap_back" (backwards cap)
+#   hair    "bun" (pulled back, top bun, hair_tie colour) | "slick" (slicked back) | "balding"
+#   face    "older" (wrinkles, bushy brows, walrus moustache) | "mom" (warm, tired eyes, soft smile) |
+#           "grin" (big toothy grin) | "smug" (heavy lids, smirk)
+#   accessories "badge" (lanyard_color), "fanny_pack" (pack_color), "headphones" (headphone_color),
+#           "mic", "phone_stick", "watch" (watch_color), "garden_gloves" (glove_color),
+#           "gold_chain", "champ_buckle", "belt", "sunglasses", "shades_up", "readers", "readers_up"
+
+const SHORT_SLEEVE_TOPS := ["studded_vest", "scrubs", "polo", "hawaiian"]
+var _hem_out: Array = []      # the outermost untucked hem (hips space), if the top has one
+
+
+## Skin between the neck and an open neckline (fills the gap above the shell's top ring).
+func _neck_fill(sh: Array, m: Dictionary) -> void:
+	var r0: Vector4 = sh[0]
+	var nk: Material = m["upper"]
+	_loft(torso, [Vector4(0.612, 0.05, 0.054, -0.004), Vector4(0.596, r0.y * 0.82, r0.z * 0.82, r0.w),
+		Vector4(r0.x - 0.004, r0.y - 0.002, r0.z - 0.002, r0.w)], nk, false, false, Vector3.ZERO, 16)
+
+
+## Two flat collar points lying on the chest either side of the neck.
+func _collar_points(cm: Material, y: float, z: float, spread: float, size: Vector3, tilt: float) -> void:
+	for sg in [-1.0, 1.0]:
+		var s: float = sg
+		var pt := _block(torso, size, Vector3(spread * s, y, z), cm)
+		pt.rotation = Vector3(-0.42, 0.25 * s, tilt * s)
+
+
+func _top_scrubs(body: Array, top_c: Color, acc: Color, kc: String, m: Dictionary) -> Array:
+	var white := Color.WHITE
+	var sh := _resample(body, 0.585, 0.04, 12, 0.012)
+	var tm := _mat(white, _tex("scrubs" + kc + str(skin_color), _scrubs_tex.bind(top_c, acc, skin_color)), 0.1, 0.6)
+	var smi := _loft(torso, sh, tm, false, false, Vector3.ZERO, 16, PackedFloat32Array(), 0.012, 1.4)
+	smi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	_neck_fill(sh, m)
+	var hem := _hem_rings(body, 0.17, -0.075, 5, 0.014, 0.012)
+	_hem_out = hem
+	_loft(hips, hem, _mat(white, _tex("scrubh" + kc, _shirt_hem_tex.bind(top_c, acc, "scrubs")), 0.1, 0.6), false, false,
+		Vector3.ZERO, 16, PackedFloat32Array(), 0.016, 2.4)
+	m["sl_short"] = _mat(white, _tex("ssl" + kc + "scrubs", _short_sleeve_tex.bind(top_c, acc, "scrubs")), 0.1, 0.6)
+	return sh
+
+
+func _top_polo(body: Array, top_c: Color, acc: Color, kc: String, m: Dictionary) -> Array:
+	var white := Color.WHITE
+	var sh := _resample(body, 0.585, 0.04, 12, 0.01)
+	var smi := _loft(torso, sh, _mat(white, _tex("polo" + kc, _polo_tex.bind(top_c, acc))), false, false, Vector3.ZERO, 16,
+		PackedFloat32Array(), 0.01, 1.9)
+	smi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	var tail := _hem_rings(body, 0.2, 0.07, 5, 0.01, 0.008, true)
+	_loft(hips, tail, _mat(white, _tex("skirt" + str(top_c) + "false", _skirt_tex.bind(top_c, false))), false, false,
+		Vector3.ZERO, 16, PackedFloat32Array(), 0.015, 3.0)
+	var cm := _mat(white, _tex("pcol" + kc, _collar_tex.bind(top_c, acc, "polo")))
+	_loft(torso, [Vector4(0.618, 0.063, 0.067, -0.004), Vector4(0.6, 0.069, 0.072, -0.006), Vector4(0.578, 0.078, 0.078, -0.01)],
+		cm, false, false, Vector3.ZERO, 16)                                                      # knit collar
+	_collar_points(cm, 0.576, 0.08, 0.036, Vector3(0.034, 0.048, 0.006), 0.6)
+	m["sl_short"] = _mat(white, _tex("ssl" + kc + "polo", _short_sleeve_tex.bind(top_c, acc, "polo")))
+	return sh
+
+
+func _top_hawaiian(body: Array, top_c: Color, acc: Color, kc: String, m: Dictionary) -> Array:
+	var white := Color.WHITE
+	var sh := _resample(body, 0.585, 0.04, 12, 0.02)
+	var hm := _mat(white, _tex("hawaii" + kc + str(skin_color), _hawaiian_tex.bind(top_c, acc, skin_color)), 0.15, 0.5)
+	var smi := _loft(torso, sh, hm, false, false, Vector3.ZERO, 16, PackedFloat32Array(), 0.012, 2.7)
+	smi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	_neck_fill(sh, m)
+	var hem := _hem_rings(body, 0.17, -0.075, 5, 0.022, 0.014)
+	_hem_out = hem
+	_loft(hips, hem, _mat(white, _tex("hawh" + kc, _shirt_hem_tex.bind(top_c, acc, "hawaiian")), 0.15, 0.5), false, false,
+		Vector3.ZERO, 16, PackedFloat32Array(), 0.02, 2.8)
+	var pm := _mat(white, _tex("hawsl" + kc, _short_sleeve_tex.bind(top_c, acc, "hawaiian")), 0.15, 0.5)
+	_loft(torso, [Vector4(0.614, 0.066, 0.068, -0.018), Vector4(0.592, 0.08, 0.08, -0.02), Vector4(0.572, 0.096, 0.088, -0.02)],
+		pm, false, false, Vector3.ZERO, 16)                                                      # camp collar round the back
+	_collar_points(pm, 0.56, 0.09, 0.05, Vector3(0.05, 0.062, 0.006), 0.85)                      # open lapels
+	m["sl_short"] = pm
+	return sh
+
+
+func _top_suit(body: Array, top_c: Color, acc: Color, kc: String, m: Dictionary) -> Array:
+	var white := Color.WHITE
+	var shirt: Color = look.get("shirt_color", Color(0.94, 0.94, 0.92))
+	var k2 := kc + str(shirt)
+	var sh := _resample(body, 0.585, 0.04, 12, 0.016)
+	var jm := _mat(white, _tex("suit" + k2, _suit_tex.bind(top_c, acc, shirt)), 0.25, 0.5)
+	var smi := _loft(torso, sh, jm, false, false, Vector3.ZERO, 16, PackedFloat32Array(), 0.008, 1.2)
+	smi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+	var hem := _hem_rings(body, 0.17, -0.115, 6, 0.018, 0.012)
+	_hem_out = hem
+	_loft(hips, hem, _mat(white, _tex("suith" + kc, _shirt_hem_tex.bind(top_c, acc, "suit")), 0.25, 0.5), false, false,
+		Vector3.ZERO, 16, PackedFloat32Array(), 0.01, 1.6)
+	var scm := _mat(white, _tex("scol" + str(shirt), _collar_tex.bind(shirt, shirt, "shirt")))
+	_loft(torso, [Vector4(0.622, 0.06, 0.064, -0.004), Vector4(0.602, 0.066, 0.069, -0.006), Vector4(0.58, 0.073, 0.073, -0.01)],
+		scm, false, false, Vector3.ZERO, 16)                                                     # shirt collar band
+	_collar_points(scm, 0.584, 0.078, 0.026, Vector3(0.026, 0.04, 0.006), 0.42)
+	_loft(torso, [Vector4(0.618, 0.076, 0.08, -0.024), Vector4(0.592, 0.09, 0.088, -0.026), Vector4(0.566, 0.112, 0.096, -0.024)],
+		_mat(top_c.darkened(0.06), null, 0.25, 0.5), false, false, Vector3.ZERO, 16)                # jacket collar (back)
+	var fz := _ring_at(sh, 0.574)
+	_block(torso, Vector3(0.022, 0.024, 0.012), Vector3(0, 0.574, fz.z + fz.w + 0.002), _mat(acc.darkened(0.1), null, 0.3, 0.45))   # tie knot
+	var sk := "sts" + kc
+	m["sl_up"] = _mat(white, _tex(sk + "u", _suit_sleeve_tex.bind(top_c, false)), 0.25, 0.5)
+	m["sl_fore"] = _mat(white, _tex(sk + "f", _suit_sleeve_tex.bind(top_c, true)), 0.25, 0.5)
+	m["sl_cuff"] = _mat(white, _tex("scuf" + str(shirt) + str(acc), _shirt_cuff_tex.bind(shirt, acc)))
+	return sh
+
+
+# --- story-cast props ------------------------------------------------------------------------
+
+## Spectacles on parent (head geometry space, or a tilted pivot for "pushed up"): o = the bridge
+## centre, lens / frame materials, w = width scale, half = half-moon reading lenses.
+func _specs(parent: Node3D, o: Vector3, lens: Material, frame: Material, w: float, half: bool) -> void:
+	for sg in [-1.0, 1.0]:
+		var s: float = sg
+		var c := o + Vector3(0.033 * s * w, 0.0, 0.0)
+		var rx := 0.026 * w
+		var ry := 0.014 * w if half else 0.02 * w
+		if half:
+			c.y -= 0.005
+		var loop := PackedVector3Array()
+		var outline := _oval_pts(rx, ry, 16, 0.7)
+		for i in 17:
+			var q := outline[i % 16]
+			loop.append(c + Vector3(q.x, q.y, -absf(q.x) * 0.15))
+		_tube(parent, loop, _const_r(17, 0.0024), 6, frame)
+		_add_mesh(parent, _flat_mesh(_oval_pts(rx - 0.001, ry - 0.001, 16, 0.7), 0.002), c + Vector3(0, 0, -0.002), lens)
+		_tube(parent, PackedVector3Array([c + Vector3(rx * s, 0.003, -0.004), o + Vector3(0.08 * s, 0.003, -0.034),
+			o + Vector3(0.086 * s, -0.001, -0.084), o + Vector3(0.086 * s, -0.006, -0.116), o + Vector3(0.082 * s, -0.024, -0.13)]),
+			_const_r(5, 0.002), 5, frame)                                                           # temple arms
+	_tube(parent, PackedVector3Array([o + Vector3(-0.007, 0.004, 0.001), o + Vector3(0, 0.008, 0.003), o + Vector3(0.007, 0.004, 0.001)]),
+		_const_r(3, 0.0024), 5, frame)                                                              # bridge
+
+
+## The story-cast accessories (see the key list above): called from _build_accessories.
+func _build_cast_accessories(hg: Node3D, shell: Array, accs: Array, mc: Color, mm: Material) -> void:
+	var white := Color.WHITE
+	for kind in ["sunglasses", "shades_up", "readers", "readers_up"]:
+		var k: String = kind
+		if not (k in accs):
+			continue
+		var dark := k in ["sunglasses", "shades_up"]
+		var lens := _mat(Color(0.04, 0.04, 0.05, 0.85) if dark else Color(0.85, 0.92, 0.95, 0.25), null, 0.95, 0.08)
+		lens.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		var fc: Color = look.get("glasses_color", Color(0.06, 0.06, 0.065) if dark else mc)
+		var fm := _mat(fc, null, 0.8, 0.25)
+		if k in ["shades_up", "readers_up"]:
+			var piv := _pivot(hg, Vector3(0, 0.112, -0.004))
+			piv.rotation.x = -0.72
+			var lift := 0.03 if str(look.get("hair", "none")) in ["bun", "slick", "curls", "locs"] else 0.022
+			_specs(piv, Vector3(0, 0.016, 0.108 + lift), lens, fm, 1.06 if dark else 0.96, not dark)
+		else:
+			_specs(hg, Vector3(0, 0.128 if dark else 0.119, 0.106 if dark else 0.108), lens, fm, 1.06 if dark else 0.92, not dark)
+	if "gold_chain" in accs:
+		var gold: Color = look.get("chain_color", Color(1.0, 0.8, 0.3))
+		var gm := _mat(white, _tex("rope" + str(gold), _chain_tex.bind(gold)), 0.95, 0.22)
+		_build_chain_ex(shell, gm, 0.2, 0.0085, 0.1, "none", gm)
+	if "badge" in accs:
+		var lc: Color = look.get("lanyard_color", Color(0.12, 0.26, 0.58))
+		var lm := _mat(white, _tex("lany" + str(lc), _lanyard_tex.bind(lc)), 0.1, 0.6)
+		_build_chain_ex(shell, lm, 0.15, 0.0042, 0.086, "badge", _mat(white, _tex("idbadge", _badge_tex), 0.35, 0.35))
+	if "headphones" in accs:
+		var hc: Color = look.get("headphone_color", Color(0.08, 0.08, 0.09))
+		var ha: Color = look.get("headphone_accent", gear_color)
+		var shell_m := _mat(hc, null, 0.6, 0.3)
+		var pad := _mat(Color(0.05, 0.05, 0.055), null, 0.1, 0.8)
+		var am := _mat(ha, null, 0.7, 0.3)
+		for sg in [-1.0, 1.0]:
+			var s: float = sg
+			var c := _push_out(shell, Vector3(0.09 * s, 0.6, 0.03), 0.034)
+			var cup := _pivot(torso, c)
+			cup.rotation = Vector3(0.0, 0.3 * s, -0.4 * s)
+			_ball(cup, 0.042, Vector3.ZERO, shell_m, Vector3(0.6, 1.0, 0.95), 14)
+			_ball(cup, 0.036, Vector3(-0.014 * s, 0.0, 0.0), pad, Vector3(0.45, 0.92, 0.88), 12)
+			_ball(cup, 0.026, Vector3(0.02 * s, 0.0, 0.0), am, Vector3(0.32, 1.0, 1.0), 12)
+		var band := PackedVector3Array()
+		for i in 15:
+			var th := lerpf(0.36 * PI, 1.64 * PI, float(i) / 14.0)
+			band.append(Vector3(sin(th) * 0.098, 0.628, cos(th) * 0.088 - 0.012))
+		_tube(torso, band, _const_r(15, 0.0065), 6, shell_m)                                          # band round the back of the neck
+	if "fanny_pack" in accs:
+		var base_r: Array = _hem_out if _hem_out.size() > 0 else _waist_rings
+		if base_r.size() > 0:
+			var pc: Color = look.get("pack_color", Color(0.1, 0.1, 0.12))
+			var y := 0.02
+			var wr := _ring_at(base_r, y)
+			var strap := _mat(pc.darkened(0.3), null, 0.2, 0.6)
+			_loft(hips, [Vector4(y + 0.012, wr.y + 0.006, wr.z + 0.006, wr.w), Vector4(y - 0.012, wr.y + 0.006, wr.z + 0.006, wr.w)],
+				strap, false, false, Vector3.ZERO, 20)
+			var fz := wr.z + wr.w + 0.034
+			var pk := _pivot(hips, Vector3(0.025, y - 0.012, fz))
+			pk.rotation.z = -0.12
+			var acc: Color = look.get("top_accent", gear_color)
+			_block(pk, Vector3(0.17, 0.088, 0.062), Vector3.ZERO, _mat(white, _tex("fanny" + str(pc) + str(acc), _fanny_tex.bind(pc, acc)), 0.4, 0.4))
+			_block(pk, Vector3(0.024, 0.03, 0.014), Vector3(0.0, 0.018, 0.034), _mat(Color(0.8, 0.8, 0.82), null, 0.9, 0.25))   # zip pull
+	if "mic" in accs and hand_l != null:
+		var body_m := _mat(Color(0.1, 0.1, 0.11), null, 0.7, 0.3)
+		_tube(hand_l, PackedVector3Array([Vector3(0, -0.014, -0.04), Vector3(0, -0.014, 0.04), Vector3(0, -0.014, 0.088)]),
+			PackedFloat32Array([0.012, 0.014, 0.017]), 10, body_m)
+		_tube(hand_l, _ring_pts(Vector3(0, -0.014, 0.086), Vector3.RIGHT, Vector3.UP, 0.018, 0.018, 12), _const_r(13, 0.004), 6,
+			_mat(gear_color, null, 0.8, 0.3))
+		_ball(hand_l, 0.027, Vector3(0, -0.014, 0.11), _mat(white, _tex("grille", _grille_tex), 0.9, 0.3), Vector3.ONE, 14)
+	if "phone_stick" in accs and hand_l != null:
+		var wood := _mat(Color(0.62, 0.45, 0.26), null, 0.2, 0.6)
+		_tube(hand_l, PackedVector3Array([Vector3(0, -0.014, -0.06), Vector3(0, -0.014, 0.1), Vector3(0, -0.014, 0.25)]),
+			_const_r(3, 0.011), 8, wood)                                                              # broom handle stub
+		var ph := _pivot(hand_l, Vector3(0, 0.03, 0.26))
+		_block(ph, Vector3(0.072, 0.14, 0.011), Vector3.ZERO, _mat(Color(0.12, 0.12, 0.14), null, 0.6, 0.3))
+		var scr := _mat(white, _tex("phscr", _phone_screen_tex), 0.9, 0.2)
+		scr.emission_enabled = true
+		scr.emission = Color(1, 1, 1)
+		scr.emission_energy_multiplier = 0.55
+		scr.emission_texture = scr.albedo_texture
+		var sm := _add_mesh(ph, _flat_mesh(_oval_pts(0.032, 0.064, 16, 0.18), 0.002), Vector3(0, 0, -0.0065), scr)
+		sm.rotation.y = PI
+		var tape := _mat(Color(0.62, 0.63, 0.65), null, 0.4, 0.5)
+		_block(ph, Vector3(0.078, 0.03, 0.022), Vector3(0, -0.05, 0.0), tape)                          # duct tape
+		_ball(ph, 0.008, Vector3(0.02, 0.05, 0.007), _mat(Color(0.03, 0.03, 0.04), null, 0.9, 0.1), Vector3(1, 1, 0.5), 8)   # camera lens
+	if ("belt" in accs or "champ_buckle" in accs) and _waist_rings.size() > 0 and not ("buckle" in accs or "studded_belt" in accs):
+		var bc: Color = look.get("belt_color", Color(0.22, 0.13, 0.07))
+		var bt_m := _mat(white, _tex("belt" + str(false) + str(bc), _belt_tex.bind(false, bc)), 0.5, 0.4)
+		var rings: Array = []
+		for yv in [_belt_y.x + 0.002, _belt_y.x, _belt_y.y, _belt_y.y - 0.002]:
+			var yy: float = yv
+			var wr := _ring_at(_waist_rings, yy)
+			var add := 0.004 if (yy > _belt_y.x or yy < _belt_y.y) else 0.007
+			rings.append(Vector4(yy, wr.y + add, wr.z + add, wr.w))
+		_loft(hips, rings, bt_m, false, false, Vector3.ZERO, 20)
+		var my := (_belt_y.x + _belt_y.y) * 0.5
+		var wr2 := _ring_at(_waist_rings, my)
+		if "champ_buckle" in accs:
+			var bkc: Color = look.get("buckle_color", Color(1.0, 0.8, 0.3))
+			var bk := _mat(white, _tex("buckle" + str(bkc), _buckle_tex.bind(bkc)), 0.95, 0.25)
+			var bz := wr2.z + wr2.w + 0.012
+			_add_mesh(hips, _flat_mesh(_oval_pts(0.062, 0.044, 28, 0.6), 0.01, 0.004), Vector3(0, my, bz), bk)   # title-belt plate
+			for sg in [-1.0, 1.0]:
+				var s: float = sg
+				var side_p := _add_mesh(hips, _flat_mesh(_oval_pts(0.022, 0.026, 16, 0.5), 0.006, 0.002),
+					Vector3(0.082 * s, my, bz - 0.012), bk)
+				side_p.rotation.y = 0.45 * s                                                          # side plates
+			_ball(hips, 0.009, Vector3(0, my + 0.002, bz + 0.009), _mat(Color(0.8, 0.06, 0.08), null, 1.0, 0.1), Vector3(1, 1, 0.6), 10)
+		else:
+			var fr := _mat(Color(0.82, 0.83, 0.86), null, 0.95, 0.2)
+			_add_mesh(hips, _flat_mesh(_oval_pts(0.02, 0.016, 12, 0.4), 0.006, 0.0), Vector3(0, my, wr2.z + wr2.w + 0.009), fr)
+
+
+# --- story-cast textures -----------------------------------------------------------------------
+
+## V-neck scrub top (torso 0.585 .. 0.04): soft poly-cotton, lit chest, side seams, a bound V
+## neckline over skin, chest pocket with two pens, back yoke, folds.
+func _scrubs_tex(base: Color, acc: Color, skin: Color) -> ImageTexture:
+	var img := _new_img(256, 256, base)
+	var t0 := 0.585
+	var t1 := 0.04
+	var dk := base.darkened(0.45)
+	var lt := base.lightened(0.16)
+	_dab(img, 128, 78, 70, 46, lt, 0.4, 1.0)
+	for sx in [64.0, 192.0]:
+		var c: float = sx
+		_dab(img, c, 88, 20, 44, dk, 0.45, 1.0)
+		_lines(img, PackedVector2Array([Vector2(c, 36), Vector2(c + 1, 256)]), 1.0, dk, 0.5)
+	for k in 7:
+		var o: float = [-56.0, -36.0, -18.0, 2.0, 20.0, 38.0, 58.0][k]
+		_fold(img, Vector2(128 + o, 130 + 10 * _hash01(k * 1.3)), Vector2(128 + o + 6.0 * (_hash01(k * 2.7) - 0.5), 250), 2.8, dk, lt, 0.3)
+	for sg in [-1.0, 1.0]:
+		var s: float = sg
+		_fold(img, Vector2(128 + 40 * s, 20), Vector2(128 + 62 * s, 70), 2.6, dk, lt, 0.4)        # arm-pit pulls
+		_fold(img, Vector2(128 + 18 * s, 96), Vector2(128 + 44 * s, 108), 2.2, dk, lt, 0.3)
+	var by := _trow(0.5, t0, t1, 256)
+	for bx in [[0.0, 46.0], [210.0, 256.0]]:
+		var b: Array = bx
+		var x0: float = b[0]
+		var x1: float = b[1]
+		_lines(img, PackedVector2Array([Vector2(x0, by), Vector2(x1, by)]), 0.9, dk, 0.5)          # back yoke seam
+	var vb := _trow(0.468, t0, t1, 256)
+	var vn := PackedVector2Array([Vector2(86, 0), Vector2(170, 0), Vector2(128, vb)])
+	_poly(img, vn, skin, 1.0)
+	_dab(img, 128, 6, 36, 12, _skin_shade(skin, 0.35), 0.55, 1.0)                                  # shadow under the chin
+	_dab(img, 128, vb - 8, 8, 10, _skin_shade(skin, 0.3), 0.5, 1.0)
+	for sg in [-1.0, 1.0]:
+		var s: float = sg
+		_lines(img, PackedVector2Array([Vector2(128 + 24 * s, 14), Vector2(128 + 8 * s, 20)]), 1.6, _skin_light(skin, 0.25), 0.5, 1.0)   # collarbones
+	var bind := base.darkened(0.12)
+	_lines(img, PackedVector2Array([Vector2(86, 0), Vector2(128, vb), Vector2(170, 0)]), 3.6, bind, 1.0, 0.3)
+	_lines(img, PackedVector2Array([Vector2(81, 0), Vector2(128, vb + 6), Vector2(175, 0)]), 0.7, dk, 0.6)    # stitching
+	_lines(img, PackedVector2Array([Vector2(88, 0), Vector2(128, vb - 2), Vector2(168, 0)]), 0.8, dk, 0.5)
+	# chest pocket (wearer's left) with two pens
+	var pt := _trow(0.44, t0, t1, 256)
+	var pb := _trow(0.34, t0, t1, 256)
+	var px0 := 128.0 - 50.0
+	var px1 := 128.0 - 20.0
+	img.fill_rect(Rect2i(int(px0), int(pt), int(px1 - px0), 4), base.darkened(0.1))
+	_lines(img, PackedVector2Array([Vector2(px0, pt), Vector2(px0, pb), Vector2(px1, pb), Vector2(px1, pt)]), 0.8, dk, 0.7)
+	_dab(img, (px0 + px1) * 0.5, pb - 6, 13, 6, dk, 0.25, 1.0)
+	img.fill_rect(Rect2i(int(px0) + 6, int(pt) - 9, 4, 12), Color(0.12, 0.2, 0.6))
+	img.fill_rect(Rect2i(int(px0) + 7, int(pt) - 9, 1, 14), Color(0.82, 0.83, 0.86))
+	img.fill_rect(Rect2i(int(px0) + 13, int(pt) - 7, 4, 10), Color(0.06, 0.06, 0.07))
+	img.fill_rect(Rect2i(int(px0) + 14, int(pt) - 7, 1, 12), Color(0.82, 0.83, 0.86))
+	# lower patch pockets
+	for sg in [-1.0, 1.0]:
+		var s: float = sg
+		var q0 := 128.0 + 18.0 * s
+		var q1 := 128.0 + 54.0 * s
+		var qt := _trow(0.17, t0, t1, 256)
+		img.fill_rect(Rect2i(int(minf(q0, q1)), int(qt), int(absf(q1 - q0)), 4), base.darkened(0.1))
+		_lines(img, PackedVector2Array([Vector2(q0, qt), Vector2(q0, 256), Vector2(q1, 256), Vector2(q1, qt)]), 0.8, dk, 0.6)
+	_cloth_pass(img, "torso", "cotton", 3.0, 81)
+	return _done(img)
+
+
+## 256x64 untucked hem pieces (hips 0.17 .. down): "scrubs" (side vents, patch pockets'
+## lower halves), "hawaiian" (print, side vents, button placket), "suit" (jacket skirt: front
+## opening, pocket flaps, centre back vent).
+func _shirt_hem_tex(base: Color, acc: Color, kind: String) -> ImageTexture:
+	var img := _new_img(256, 64, base)
+	var dk := base.darkened(0.5)
+	var lt := base.lightened(0.15)
+	if kind == "hawaiian":
+		_paint_florals(img, base, acc, 0.9, 91)
+	for k in 10:
+		var x := 6.0 + k * 25.0
+		_fold(img, Vector2(x, 4), Vector2(x + 6, 52), 2.4, dk, lt, 0.3)
+	match kind:
+		"scrubs":
+			for sg in [-1.0, 1.0]:
+				var s: float = sg
+				var q0 := 128.0 + 18.0 * s
+				var q1 := 128.0 + 54.0 * s
+				_lines(img, PackedVector2Array([Vector2(q0, 0), Vector2(q0, 26), Vector2(q1, 26), Vector2(q1, 0)]), 0.8, dk, 0.6)
+				_dab(img, (q0 + q1) * 0.5, 20, 14, 6, dk, 0.2, 1.0)
+		"hawaiian":
+			_lines(img, PackedVector2Array([Vector2(131, 0), Vector2(131, 64)]), 1.0, dk, 0.6)
+			_pearl(img, 128, 22, 2.6)
+		"suit":
+			_poly(img, PackedVector2Array([Vector2(126, 0), Vector2(130, 0), Vector2(150, 64), Vector2(106, 64)]), dk.darkened(0.2), 1.0)   # front opening
+			_lines(img, PackedVector2Array([Vector2(126, 0), Vector2(106, 64)]), 1.0, lt, 0.5)
+			_lines(img, PackedVector2Array([Vector2(130, 0), Vector2(150, 64)]), 1.0, lt, 0.5)
+			for sg in [-1.0, 1.0]:
+				var s: float = sg
+				var q0 := 128.0 + 30.0 * s
+				var q1 := 128.0 + 64.0 * s
+				_poly(img, PackedVector2Array([Vector2(q0, 4), Vector2(q1, 4), Vector2(q1, 14), Vector2(q0, 14)]), base.lightened(0.04), 1.0)
+				_lines(img, PackedVector2Array([Vector2(q0, 14), Vector2(q1, 14)]), 1.2, dk, 0.7)    # pocket flaps
+			_lines(img, PackedVector2Array([Vector2(1, 20), Vector2(1, 64)]), 1.2, dk, 0.7)            # back vent
+			_lines(img, PackedVector2Array([Vector2(255, 20), Vector2(255, 64)]), 1.2, dk, 0.7)
+	img.fill_rect(Rect2i(0, 58, 256, 6), base.darkened(0.15))
+	for sx in [64.0, 192.0]:
+		var c: float = sx
+		_lines(img, PackedVector2Array([Vector2(c, 0), Vector2(c, 64)]), 0.9, dk, 0.55)
+		if kind != "suit":
+			_poly(img, PackedVector2Array([Vector2(c - 2, 40), Vector2(c + 2, 40), Vector2(c + 3, 64), Vector2(c - 3, 64)]), dk, 0.8)   # side vents
+	_cloth_pass(img, "skirt", "cotton", 2.0, 92)
+	return _done(img)
+
+
+## 128x64 short sleeves: "scrubs" (hemmed), "polo" (ribbed band, tipping stripe), "hawaiian" (print).
+func _short_sleeve_tex(base: Color, acc: Color, kind: String) -> ImageTexture:
+	var img := _new_img(128, 64, base)
+	var dk := base.darkened(0.5)
+	var lt := base.lightened(0.15)
+	if kind == "hawaiian":
+		_paint_florals(img, base, acc, 0.7, 93)
+	_fold(img, Vector2(40, 6), Vector2(54, 44), 2.6, dk, lt, 0.4)
+	_fold(img, Vector2(82, 4), Vector2(72, 40), 2.6, dk, lt, 0.4)
+	_fold(img, Vector2(12, 12), Vector2(22, 46), 2.4, dk, lt, 0.35)
+	match kind:
+		"polo":
+			img.fill_rect(Rect2i(0, 48, 128, 16), base.darkened(0.08))
+			for x in range(0, 128, 2):
+				img.fill_rect(Rect2i(x, 48, 1, 16), base.darkened(0.2))
+			img.fill_rect(Rect2i(0, 55, 128, 2), acc)
+		_:
+			img.fill_rect(Rect2i(0, 54, 128, 10), base.darkened(0.15))
+			_lines(img, PackedVector2Array([Vector2(0, 53), Vector2(128, 53)]), 0.7, lt, 0.45)
+	_lines(img, PackedVector2Array([Vector2(0, 2), Vector2(128, 2)]), 1.0, dk, 0.5)
+	_cloth_pass(img, "limb", "cotton", 3.0, 94)
+	return _done(img)
+
+
+## Golf polo (torso 0.585 .. 0.04): pique knit, a three-button placket, a small original
+## flag emblem on the chest, side seams and the tucked-in blousing at the waist.
+func _polo_tex(base: Color, acc: Color) -> ImageTexture:
+	var img := _new_img(256, 256, base)
+	var t0 := 0.585
+	var t1 := 0.04
+	var dk := base.darkened(0.45)
+	var lt := base.lightened(0.15)
+	for y in range(0, 256, 2):
+		for x in range((y >> 1) & 1, 256, 2):
+			img.set_pixel(x, y, img.get_pixel(x, y).darkened(0.05))                           # pique
+	_dab(img, 128, 74, 74, 48, lt, 0.4, 1.0)
+	for sx in [64.0, 192.0]:
+		var c: float = sx
+		_dab(img, c, 82, 20, 34, dk, 0.5, 1.0)
+		_lines(img, PackedVector2Array([Vector2(c, 40), Vector2(c + 1, 256)]), 1.0, dk, 0.5)
+	for k in 6:
+		var o: float = [-50.0, -30.0, -12.0, 14.0, 34.0, 52.0][k]
+		_fold(img, Vector2(128 + o, 140), Vector2(128 + o + 4.0 * (_hash01(k * 2.3) - 0.5), 240), 2.8, dk, lt, 0.3)
+	for k in 12:
+		var x := 4.0 + k * 21.5
+		_fold(img, Vector2(x, 246), Vector2(x + 12, 236), 2.2, dk, lt, 0.45)
+	var pb := _trow(0.46, t0, t1, 256)
+	img.fill_rect(Rect2i(120, 0, 16, int(pb)), base.darkened(0.06))
+	_lines(img, PackedVector2Array([Vector2(120, 0), Vector2(120, pb), Vector2(136, pb), Vector2(136, 0)]), 0.9, dk, 0.7)
+	for yy in [10.0, 30.0, 50.0]:
+		var y: float = yy
+		if y < pb - 4:
+			_pearl(img, 128, y, 2.6)
+	var ex := 128.0 - 38.0
+	var ey := _trow(0.47, t0, t1, 256)
+	_lines(img, PackedVector2Array([Vector2(ex, ey - 10), Vector2(ex, ey + 8)]), 0.9, acc.darkened(0.3), 1.0, 0.3)
+	_poly(img, PackedVector2Array([Vector2(ex, ey - 10), Vector2(ex + 10, ey - 6), Vector2(ex, ey - 2)]), acc, 1.0)
+	_lines(img, _arc_pts(ex, ey + 8, 7, 2, 0.0, 360.0, 12), 0.8, acc.darkened(0.3), 0.9)
+	_cloth_pass(img, "torso", "cotton", 3.0, 95)
+	return _done(img)
+
+
+## Hibiscus print: big five-petal flowers (acc) with dark throats and stamens over leaves,
+## scattered on a jittered grid (scale = flower size).
+func _paint_florals(img: Image, base: Color, acc: Color, scale: float, seed: int) -> void:
+	var w := img.get_width()
+	var h := img.get_height()
+	var leaf := base.lerp(Color(0.08, 0.32, 0.16), 0.75)
+	var cell := 38.0 * scale
+	var nx := int(ceil(float(w) / cell))
+	var ny := int(ceil(float(h) / cell))
+	for j in ny:
+		for i in nx:
+			var k := float(seed + i * 7 + j * 13)
+			var cx := (float(i) + 0.2 + 0.6 * _hash01(k * 1.1)) * cell
+			var cy := (float(j) + 0.2 + 0.6 * _hash01(k * 2.3)) * cell
+			var rot := _hash01(k * 3.7) * TAU
+			for l in 2:
+				var a := rot + 1.2 + l * 2.4
+				var lp := Vector2(cx, cy) + Vector2(cos(a), sin(a)) * 11.0 * scale
+				_dab(img, lp.x, lp.y, 9.0 * scale, 4.5 * scale, leaf, 0.95, 0.4)
+				_lines(img, PackedVector2Array([Vector2(cx, cy), lp + Vector2(cos(a), sin(a)) * 6.0 * scale]), 0.6, leaf.darkened(0.4), 0.7)
+			var pc := acc if _hash01(k * 5.1) > 0.3 else acc.lerp(Color(1.0, 0.92, 0.75), 0.6)
+			for p in 5:
+				var a := rot + TAU * float(p) / 5.0
+				var pp := Vector2(cx, cy) + Vector2(cos(a), sin(a)) * 6.0 * scale
+				_dab(img, pp.x, pp.y, 6.5 * scale, 6.5 * scale, pc.darkened(0.25), 1.0, 0.3)
+				_dab(img, pp.x, pp.y, 5.5 * scale, 5.5 * scale, pc, 1.0, 0.35)
+				_dab(img, pp.x - 1.0, pp.y - 1.0, 2.5 * scale, 2.0 * scale, pc.lightened(0.35), 0.7, 0.6)
+			_dab(img, cx, cy, 3.5 * scale, 3.5 * scale, pc.darkened(0.6), 1.0, 0.5)
+			var sa := rot + 0.6
+			_lines(img, PackedVector2Array([Vector2(cx, cy), Vector2(cx, cy) + Vector2(cos(sa), sin(sa)) * 9.0 * scale]), 0.8,
+				Color(0.98, 0.85, 0.3), 1.0, 0.3)
+
+
+## Camp-collar shirt (torso 0.585 .. 0.04): hibiscus print all over, an open collar over the
+## skin of the chest, lapel facings, button placket, side seams, boxy folds.
+func _hawaiian_tex(base: Color, acc: Color, skin: Color) -> ImageTexture:
+	var img := _new_img(256, 256, base)
+	var t0 := 0.585
+	var t1 := 0.04
+	var dk := base.darkened(0.5)
+	var lt := base.lightened(0.15)
+	_paint_florals(img, base, acc, 1.0, 97)
+	_dab(img, 128, 76, 76, 46, lt, 0.3, 1.0)
+	for sx in [64.0, 192.0]:
+		var c: float = sx
+		_dab(img, c, 90, 22, 50, dk, 0.4, 1.0)
+		_lines(img, PackedVector2Array([Vector2(c, 36), Vector2(c + 1, 256)]), 1.0, dk, 0.5)
+	for k in 6:
+		var o: float = [-54.0, -34.0, -16.0, 18.0, 36.0, 56.0][k]
+		_fold(img, Vector2(128 + o, 120), Vector2(128 + o + 5.0 * (_hash01(k * 1.9) - 0.5), 252), 3.2, dk, lt, 0.32)
+	var vb := _trow(0.43, t0, t1, 256)
+	_poly(img, PackedVector2Array([Vector2(98, 0), Vector2(158, 0), Vector2(128, vb)]), skin, 1.0)
+	_dab(img, 128, 8, 26, 12, _skin_shade(skin, 0.35), 0.55, 1.0)
+	_dab(img, 128, vb - 12, 6, 14, _skin_shade(skin, 0.25), 0.5, 1.0)
+	for sg in [-1.0, 1.0]:
+		var s: float = sg
+		var lap := PackedVector2Array([Vector2(128 + 30 * s, 0), Vector2(128 + 52 * s, 0), Vector2(128 + 46 * s, 26),
+			Vector2(128 + 6 * s, vb + 2), Vector2(128 + 1 * s, vb)])
+		_lines(img, PackedVector2Array([lap[1] + Vector2(2 * s, 2), lap[2] + Vector2(2 * s, 3), lap[3] + Vector2(1 * s, 3)]), 2.6, dk, 0.6, 0.9)
+		_lines(img, PackedVector2Array([lap[1], lap[2], lap[3]]), 1.2, base.darkened(0.25), 0.9, 0.4)       # lapel roll
+		_lines(img, PackedVector2Array([Vector2(128 + 30 * s, 0), Vector2(128 + 1 * s, vb)]), 1.4, base.darkened(0.3), 0.9, 0.4)
+	_lines(img, PackedVector2Array([Vector2(131, vb), Vector2(131, 256)]), 1.0, dk, 0.6)
+	for yv in [0.36, 0.27, 0.18, 0.09]:
+		var y: float = yv
+		_pearl(img, 128, _trow(y, t0, t1, 256), 2.6)
+	_cloth_pass(img, "torso", "cotton", 3.0, 98)
+	return _done(img)
+
+
+## Slim jacket (torso 0.585 .. 0.04): fine wool with a soft sheen, notch lapels round a deep
+## V of shirt and tie, a pocket square, a two-button front, flap pockets, back seam.
+func _suit_tex(base: Color, tie: Color, shirt: Color) -> ImageTexture:
+	var img := _new_img(256, 256, base)
+	var t0 := 0.585
+	var t1 := 0.04
+	var dk := base.darkened(0.42)
+	var lt := base.lightened(0.14)
+	_dab(img, 128, 70, 70, 50, lt, 0.4, 1.0)
+	for sx in [64.0, 192.0]:
+		var c: float = sx
+		_dab(img, c, 86, 18, 40, dk, 0.45, 1.0)
+		_lines(img, PackedVector2Array([Vector2(c, 40), Vector2(c + 1, 256)]), 0.8, dk, 0.45)
+	_lines(img, PackedVector2Array([Vector2(0, 0), Vector2(0, 256)]), 1.2, dk, 0.6)              # back seam
+	_lines(img, PackedVector2Array([Vector2(255, 0), Vector2(255, 256)]), 1.2, dk, 0.6)
+	for sg in [-1.0, 1.0]:
+		var s: float = sg
+		_fold(img, Vector2(128 + 36 * s, 120), Vector2(128 + 40 * s, 230), 2.2, dk, lt, 0.22)
+		_fold(img, Vector2(128 + 42 * s, 20), Vector2(128 + 62 * s, 64), 2.4, dk, lt, 0.3)
+	var vb := _trow(0.33, t0, t1, 256)
+	_poly(img, PackedVector2Array([Vector2(90, 0), Vector2(166, 0), Vector2(128, vb)]), shirt, 1.0)
+	_dab(img, 128, 4, 22, 8, shirt.darkened(0.35), 0.5, 1.0)
+	var tie_p := PackedVector2Array([Vector2(124, 0), Vector2(132, 0), Vector2(137, vb - 6), Vector2(128, vb + 6), Vector2(119, vb - 6)])
+	_poly(img, tie_p, tie, 1.0)
+	for k in 9:
+		var y := 8.0 + k * 11.0
+		if y < vb:
+			_lines(img, PackedVector2Array([Vector2(118, y + 6), Vector2(138, y - 2)]), 1.4, tie.darkened(0.3), 0.7, 0.5)
+	_lines(img, PackedVector2Array([Vector2(128, 2), Vector2(128, vb - 4)]), 1.6, tie.lightened(0.25), 0.35, 1.0)
+	for sg in [-1.0, 1.0]:
+		var s: float = sg
+		var lap := PackedVector2Array([Vector2(128 + 38 * s, 0), Vector2(128 + 62 * s, 0), Vector2(128 + 60 * s, 34),
+			Vector2(128 + 50 * s, 40), Vector2(128 + 56 * s, 50), Vector2(128 + 4 * s, vb + 2), Vector2(128 + 1 * s, vb)])
+		_poly(img, lap, base.lightened(0.07), 1.0)
+		var edge := PackedVector2Array([lap[1], lap[2], lap[3], lap[4], lap[5]])
+		var shad := PackedVector2Array()
+		for q in edge:
+			shad.append(q + Vector2(3 * s, 2))
+		_lines(img, shad, 3.0, dk, 0.5, 0.9)
+		_lines(img, edge, 1.0, base.lightened(0.3), 0.7, 0.4)                                       # lapel edge
+		_lines(img, PackedVector2Array([Vector2(128 + 38 * s, 0), Vector2(128 + 1 * s, vb)]), 1.4, dk, 0.8, 0.4)
+	for yv in [vb + 8.0, vb + 48.0]:
+		var y: float = yv
+		_dab(img, 129, y, 3.6, 3.6, base.darkened(0.6), 1.0, 0.3)
+		_dab(img, 128.4, y - 0.8, 1.4, 1.4, base.lightened(0.4), 0.8, 0.4)
+	_lines(img, PackedVector2Array([Vector2(129, vb), Vector2(126, 256)]), 1.0, dk, 0.7)
+	var py := _trow(0.44, t0, t1, 256)
+	_lines(img, PackedVector2Array([Vector2(128 - 62, py), Vector2(128 - 32, py - 2)]), 1.2, dk, 0.8)          # breast pocket welt
+	_poly(img, PackedVector2Array([Vector2(128 - 58, py), Vector2(128 - 52, py - 8), Vector2(128 - 46, py - 3), Vector2(128 - 40, py - 9),
+		Vector2(128 - 35, py - 2)]), tie.lightened(0.15), 1.0)                                        # pocket square
+	var fy := _trow(0.13, t0, t1, 256)
+	for sg in [-1.0, 1.0]:
+		var s: float = sg
+		var q0 := 128.0 + 26.0 * s
+		var q1 := 128.0 + 62.0 * s
+		_poly(img, PackedVector2Array([Vector2(q0, fy), Vector2(q1, fy), Vector2(q1, fy + 12), Vector2(q0, fy + 12)]), base.lightened(0.05), 1.0)
+		_lines(img, PackedVector2Array([Vector2(q0, fy + 12), Vector2(q1, fy + 12)]), 1.2, dk, 0.8)
+		_lines(img, PackedVector2Array([Vector2(q0, fy), Vector2(q1, fy)]), 0.8, dk, 0.6)
+	_cloth_pass(img, "torso", "cotton", 1.5, 99)
+	return _done(img)
+
+
+func _suit_sleeve_tex(base: Color, fore: bool) -> ImageTexture:
+	# 128x64 jacket sleeve: soft folds at the elbow, the back seam; three cuff buttons (fore).
+	var img := _new_img(128, 64, base)
+	var dk := base.darkened(0.42)
+	var lt := base.lightened(0.14)
+	for k in 4:
+		var x := 8.0 + k * 31.0
+		if fore:
+			_fold(img, Vector2(x, 4), Vector2(x + 10, 12), 2.0, dk, lt, 0.35)
+		else:
+			_fold(img, Vector2(x, 54), Vector2(x + 10, 48), 2.0, dk, lt, 0.35)
+	_lines(img, PackedVector2Array([Vector2(0, 0), Vector2(0, 64)]), 1.0, dk, 0.5)
+	_lines(img, PackedVector2Array([Vector2(127, 0), Vector2(127, 64)]), 1.0, dk, 0.5)
+	if fore:
+		for k in 3:
+			_dab(img, 8.0 + k * 5.0, 56, 1.8, 1.8, base.darkened(0.6), 1.0, 0.3)
+	_cloth_pass(img, "limb", "cotton", 1.5, 100 if fore else 101)
+	return _done(img)
+
+
+func _shirt_cuff_tex(shirt: Color, acc: Color) -> ImageTexture:
+	# 128x32 shirt cuff peeking from the jacket sleeve: crisp edge, a cufflink.
+	var img := _new_img(128, 32, shirt)
+	img.fill_rect(Rect2i(0, 0, 128, 3), shirt.darkened(0.3))
+	img.fill_rect(Rect2i(0, 28, 128, 4), shirt.darkened(0.2))
+	_dab(img, 64, 16, 3.4, 3.0, acc, 1.0, 0.3)
+	_dab(img, 63, 15, 1.2, 1.0, acc.lightened(0.5), 0.9, 0.4)
+	_cloth_pass(img, "plain", "cotton", 1.0, 102)
+	return _done(img)
+
+
+## 256x128 trouser waist (y top .. bot): "slacks" / "suit_pants" (waistband + loops, slant
+## pockets, front pleats / crease, fly, back welts), "scrub_pants" (elastic waist, drawstring
+## bow), "cargo_shorts" (canvas with loops, slant pockets, fly).
+func _trouser_waist_tex(base: Color, top: float, bot: float, belt_t: float, belt_b: float, kind: String) -> ImageTexture:
+	var img := _new_img(256, 128, base)
+	var dk := base.darkened(0.45)
+	var lt := base.lightened(0.15)
+	var r0 := _trow(belt_t, top, bot, 128)
+	var r1 := _trow(belt_b, top, bot, 128)
+	_dab(img, 128, 120, 60, 26, dk, 0.35, 1.0)                                                       # crotch shade
+	_dab(img, 0, 110, 40, 30, lt, 0.25, 1.0)
+	_dab(img, 256, 110, 40, 30, lt, 0.25, 1.0)
+	if kind == "scrub_pants":
+		img.fill_rect(Rect2i(0, int(r0) - 4, 256, int(r1 - r0) + 8), base.darkened(0.08))
+		for x in range(0, 256, 4):
+			_lines(img, PackedVector2Array([Vector2(x, r0 - 3), Vector2(x + 1, r1 + 3)]), 0.6, dk, 0.35)   # gathers
+		_lines(img, PackedVector2Array([Vector2(122, r1 - 2), Vector2(112, r1 + 22), Vector2(108, r1 + 34)]), 1.6, base.lightened(0.3), 1.0, 0.4)
+		_lines(img, PackedVector2Array([Vector2(134, r1 - 2), Vector2(142, r1 + 20), Vector2(150, r1 + 30)]), 1.6, base.lightened(0.3), 1.0, 0.4)
+		_dab(img, 128, r1 - 1, 6, 4, base.lightened(0.25), 1.0, 0.4)                              # drawstring bow
+		_dab(img, 120, r1, 5, 3, base.lightened(0.2), 1.0, 0.5)
+		_dab(img, 136, r1, 5, 3, base.lightened(0.2), 1.0, 0.5)
+	else:
+		img.fill_rect(Rect2i(0, int(r0) - 3, 256, int(r1 - r0) + 6), base.darkened(0.06))
+		_lines(img, PackedVector2Array([Vector2(0, r1 + 3), Vector2(256, r1 + 3)]), 0.8, dk, 0.6)
+		_lines(img, PackedVector2Array([Vector2(0, r0 - 3), Vector2(256, r0 - 3)]), 0.6, dk, 0.4)
+		for lx in [86.0, 167.0, 48.0, 205.0, 12.0, 241.0]:
+			var x: float = lx
+			img.fill_rect(Rect2i(int(x), int(r0) - 4, 4, int(r1 - r0) + 9), base.lightened(0.06))   # loops
+			_lines(img, PackedVector2Array([Vector2(x, r0 - 4), Vector2(x, r1 + 5)]), 0.5, dk, 0.5)
+		_lines(img, PackedVector2Array([Vector2(131, r1 + 3), Vector2(131, 104), Vector2(124, 116)]), 1.0, dk, 0.7)   # fly
+		for sg in [-1.0, 1.0]:
+			var s: float = sg
+			_lines(img, PackedVector2Array([Vector2(128 + 40 * s, r1 + 3), Vector2(128 + 60 * s, r1 + 40)]), 1.2, dk, 0.8)   # slant pockets
+			_lines(img, PackedVector2Array([Vector2(128 + 42 * s, r1 + 3), Vector2(128 + 62 * s, r1 + 40)]), 0.8, lt, 0.4)
+			if kind != "cargo_shorts":
+				_fold(img, Vector2(128 + 22 * s, r1 + 4), Vector2(128 + 24 * s, r1 + 40), 1.6, dk, lt, 0.4)   # pleat
+			var bx := 128.0 + 100.0 * s
+			_lines(img, PackedVector2Array([Vector2(bx - 14, r1 + 18), Vector2(bx + 14, r1 + 18)]), 1.4, dk, 0.8)     # back welts
+			_lines(img, PackedVector2Array([Vector2(bx - 14, r1 + 20), Vector2(bx + 14, r1 + 20)]), 0.6, lt, 0.4)
+	_cloth_pass(img, "plain", "cotton" if kind != "cargo_shorts" else "denim", 2.0, 103)
+	return _done(img)
+
+
+## 128x128 trouser leg (thigh: hip -> knee, shin: knee -> hem), u 0.5 front: pressed crease
+## (slacks / suit), soft folds (scrubs), canvas with a cargo pocket and turned hem (cargo).
+func _trouser_leg_tex(base: Color, side: int, part: String, kind: String) -> ImageTexture:
+	var img := _new_img(128, 128, base)
+	var dk := base.darkened(0.45)
+	var lt := base.lightened(0.16)
+	var out_c := 32.0 if side < 0 else 96.0
+	var in_c := 128.0 - out_c
+	_dab(img, 64, 64, 22, 90, lt, 0.3, 1.0)
+	_lines(img, PackedVector2Array([Vector2(out_c, 0), Vector2(out_c, 128)]), 0.8, dk, 0.55)        # side seams
+	_lines(img, PackedVector2Array([Vector2(in_c, 0), Vector2(in_c, 128)]), 0.7, dk, 0.4)
+	match kind:
+		"slacks", "suit_pants":
+			_lines(img, PackedVector2Array([Vector2(64, 0), Vector2(64, 128)]), 1.6, base.lightened(0.28), 0.8, 0.6)   # crease
+			_lines(img, PackedVector2Array([Vector2(66, 0), Vector2(66, 128)]), 1.0, dk, 0.35, 0.8)
+			_lines(img, PackedVector2Array([Vector2(0, 0), Vector2(0, 128)]), 1.2, base.lightened(0.2), 0.5, 0.6)
+			if part == "thigh":
+				for k in 3:
+					_fold(img, Vector2(4 + k * 6, 108 + k * 5), Vector2(30 + k * 4, 112 + k * 5), 2.0, dk, lt, 0.35)      # behind the knee
+					_fold(img, Vector2(124 - k * 6, 108 + k * 5), Vector2(98 - k * 4, 112 + k * 5), 2.0, dk, lt, 0.35)
+			else:
+				for k in 2:
+					var y := 104.0 + k * 9.0
+					_fold(img, Vector2(36, y), Vector2(92, y + 4), 2.4, dk, lt, 0.4)                    # the break over the shoe
+				img.fill_rect(Rect2i(0, 122, 128, 6), base.darkened(0.15))
+		"scrub_pants":
+			for k in 4:
+				var x := 10.0 + k * 33.0
+				_fold(img, Vector2(x, 10), Vector2(x + 6, 116), 2.6, dk, lt, 0.3)
+			if part == "shin":
+				for k in 3:
+					var y := 96.0 + k * 10.0
+					_fold(img, Vector2(20, y), Vector2(108, y + 3), 2.2, dk, lt, 0.35)
+				img.fill_rect(Rect2i(0, 120, 128, 8), base.darkened(0.15))
+				_lines(img, PackedVector2Array([Vector2(0, 119), Vector2(128, 119)]), 0.6, lt, 0.5)
+		"cargo_shorts":
+			for k in 3:
+				var x := 16.0 + k * 42.0
+				_fold(img, Vector2(x, 6), Vector2(x + 8, 90), 3.0, dk, lt, 0.35)
+			var p0 := out_c - 18.0
+			var p1 := out_c + 18.0
+			var pt := 44.0
+			var pb := 92.0
+			img.fill_rect(Rect2i(int(p0), int(pt), int(p1 - p0), int(pb - pt)), base.darkened(0.04))
+			_lines(img, PackedVector2Array([Vector2(p0, pt), Vector2(p0, pb), Vector2(p1, pb), Vector2(p1, pt)]), 1.0, dk, 0.8)
+			_dab(img, out_c, pb - 4, 16, 5, dk, 0.35, 1.0)
+			img.fill_rect(Rect2i(int(p0) - 2, int(pt) - 8, int(p1 - p0) + 4, 12), base.lightened(0.04))
+			_lines(img, PackedVector2Array([Vector2(p0 - 2, pt + 4), Vector2(p1 + 2, pt + 4)]), 1.2, dk, 0.8)   # flap
+			_dab(img, out_c, pt - 1, 2.2, 2.2, Color(0.15, 0.13, 0.1), 1.0, 0.3)
+			img.fill_rect(Rect2i(0, 112, 128, 16), base.darkened(0.12))                               # turned-up hem
+			_lines(img, PackedVector2Array([Vector2(0, 112), Vector2(128, 112)]), 1.0, lt, 0.6)
+	_cloth_pass(img, "limb", "denim" if kind == "cargo_shorts" else "cotton", 2.0, 104 + side + (5 if part == "shin" else 0))
+	return _done(img)
+
+
+func _sock_tex(c: Color, stripe: Color) -> ImageTexture:
+	# 64x64 ribbed tube sock (v top -> ankle): two stripes under the cuff.
+	var img := _new_img(64, 64, c)
+	for x in range(0, 64, 2):
+		img.fill_rect(Rect2i(x, 0, 1, 64), c.darkened(0.08))
+	img.fill_rect(Rect2i(0, 8, 64, 4), stripe)
+	img.fill_rect(Rect2i(0, 15, 64, 4), stripe)
+	_cloth_pass(img, "limb", "cotton", 2.0, 106)
+	return _done(img)
+
+
+func _lanyard_tex(c: Color) -> ImageTexture:
+	# 16x64 woven strap with a repeating light dash.
+	var img := _new_img(16, 64, c)
+	for y in range(0, 64, 16):
+		img.fill_rect(Rect2i(0, y, 16, 3), c.lightened(0.45))
+	_cloth_pass(img, "none", "cotton", 2.0, 107)
+	return _done(img)
+
+
+func _badge_tex() -> ImageTexture:
+	# 64x96 hospital ID card: header band with a cross, photo, name lines, barcode.
+	var img := _new_img(64, 96, Color(0.96, 0.96, 0.95))
+	var band := Color(0.1, 0.42, 0.62)
+	img.fill_rect(Rect2i(0, 0, 64, 20), band)
+	img.fill_rect(Rect2i(8, 8, 10, 4), Color(1, 1, 1))
+	img.fill_rect(Rect2i(11, 5, 4, 10), Color(1, 1, 1))
+	img.fill_rect(Rect2i(24, 7, 32, 2), Color(1, 1, 1))
+	img.fill_rect(Rect2i(24, 12, 24, 2), Color(1, 1, 1))
+	img.fill_rect(Rect2i(16, 26, 32, 34), Color(0.7, 0.8, 0.88))
+	_dab(img, 32, 40, 8, 9, Color(0.38, 0.25, 0.18), 1.0, 0.3)
+	_dab(img, 32, 58, 14, 8, Color(0.2, 0.6, 0.6), 1.0, 0.3)
+	_dab(img, 32, 33, 9, 5, Color(0.1, 0.07, 0.06), 1.0, 0.4)
+	img.fill_rect(Rect2i(10, 66, 44, 3), Color(0.15, 0.15, 0.17))
+	img.fill_rect(Rect2i(16, 72, 32, 2), Color(0.45, 0.45, 0.48))
+	for k in 18:
+		var x := 12 + k * 2 + int(_hash01(float(k) * 3.3) * 1.5)
+		img.fill_rect(Rect2i(x, 80, 1 + int(_hash01(float(k) * 1.7) * 1.6), 10), Color(0.08, 0.08, 0.09))
+	_cloth_pass(img, "plain", "none", 1.0, 108)
+	return _done(img)
+
+
+func _fanny_tex(c: Color, acc: Color) -> ImageTexture:
+	# 128x64 nylon belt bag (u 0.5 front): zip across the top, a round "2" patch, seams.
+	var img := _new_img(128, 64, c)
+	_dab(img, 64, 22, 40, 14, c.lightened(0.2), 0.5, 1.0)
+	img.fill_rect(Rect2i(0, 15, 128, 4), Color(0.06, 0.06, 0.07))
+	for x in range(0, 128, 2):
+		img.set_pixel(x, 17, Color(0.7, 0.7, 0.72))
+	_dab(img, 64, 40, 10, 10, acc.darkened(0.3), 1.0, 0.2)
+	_dab(img, 64, 40, 8.5, 8.5, Color(1.0, 0.8, 0.3), 1.0, 0.2)
+	_text(img, "2", 64, 34, 12, 1.4, acc.darkened(0.5), Color(1.0, 0.8, 0.3))
+	_lines(img, PackedVector2Array([Vector2(0, 58), Vector2(128, 58)]), 0.8, c.darkened(0.5), 0.6)
+	_cloth_pass(img, "plain", "cotton", 2.0, 109)
+	return _done(img)
+
+
+func _grille_tex() -> ImageTexture:
+	# 32x32 mic grille mesh.
+	var img := _new_img(32, 32, Color(0.62, 0.63, 0.66))
+	for y in 32:
+		for x in 32:
+			if (x + y) % 4 == 0 or (x - y + 64) % 4 == 0:
+				img.set_pixel(x, y, Color(0.28, 0.28, 0.3))
+	return _done(img)
+
+
+func _phone_screen_tex() -> ImageTexture:
+	# 64x128 recording screen: a blurry backyard, REC dot, a crack across the glass.
+	var img := _new_img(64, 128, Color(0.32, 0.42, 0.55))
+	_dab(img, 32, 100, 50, 40, Color(0.22, 0.4, 0.18), 1.0, 1.0)
+	_dab(img, 34, 70, 10, 22, Color(0.5, 0.32, 0.22), 0.9, 0.8)
+	_dab(img, 12, 12, 4, 4, Color(0.95, 0.1, 0.08), 1.0, 0.3)
+	_text(img, "REC", 34, 7, 10, 1.0, Color(1, 1, 1), Color(0.1, 0.1, 0.1))
+	_lines(img, PackedVector2Array([Vector2(4, 30), Vector2(26, 56), Vector2(30, 84), Vector2(58, 110)]), 0.7, Color(0.95, 0.97, 1.0), 0.8)
+	_lines(img, PackedVector2Array([Vector2(26, 56), Vector2(50, 50)]), 0.6, Color(0.95, 0.97, 1.0), 0.7)
+	return _done(img)
+
+
+func _watch_tex(mc: Color) -> ImageTexture:
+	# 32x32 watch face: metal bezel, cream dial, hands.
+	var img := _new_img(32, 32, mc)
+	_dab(img, 16, 16, 12, 12, Color(0.95, 0.93, 0.86), 1.0, 0.15)
+	_lines(img, PackedVector2Array([Vector2(16, 16), Vector2(16, 7)]), 0.9, Color(0.1, 0.1, 0.1), 1.0)
+	_lines(img, PackedVector2Array([Vector2(16, 16), Vector2(22, 19)]), 0.9, Color(0.1, 0.1, 0.1), 1.0)
+	return _done(img)
+
+
+func _pulled_tex(c: Color) -> ImageTexture:
+	# 256x64 natural hair pulled back to a bun (u round, v crown -> nape): coily grain, combed
+	# streaks running up to the crown, a soft sheen band.
+	var img := _new_img(256, 64, c)
+	for x in 256:
+		var k := 0.8 + 0.4 * _hash01(float(x) * 1.37)
+		for y in 64:
+			var v := float(y) / 63.0
+			var f := k * (1.0 + 0.3 * exp(-pow((v - 0.4) / 0.14, 2.0)))
+			img.set_pixel(x, y, Color(c.r * f, c.g * f, c.b * f))
+	for i in 260:
+		_dab(img, _hash01(float(i) * 2.1) * 256.0, _hash01(float(i) * 3.7) * 64.0, 2.0, 1.5, c.lightened(0.18), 0.5, 0.8)
+	_cloth_pass(img, "none", "hair", 0.0, 110)
+	return _done(img)
+
+
+func _coil_tex(c: Color) -> ImageTexture:
+	# 64x64 bun of coily hair: tight curls as small lit / shaded dabs.
+	var img := _new_img(64, 64, c.darkened(0.2))
+	for i in 220:
+		var x := _hash01(float(i) * 1.9) * 64.0
+		var y := _hash01(float(i) * 4.3) * 64.0
+		_dab(img, x, y, 2.6, 2.6, c.lightened(0.12), 0.8, 0.7)
+		_dab(img, x + 0.8, y + 1.0, 1.4, 1.4, c.darkened(0.45), 0.6, 0.8)
+	_cloth_pass(img, "none", "hair", 0.0, 111)
+	return _done(img)
+
+
+func _glove_tex(c: Color) -> ImageTexture:
+	# 32x32 canvas garden glove with rubber grip dots.
+	var img := _new_img(32, 32, c)
+	for i in 24:
+		_dab(img, _hash01(float(i) * 1.3) * 32.0, _hash01(float(i) * 2.9) * 32.0, 1.4, 1.4, c.darkened(0.45), 0.9, 0.4)
+	_cloth_pass(img, "plain", "cotton", 3.0, 112)
+	return _done(img)
 
 
 # ---------------------------------------------------------------- helpers
